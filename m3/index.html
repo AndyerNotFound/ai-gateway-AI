@@ -1,0 +1,1683 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#141218">
+<meta name="description" content="AI Gateway 管理面板 · Material Web 版">
+<meta http-equiv="Cache-Control" content="no-cache,no-store,must-revalidate">
+<title>AI Gateway · Material Web v2.11</title>
+<style>
+/* ============ Material Design 3 设计令牌 ============
+   Material Web 组件原生读取 --md-sys-color-* / --md-sys-typescale-* / --md-sys-shape-*,
+   所以这里定义的令牌会同时作用于组件与本页自定义结构, 保证视觉一致。 */
+:root{
+  /* === Material Design 3 Color Tokens (Dark) === */
+  --md-sys-color-primary:#D0BCFF; --md-sys-color-on-primary:#381E72;
+  --md-sys-color-primary-container:#4F378B; --md-sys-color-on-primary-container:#EADDFF;
+  --md-sys-color-secondary:#CCC2DC; --md-sys-color-on-secondary:#332D41;
+  --md-sys-color-secondary-container:#4A4458; --md-sys-color-on-secondary-container:#E8DEF8;
+  --md-sys-color-tertiary:#EFB8C8; --md-sys-color-on-tertiary:#492532;
+  --md-sys-color-tertiary-container:#633B48; --md-sys-color-on-tertiary-container:#FFD8E4;
+  --md-sys-color-error:#F2B8B5; --md-sys-color-on-error:#601410;
+  --md-sys-color-error-container:#8B1A1A; --md-sys-color-on-error-container:#F9DEDC;
+  --md-sys-color-background:#141218; --md-sys-color-on-background:#E6E1E5;
+  --md-sys-color-surface:#141218; --md-sys-color-on-surface:#E6E1E5;
+  --md-sys-color-surface-variant:#49454F; --md-sys-color-on-surface-variant:#CAC4D0;
+  --md-sys-color-surface-container-lowest:#0F0D13;
+  --md-sys-color-surface-container-low:#1D1B20;
+  --md-sys-color-surface-container:#211F26;
+  --md-sys-color-surface-container-high:#2B2930;
+  --md-sys-color-surface-container-highest:#36343B;
+  --md-sys-color-inverse-surface:#E6E0E9; --md-sys-color-inverse-on-surface:#322F35;
+  --md-sys-color-outline:#938F99; --md-sys-color-outline-variant:#49454F;
+  --md-sys-color-shadow:#000000; --md-sys-color-scrim:#000000;
+  --md-sys-color-surface-tint:#D0BCFF;
+  --md-sys-color-primary-fixed:#EADDFF; --md-sys-color-on-primary-fixed:#21005D;
+  --md-sys-color-primary-fixed-dim:#D0BCFF; --md-sys-color-on-primary-fixed-variant:#4F378B;
+  --md-sys-color-secondary-fixed:#E8DEF8; --md-sys-color-on-secondary-fixed:#1D192B;
+  --md-sys-color-secondary-fixed-dim:#CCC2DC; --md-sys-color-on-secondary-fixed-variant:#4A4458;
+  --md-sys-color-tertiary-fixed:#FFD8E4; --md-sys-color-on-tertiary-fixed:#31111D;
+  --md-sys-color-tertiary-fixed-dim:#EFB8C8; --md-sys-color-on-tertiary-fixed-variant:#633B48;
+  --md-sys-color-error-fixed:#F9DEDC; --md-sys-color-on-error-fixed:#410E0B;
+  --md-sys-color-error-fixed-dim:#F2B8B5; --md-sys-color-on-error-fixed-variant:#8B1A1A;
+  
+  /* === Typography Tokens ===
+     注意: Material Web 组件读取的是「分量」令牌
+     (--md-sys-typescale-<role>-size / -weight / -line-height / -font),
+     只定义 font 简写组件读不到, 会退回内置默认(按钮 40px 高 / 14px 字 / Roboto),
+     与本页 12~13px 的说明文字比例失调。故两套都写: 简写给本页自定义结构, 分量给组件。 */
+  --md-ref-typeface-plain:system-ui,-apple-system,'Segoe UI',Roboto,'Noto Sans SC',sans-serif;
+  --md-ref-typeface-brand:system-ui,-apple-system,'Segoe UI',Roboto,'Noto Sans SC',sans-serif;
+  --md-ref-typeface-weight-regular:400;
+  --md-ref-typeface-weight-medium:500;
+  --md-ref-typeface-weight-bold:700;
+  --md-sys-typescale-display-large:700 57px/64px sans-serif;
+  --md-sys-typescale-headline-large:400 32px/40px sans-serif;
+  --md-sys-typescale-headline-medium:400 28px/36px sans-serif;
+  --md-sys-typescale-headline-small:400 24px/32px sans-serif;
+  --md-sys-typescale-title-large:400 22px/28px sans-serif;
+  --md-sys-typescale-title-medium:500 16px/24px sans-serif;
+  --md-sys-typescale-title-small:500 14px/20px sans-serif;
+  --md-sys-typescale-body-large:400 16px/24px sans-serif;
+  --md-sys-typescale-body-medium:400 14px/24px sans-serif;
+  --md-sys-typescale-body-small:400 12px/16px sans-serif;
+  --md-sys-typescale-label-large:500 14px/20px sans-serif;
+  --md-sys-typescale-label-medium:500 12px/16px sans-serif;
+  --md-sys-typescale-label-small:500 11px/16px sans-serif;
+  /* 分量令牌 (组件实际读取) */
+  --md-sys-typescale-title-large-font:var(--md-ref-typeface-plain);      --md-sys-typescale-title-large-size:22px;      --md-sys-typescale-title-large-line-height:28px;      --md-sys-typescale-title-large-weight:400;
+  --md-sys-typescale-title-medium-font:var(--md-ref-typeface-plain);     --md-sys-typescale-title-medium-size:16px;     --md-sys-typescale-title-medium-line-height:24px;     --md-sys-typescale-title-medium-weight:500;
+  --md-sys-typescale-title-small-font:var(--md-ref-typeface-plain);      --md-sys-typescale-title-small-size:14px;      --md-sys-typescale-title-small-line-height:20px;      --md-sys-typescale-title-small-weight:500;
+  --md-sys-typescale-body-large-font:var(--md-ref-typeface-plain);       --md-sys-typescale-body-large-size:16px;       --md-sys-typescale-body-large-line-height:24px;       --md-sys-typescale-body-large-weight:400;
+  --md-sys-typescale-body-medium-font:var(--md-ref-typeface-plain);      --md-sys-typescale-body-medium-size:14px;      --md-sys-typescale-body-medium-line-height:20px;      --md-sys-typescale-body-medium-weight:400;
+  --md-sys-typescale-body-small-font:var(--md-ref-typeface-plain);       --md-sys-typescale-body-small-size:12px;       --md-sys-typescale-body-small-line-height:16px;       --md-sys-typescale-body-small-weight:400;
+  --md-sys-typescale-label-large-font:var(--md-ref-typeface-plain);      --md-sys-typescale-label-large-size:14px;      --md-sys-typescale-label-large-line-height:20px;      --md-sys-typescale-label-large-weight:500;
+  --md-sys-typescale-label-medium-font:var(--md-ref-typeface-plain);     --md-sys-typescale-label-medium-size:12px;     --md-sys-typescale-label-medium-line-height:16px;     --md-sys-typescale-label-medium-weight:500;
+  --md-sys-typescale-label-small-font:var(--md-ref-typeface-plain);      --md-sys-typescale-label-small-size:11px;      --md-sys-typescale-label-small-line-height:16px;      --md-sys-typescale-label-small-weight:500;
+  /* headline-small: md-dialog 标题读取(缺 -font 会退回 Roboto, 中文标题字形与全站不一致) */
+  --md-sys-typescale-headline-small-font:var(--md-ref-typeface-brand);   --md-sys-typescale-headline-small-size:24px;   --md-sys-typescale-headline-small-line-height:32px;  --md-sys-typescale-headline-small-weight:400;
+  /* md-icon: 默认字体族是 Material Symbols Outlined(CDN 外链, 本机不可达)。
+     改为跟随页面字体, 图标一律用 emoji 字形, 零外部依赖。 */
+  --md-icon-font:'Material Symbols Outlined';
+  --md-icon-size:22px;
+  
+  /* === Shape Tokens === */
+  --md-sys-shape-corner-none:0px;
+  --md-sys-shape-corner-tiny:2px;
+  --md-sys-shape-corner-small:4px;
+  --md-sys-shape-corner-medium:8px;
+  --md-sys-shape-corner-large:12px;
+  --md-sys-shape-corner-extra-large:16px;
+  --md-sys-shape-corner-full:9999px;
+  
+  /* === Elevation Tokens === */
+  --md-sys-elevation-level1:0 1px 3px 1px rgba(0,0,0,.15),0 1px 2px rgba(0,0,0,.3);
+  --md-sys-elevation-level2:0 2px 6px 2px rgba(0,0,0,.15),0 1px 2px rgba(0,0,0,.3);
+  --md-sys-elevation-level3:0 4px 8px 3px rgba(0,0,0,.15),0 1px 3px rgba(0,0,0,.3);
+  
+  /* 暗色专属补充: body 背景用的 surface-dim 必须在暗色下定义,
+     否则 body{background:var(--md-sys-color-surface-dim)} 整条声明失效 */
+  --md-sys-color-surface-dim:#141218; --md-sys-color-surface-bright:#3B383E;
+  /* 卡片圆角加深(覆盖上面的基础值) */
+  --md-sys-shape-corner-medium:12px; --md-sys-shape-corner-large:16px;
+
+  color-scheme:dark;
+}
+[data-theme="light"]{
+    --md-sys-color-primary:#6750A4; --md-sys-color-on-primary:#FFFFFF;
+    --md-sys-color-primary-container:#EADDFF; --md-sys-color-on-primary-container:#21005D;
+    --md-sys-color-secondary:#625B71; --md-sys-color-on-secondary:#FFFFFF;
+    --md-sys-color-secondary-container:#E8DEF8; --md-sys-color-on-secondary-container:#1D192B;
+    --md-sys-color-error:#B3261E; --md-sys-color-on-error:#FFFFFF;
+    --md-sys-color-error-container:#F9DEDC; --md-sys-color-on-error-container:#410E0B;
+    --md-sys-color-surface-dim:#DED8E1; --md-sys-color-surface:#FEF7FF;
+    --md-sys-color-surface-bright:#FEF7FF;
+    --md-sys-color-surface-container-lowest:#FFFFFF; --md-sys-color-surface-container-low:#F7F2FA;
+    --md-sys-color-surface-container:#F3EDF7; --md-sys-color-surface-container-high:#ECE6F0;
+    --md-sys-color-surface-container-highest:#E6E0E9;
+    --md-sys-color-on-surface:#1D1B20; --md-sys-color-on-surface-variant:#49454F;
+    --md-sys-color-outline:#79747E; --md-sys-color-outline-variant:#CAC4D0;
+    --md-sys-color-inverse-surface:#322F35; --md-sys-color-inverse-on-surface:#F5EFF7;
+    color-scheme: light;
+  }
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-tap-highlight-color:transparent}
+body{
+  font-family:system-ui,-apple-system,'Segoe UI',Roboto,'Noto Sans SC',sans-serif;
+  background:var(--md-sys-color-surface-dim); color:var(--md-sys-color-on-surface);
+  font-size:14px; line-height:1.5; height:100dvh;
+  display:flex; position:fixed; inset:0;
+}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+/* ============ 兼容性提示条 ============ */
+.compat-bar{position:fixed;top:0;left:0;right:0;z-index:9999;padding:10px 16px;font-size:13px;
+  background:var(--md-sys-color-error-container);color:var(--md-sys-color-on-error-container);display:none}
+.compat-bar.show{display:block}
+
+/* ============ 桌面侧栏 ============ */
+.rail{display:none;width:264px;flex-shrink:0;flex-direction:column;gap:4px;padding:12px 8px;
+  background:var(--md-sys-color-surface-container);border-right:1px solid var(--md-sys-color-outline-variant);overflow-y:auto}
+.rail-brand{display:flex;align-items:center;gap:12px;padding:12px 16px 16px}
+.rail-brand .logo{width:40px;height:40px;border-radius:12px;background:var(--md-sys-color-primary-container);
+  color:var(--md-sys-color-on-primary-container);display:grid;place-items:center;font-size:20px;flex-shrink:0}
+.rail-brand .name{font-size:16px;font-weight:500}
+.rail-brand .ver{font-size:11px;color:var(--md-sys-color-on-surface-variant)}
+.rail md-list{display:flex;flex-direction:column;gap:2px}
+.rail md-list-item{border-radius:999px;cursor:pointer;min-height:56px;
+  --md-list-container-color:transparent;--md-list-item-leading-icon-color:var(--md-sys-color-on-surface-variant)}
+.rail md-list-item[active]{background:var(--md-sys-color-secondary-container);color:var(--md-sys-color-on-secondary-container)}
+.rail md-list-item[active] [slot=headline]{font-weight:600}
+.rail md-list-item [slot=start]{font-size:22px;width:24px;text-align:center}
+
+/* ============ 主区 ============ */
+.shell{flex:1;display:flex;flex-direction:column;min-width:0}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;
+  padding:10px 16px;background:var(--md-sys-color-surface);border-bottom:1px solid var(--md-sys-color-outline-variant);flex-shrink:0}
+.topbar h1{font-size:20px;font-weight:500;letter-spacing:.1px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.topbar .tools{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+/* 顶栏控件紧凑化: 选择器去浮标签缩高度、芯片图标不贴字、刷新按钮同高 */
+#topInst{--md-outlined-field-top-space:8px;--md-outlined-field-bottom-space:8px;
+  --md-sys-typescale-body-large-size:14px;--md-sys-typescale-body-large-line-height:20px;
+  width:118px;min-width:118px;max-width:118px}
+#modeChip{--md-assist-chip-icon-label-space:6px}
+#modeChip md-icon{--md-icon-size:18px}
+#refreshBtn{--md-outlined-icon-button-container-height:36px;--md-outlined-icon-button-icon-size:20px}
+.main{flex:1;display:flex;flex-direction:column;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  overscroll-behavior:contain;padding:20px;padding-bottom:calc(20px + env(safe-area-inset-bottom))}
+.page{flex:0 0 auto}
+/* 页面切换动画 */
+.page.anim-in{animation:pageIn .28s cubic-bezier(.2,0,0,1)}
+@keyframes pageIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@media(prefers-reduced-motion:reduce){.page.anim-in{animation:none}}
+@media(min-width:840px){ .rail{display:flex} .navbar{display:none!important} .main{padding:24px 28px} }
+@media(max-width:839px){ .main{padding:16px;padding-bottom:calc(96px + env(safe-area-inset-bottom))} }
+
+/* ============ 移动底部导航 ============ */
+.navbar{position:fixed;bottom:0;left:0;right:0;z-index:100;padding-bottom:env(safe-area-inset-bottom)}
+md-navigation-bar.navbar{background:var(--md-sys-color-surface-container);border-top:1px solid var(--md-sys-color-outline-variant)}
+
+/* ============ Material Web 未提供的结构件 ============ */
+/* 统计卡 */
+.stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px}
+.stat-box{background:var(--md-sys-color-surface-container);border-radius:var(--md-sys-shape-corner-large);
+  padding:16px;border:1px solid var(--md-sys-color-outline-variant);min-width:0}
+.stat-box .num{font-size:26px;font-weight:600;color:var(--md-sys-color-primary);min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
+.stat-box .lbl{font-size:12px;color:var(--md-sys-color-on-surface-variant);margin-top:2px}
+@media(max-width:600px){ .stat-row{grid-template-columns:repeat(2,1fr)} .stat-box .num{font-size:22px} }
+
+/* 表格: Material Web 无表格组件, 保留手写。定宽 + 截断, 机制上禁止横向拖动 */
+.tbl-wrap{border-radius:var(--md-sys-shape-corner-medium);border:1px solid var(--md-sys-color-outline-variant);overflow:hidden}
+table.tbl{width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px}
+.tbl th,.tbl td{padding:12px 16px;text-align:left;border-bottom:1px solid var(--md-sys-color-outline-variant);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tbl th{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;
+  color:var(--md-sys-color-on-surface-variant);background:var(--md-sys-color-surface-container-high)}
+.tbl tr:last-child td{border-bottom:none}
+.tbl .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px}
+.truncate{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row-acts{display:flex;gap:8px;flex-wrap:wrap}
+@media(max-width:600px){
+  .tbl th,.tbl td{padding:8px 10px}
+  .tbl{font-size:12px}
+  .tbl .mono{font-size:11px}
+  .row-acts{flex-direction:row;gap:6px;flex-wrap:nowrap;justify-content:flex-end}
+  /* 提供商表(6列)手机上收起 类型/代理/模型, 只留 名称/BaseURL/操作 */
+  #pv-table th:nth-child(2),#pv-table td:nth-child(2),
+  #pv-table th:nth-child(4),#pv-table td:nth-child(4),
+  #pv-table th:nth-child(5),#pv-table td:nth-child(5){display:none}
+  /* !important: th 上有内联宽度, 内联样式优先级高于普通 CSS, 不加会被忽略 */
+  #pv-table th:nth-child(1),#pv-table td:nth-child(1){width:44%!important}
+  #pv-table th:nth-child(3),#pv-table td:nth-child(3){width:26%!important}
+  #pv-table th:nth-child(6),#pv-table td:nth-child(6){width:30%!important}
+  /* 代理表: 收窄前三列, 给操作列留足空间 */
+  #px-table th:nth-child(1),#px-table td:nth-child(1){width:18%!important}
+  #px-table th:nth-child(2),#px-table td:nth-child(2){width:12%!important}
+  #px-table th:nth-child(3),#px-table td:nth-child(3){width:40%!important}
+  #px-table th:nth-child(4),#px-table td:nth-child(4){width:30%!important}
+  /* 表格内操作按钮紧凑化: 默认 min-width:64px 的按钮在窄列里放不下会被裁 */
+  .tbl .row-acts md-outlined-button,.tbl .row-acts md-text-button{
+    min-width:0!important;padding:0 8px!important;font-size:12px!important;
+    --md-outlined-button-container-height:32px;--md-text-button-container-height:32px;
+    --md-outlined-button-label-text-size:12px;--md-text-button-label-text-size:12px;
+    --md-outlined-button-icon-size:16px;--md-text-button-icon-size:16px;
+    --md-sys-typescale-label-large-size:12px;--md-sys-typescale-label-large-line-height:16px}
+  .tbl .row-acts{gap:4px}
+  #ov-ch-table th:nth-child(2),#ov-ch-table td:nth-child(2){display:none}
+}
+
+/* 日志 */
+.log-box{background:var(--md-sys-color-surface-container-lowest);border:1px solid var(--md-sys-color-outline-variant);
+  border-radius:var(--md-sys-shape-corner-large);padding:16px;font-family:ui-monospace,Menlo,Consolas,monospace;
+  font-size:12px;max-height:400px;overflow-y:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal;
+  color:var(--md-sys-color-on-surface-variant)}
+#page-logs{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+#page-logs md-filled-card{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+#page-logs .card-head{flex-shrink:0}
+#lg-box{flex:1 1 auto;min-height:0;max-height:none;border:none;background:transparent;padding:0 4px}
+
+/* 聊天 */
+#page-chat{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+#page-chat md-filled-card{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+#page-chat .card-head{flex-shrink:0}
+.chat-msgs{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;
+  display:flex;flex-direction:column;gap:14px;padding:16px 4px}
+.chat-msg{display:flex;gap:10px;align-items:flex-start;flex:0 0 auto}
+.chat-ava{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;font-size:15px;flex-shrink:0;
+  background:var(--md-sys-color-secondary-container);color:var(--md-sys-color-on-secondary-container)}
+.chat-msg.user .chat-ava{background:var(--md-sys-color-primary-container);color:var(--md-sys-color-on-primary-container)}
+.chat-body{flex:1 1 auto;min-width:0}
+.chat-meta{display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:11px;font-weight:500;
+  letter-spacing:.3px;color:var(--md-sys-color-on-surface-variant)}
+.chat-meta .who{color:var(--md-sys-color-on-surface)}
+.chat-copy{border:none;background:transparent;color:var(--md-sys-color-on-surface-variant);font-size:11px;
+  cursor:pointer;padding:2px 6px;border-radius:6px;line-height:1;opacity:.7;font-family:inherit}
+.chat-copy:hover{background:var(--md-sys-color-surface-container-highest);opacity:1}
+.chat-bubble{background:var(--md-sys-color-surface-container-high);border-radius:4px 14px 14px 14px;
+  padding:10px 14px;font-size:14px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere;
+  word-break:normal;color:var(--md-sys-color-on-surface)}
+.chat-msg.user .chat-bubble{background:var(--md-sys-color-primary-container);color:var(--md-sys-color-on-primary-container)}
+.chat-cursor::after{content:'▍';margin-left:1px;color:var(--md-sys-color-primary);animation:blink 1s step-end infinite}
+@keyframes blink{50%{opacity:0}}
+.chat-jump{position:absolute;left:50%;bottom:92px;transform:translateX(-50%);z-index:5}
+.chat-input-row{display:flex;align-items:flex-end;gap:8px;padding:12px 4px 0;flex-shrink:0}
+.chat-input-row md-outlined-text-field{flex:1 1 auto;min-width:0}
+@media(max-width:600px){ .chat-msgs{padding:12px 0} .chat-input-row{padding:10px 0 0} }
+
+/* 卡片内通用 */
+.card-head{display:flex;align-items:center;justify-content:space-between;gap:8px 12px;flex-wrap:wrap;margin-bottom:12px}
+.card-title{font-size:16px;font-weight:500}
+.card-sub{font-size:13px;color:var(--md-sys-color-on-surface-variant)}
+md-filled-card{background:var(--md-sys-color-surface-container);border-radius:var(--md-sys-shape-corner-large);
+  padding:16px;margin-bottom:16px;display:block}
+md-list{display:block}
+md-list-item{--md-list-container-color:transparent}
+.list-gap{display:flex;flex-direction:column;gap:8px}
+.empty{padding:40px 16px;text-align:center;color:var(--md-sys-color-on-surface-variant)}
+.tag{display:inline-block;font-size:10px;font-weight:600;padding:2px 8px;border-radius:4px;text-transform:uppercase;letter-spacing:.04em}
+.tag.openai{background:#10A37F;color:#fff}.tag.claude{background:#D97757;color:#fff}.tag.gemini{background:#4285F4;color:#fff}
+.tag.default{background:var(--md-sys-color-primary-container);color:var(--md-sys-color-on-primary-container)}
+.muted{color:var(--md-sys-color-on-surface-variant)}
+.small{font-size:12px}
+.grid-form{display:flex;gap:16px;flex-wrap:wrap}
+.grid-form > *{flex:1 1 180px;min-width:0}
+.hidden{display:none!important}
+
+/* Snackbar (Material Web v2 已移除 md-snackbar, 保留原生实现) */
+#snackbar{position:fixed;left:50%;bottom:96px;transform:translateX(-50%) translateY(20px);
+  background:var(--md-sys-color-inverse-surface);color:var(--md-sys-color-inverse-on-surface);
+  padding:14px 24px;border-radius:8px;font-size:14px;font-weight:500;box-shadow:0 4px 12px rgba(0,0,0,.4);
+  z-index:3000;opacity:0;transition:opacity .3s,transform .3s;max-width:90vw;pointer-events:none}
+#snackbar.show{opacity:1;transform:translateX(-50%) translateY(0)}
+#snackbar.err{background:var(--md-sys-color-error-container);color:var(--md-sys-color-on-error-container)}
+/* ============ Dialog 样式 ============ */
+/* ============ 对话框(纯 HTML/CSS, 不依赖 shadow DOM) ============ */
+.dlg-overlay{position:fixed;inset:0;z-index:5000;display:flex;align-items:center;justify-content:center;
+  background:rgba(0,0,0,.5);backdrop-filter:blur(2px);padding:16px}
+.dlg-overlay[hidden]{display:none}
+.dlg-box{background:var(--md-sys-color-surface-container-high);border-radius:28px;
+  width:min(420px,100%);max-height:min(80vh,600px);display:flex;flex-direction:column;
+  box-shadow:0 8px 32px rgba(0,0,0,.4);overflow:hidden}
+.dlg-head{display:flex;align-items:center;justify-content:space-between;padding:20px 24px 0;flex-shrink:0}
+.dlg-head h3{font-size:18px;font-weight:500;line-height:26px;margin:0;color:var(--md-sys-color-on-surface)}
+.dlg-x{background:none;border:none;color:var(--md-sys-color-on-surface-variant);font-size:18px;
+  width:32px;height:32px;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.dlg-x:hover{background:var(--md-sys-color-surface-container-highest)}
+.dlg-body{padding:16px 24px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:14px}
+.dlg-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 24px 20px;flex-shrink:0}
+/* 纯 HTML 按钮(对话框内用) */
+.pbtn{border:none;cursor:pointer;font-size:13px;font-weight:500;border-radius:20px;
+  height:34px;padding:0 20px;display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  transition:background .15s,box-shadow .15s;font-family:inherit}
+.pbtn-filled{background:var(--md-sys-color-primary);color:var(--md-sys-color-on-primary)}
+.pbtn-filled:hover{box-shadow:0 2px 8px rgba(0,0,0,.25)}
+.pbtn-text{background:transparent;color:var(--md-sys-color-primary)}
+.pbtn-text:hover{background:var(--md-sys-color-primary);opacity:.08}
+.pbtn[hidden]{display:none}
+/* 模型改名标签编辑器 */
+.mm-row{display:grid;grid-template-columns:1fr 1fr 48px;gap:8px;align-items:stretch}
+.mm-row md-outlined-text-field{width:100%;--md-outlined-field-top-space:12px;--md-outlined-field-bottom-space:12px;--md-sys-typescale-body-large-size:13px}
+.mm-add-btn{width:48px;border:none;border-radius:12px;cursor:pointer;background:var(--md-sys-color-primary);color:var(--md-sys-color-on-primary);display:flex;align-items:center;justify-content:center}
+.mm-add-btn .msym{font-size:22px}
+.mm-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
+.mm-chip{display:inline-flex;align-items:center;gap:5px;background:var(--md-sys-color-surface-container-highest);
+  border:1px solid var(--md-sys-color-outline-variant);border-radius:16px;padding:4px 5px 4px 10px;font-size:12px;
+  max-width:100%;touch-action:pan-y;transition:transform .18s cubic-bezier(.2,0,0,1),opacity .18s;user-select:none}
+.mm-chip .arrow{color:var(--md-sys-color-primary)}
+.mm-chip .nm{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mm-x{border:none;background:none;color:var(--md-sys-color-on-surface-variant);cursor:pointer;font-size:13px;
+  width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;padding:0;flex-shrink:0}
+.mm-x:hover{color:var(--md-sys-color-error);background:var(--md-sys-color-error-container)}
+
+/* ============ 组件尺寸与页面文字比例协调 ============
+   Material Web 按钮默认 40px 高 / 14px 字, 而本页表格与列表正文是 12~13px,
+   视觉上按钮明显偏大。这里统一到 MD3「小按钮」档(32px / 13px), 并让文字层级明确。 */
+/* 按钮尺寸: 不压缩高度(避免文字溢出), 只控字号+加水平内边距让文字有呼吸空间 */
+md-text-button,md-outlined-button,md-filled-button,md-filled-tonal-button{min-width:64px!important;
+  border-radius:16px!important;padding:0 16px!important;
+  --md-text-button-container-shape:16px;--md-outlined-button-container-shape:16px;
+  --md-filled-button-container-shape:16px;--md-filled-tonal-button-container-shape:16px;
+  font-size:14px!important;letter-spacing:.02em;
+  --md-sys-typescale-label-large-size:14px;
+  --md-text-button-container-height:36px;--md-text-button-label-text-size:14px;--md-text-button-label-text-line-height:20px;--md-text-button-icon-size:18px;
+  --md-outlined-button-container-height:36px;--md-outlined-button-label-text-size:14px;--md-outlined-button-label-text-line-height:20px;--md-outlined-button-icon-size:18px;
+  --md-filled-button-container-height:36px;--md-filled-button-label-text-size:14px;--md-filled-button-label-text-line-height:20px;--md-filled-button-icon-size:18px;
+  --md-filled-tonal-button-container-height:36px;--md-filled-tonal-button-label-text-size:14px;--md-filled-tonal-button-label-text-line-height:20px;--md-filled-tonal-button-icon-size:18px}
+md-text-button       {--md-text-button-container-height:36px;       --md-text-button-label-text-size:14px;       --md-text-button-label-text-line-height:20px;       --md-text-button-icon-size:18px}
+md-outlined-button   {--md-outlined-button-container-height:36px;   --md-outlined-button-label-text-size:14px;   --md-outlined-button-label-text-line-height:20px;   --md-outlined-button-icon-size:18px}
+md-filled-button     {--md-filled-button-container-height:36px;     --md-filled-button-label-text-size:14px;     --md-filled-button-label-text-line-height:20px;     --md-filled-button-icon-size:18px}
+md-filled-tonal-button{--md-filled-tonal-button-container-height:36px;--md-filled-tonal-button-label-text-size:14px;--md-filled-tonal-button-label-text-line-height:20px;--md-filled-tonal-button-icon-size:18px}
+md-assist-chip       {font-size:13px!important;
+  --md-assist-chip-container-height:32px;--md-assist-chip-label-text-size:13px;--md-assist-chip-label-text-line-height:18px;--md-assist-chip-icon-size:16px}
+md-list-item         {--md-list-item-label-text-size:14px;--md-list-item-label-text-line-height:20px;
+                      --md-list-item-supporting-text-size:12px;--md-list-item-supporting-text-line-height:16px;
+                      --md-list-item-trailing-supporting-text-size:12px;--md-list-item-trailing-supporting-text-line-height:16px;
+                      --md-list-item-one-line-container-height:56px;--md-list-item-two-line-container-height:64px}
+md-navigation-bar    {--md-navigation-bar-container-height:64px;--md-navigation-bar-icon-size:22px;
+                      --md-navigation-bar-label-text-size:12px;--md-navigation-bar-label-text-line-height:16px}
+/* emoji 图标: md-icon 默认按 Material Symbols 字体渲染(外链不可达), 改用系统字体并允许 emoji 着色 */
+/* Material Symbols Outlined: 本地字体(/admin/m3/vendor/), 零 CDN 依赖 */
+@font-face{
+  font-family:'Material Symbols Outlined';
+  font-style:normal;font-weight:400;
+  src:url('/admin/m3/vendor/material-symbols-outlined.woff2') format('woff2');
+  font-display:block}
+/* 非 md-icon 场景(logo/头像/tag 内小图标)通用词形图标类 */
+.msym{font-family:'Material Symbols Outlined';font-weight:normal;font-style:normal;
+  display:inline-block;line-height:1;letter-spacing:normal;text-transform:none;white-space:nowrap;
+  direction:ltr;font-feature-settings:'liga';-webkit-font-smoothing:antialiased;
+  font-variation-settings:'FILL' 0,'wght' 400,'GRAD' 0,'opsz' 24;user-select:none}
+.tag .msym{font-size:11px;vertical-align:-1px;margin-right:1px}
+.msym.ok{color:var(--md-sys-color-primary);font-variation-settings:'FILL' 1,'wght' 400,'GRAD' 0,'opsz' 24}
+.msym.err{color:var(--md-sys-color-error);font-variation-settings:'FILL' 1,'wght' 400,'GRAD' 0,'opsz' 24}
+md-icon{font-feature-settings:'liga';letter-spacing:normal;line-height:1;
+  font-variation-settings:'FILL' 0,'wght' 400,'GRAD' 0,'opsz' 24}
+md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wght' 400,'GRAD' 0,'opsz' 24}
+.rail md-list-item [slot=start]{font-size:20px;width:24px;text-align:center;flex-shrink:0}
+</style>
+</head>
+<body>
+
+<div class="compat-bar" id="compatBar" role="alert"></div>
+
+<!-- ============ 桌面侧栏 ============ -->
+<nav class="rail" id="rail" aria-label="主导航">
+  <div class="rail-brand">
+    <div class="logo" aria-hidden="true"><span class="msym">smart_toy</span></div>
+    <div><div class="name">AI Gateway</div><div class="ver">Material Web v2.11</div></div>
+  </div>
+  <md-list id="railList"></md-list>
+</nav>
+
+<!-- ============ 主区 ============ -->
+<div class="shell">
+  <header class="topbar">
+    <h1 id="pageTitle">总览</h1>
+    <div class="tools">
+      <md-assist-chip id="modeChip" label="Mock" aria-label="切换数据源"><md-icon slot="icon" id="modeChipIc">inventory_2</md-icon></md-assist-chip>
+      <md-outlined-select id="topInst" aria-label="当前实例"></md-outlined-select>
+      <md-outlined-icon-button id="refreshBtn" aria-label="刷新" title="刷新"><md-icon>refresh</md-icon></md-outlined-icon-button>
+      <md-outlined-icon-button id="keyBtn" aria-label="管理密码" title="管理密码"><md-icon>key</md-icon></md-outlined-icon-button>
+      <md-outlined-icon-button id="thBtn" aria-label="主题" title="主题"><md-icon>palette</md-icon></md-outlined-icon-button>
+    </div>
+  </header>
+
+  <main class="main" id="main">
+
+    <section id="page-overview" class="page">
+      <div class="stat-row" role="region" aria-label="统计概览">
+        <div class="stat-box"><div class="num" id="ov-instances">-</div><div class="lbl">实例数</div></div>
+        <div class="stat-box"><div class="num" id="ov-running">-</div><div class="lbl">运行中</div></div>
+        <div class="stat-box"><div class="num" id="ov-channels">-</div><div class="lbl">渠道总数</div></div>
+        <div class="stat-box"><div class="num" id="ov-requests">-</div><div class="lbl">总请求</div></div>
+        <div class="stat-box"><div class="num" id="ov-uptime">-</div><div class="lbl">运行时长</div></div>
+      </div>
+      <md-filled-card>
+        <div class="card-head"><div><div class="card-title">实例状态</div></div>
+          <md-text-button data-goto="ports">管理端口</md-text-button></div>
+        <div id="ov-inst-list"><md-linear-progress indeterminate></md-linear-progress></div>
+      </md-filled-card>
+      <md-filled-card>
+        <div class="card-head"><div><div class="card-title">渠道概览</div></div>
+          <md-text-button data-goto="providers">管理提供商</md-text-button></div>
+        <div id="ov-ch-list"><div class="empty">加载中…</div></div>
+      </md-filled-card>
+    </section>
+
+    <section id="page-providers" class="page hidden" hidden>
+      <md-filled-card>
+        <div class="card-head">
+          <div><div class="card-title">AI 提供商</div><div class="card-sub">管理渠道配置</div></div>
+          <md-filled-button id="pv-add"><md-icon slot="icon">add</md-icon>添加渠道</md-filled-button>
+        </div>
+        <div class="tbl-wrap"><table class="tbl" id="pv-table" aria-label="渠道列表">
+          <thead><tr><th style="width:15%">名称</th><th style="width:9%">类型</th><th style="width:26%">Base URL</th><th style="width:11%">代理</th><th style="width:17%">模型</th><th style="width:22%"></th></tr></thead>
+          <tbody></tbody></table></div>
+      </md-filled-card>
+      <md-filled-card>
+        <div class="card-head"><div><div class="card-title">代理服务器</div><div class="card-sub">渠道出站代理(SOCKS5 / HTTP)</div></div>
+          <md-filled-tonal-button id="px-add"><md-icon slot="icon">add</md-icon>添加代理</md-filled-tonal-button>
+        </div>
+        <div class="tbl-wrap"><table class="tbl" id="px-table" aria-label="代理列表">
+          <thead><tr><th style="width:20%">名称</th><th style="width:14%">类型</th><th style="width:42%">地址</th><th style="width:24%"></th></tr></thead>
+          <tbody></tbody></table></div>
+      </md-filled-card>
+    </section>
+
+    <section id="page-routing" class="page hidden" hidden>
+      <md-filled-card>
+        <div class="card-head"><div><div class="card-title">路由策略</div><div class="card-sub">模型映射与故障切换</div></div></div>
+        <div class="grid-form" style="margin-bottom:16px">
+          <md-outlined-text-field id="rt-maxRetry" label="最大重试" type="number" value="3" helper="失败后切换上限"></md-outlined-text-field>
+          <md-outlined-text-field id="rt-timeout" label="超时(秒)" type="number" value="60" helper="请求阈值"></md-outlined-text-field>
+          <md-outlined-text-field id="rt-cooldown" label="冷却(秒)" type="number" value="30" helper="渠道冷却期"></md-outlined-text-field>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;padding:10px 14px;border:1px solid var(--md-sys-color-outline-variant);border-radius:12px">
+          <md-switch id="rt-redact"></md-switch>
+          <div style="min-width:0">
+            <div style="font-size:14px">隐私过滤</div>
+            <div style="font-size:12px;color:var(--md-sys-color-on-surface-variant)">转发前把请求里的密钥/token(sk-…、Bearer、GitHub/AWS/Google 等格式)替换为 *** ; 重启实例生效</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;padding:10px 14px;border:1px solid var(--md-sys-color-outline-variant);border-radius:12px;flex-wrap:wrap">
+          <md-switch id="rt-modelSync"></md-switch>
+          <div style="min-width:0;flex:1">
+            <div style="font-size:14px">模型自动同步</div>
+            <div style="font-size:12px;color:var(--md-sys-color-on-surface-variant)">定期拉取上游模型列表, 合并进渠道(只增不减); 立即生效</div>
+          </div>
+          <md-outlined-text-field id="rt-syncInterval" label="间隔(小时)" type="number" style="width:100px" value="24"></md-outlined-text-field>
+          <md-filled-tonal-button id="rt-syncNow">立即同步</md-filled-tonal-button>
+        </div>
+        <div class="flex" style="display:flex;gap:8px;margin-bottom:16px">
+          <md-filled-button id="rt-save">保存策略</md-filled-button>
+          <md-text-button id="rt-reset">重置</md-text-button>
+        </div>
+        <div class="card-title" style="margin-bottom:8px">渠道与映射</div>
+        <div id="rt-channels" class="list-gap"><div class="empty">加载中…</div></div>
+      </md-filled-card>
+    </section>
+
+    <section id="page-replace" class="page hidden" hidden>
+      <md-filled-card>
+        <div class="card-head"><div><div class="card-title">发送替换</div><div class="card-sub">请求发给上游前, 对文本按正则规则替换 (跳过 model 字段与图片数据)</div></div></div>
+        <div class="mm-row">
+          <md-outlined-text-field id="rp-out-find" label="查找(正则)"></md-outlined-text-field>
+          <md-outlined-text-field id="rp-out-to" label="替换为(可用$1)"></md-outlined-text-field>
+          <button type="button" class="mm-add-btn" id="rp-out-add" aria-label="添加"><span class="msym">add</span></button>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;margin:6px 0 2px">
+          <md-checkbox id="rp-out-ci"></md-checkbox><span style="font-size:12px;color:var(--md-sys-color-on-surface-variant)">忽略大小写</span>
+          <span style="font-size:12px;color:var(--md-sys-color-on-surface-variant);margin-left:auto">改动即时保存, 重启实例生效</span>
+        </div>
+        <div class="mm-chips" id="rp-out-chips"></div>
+      </md-filled-card>
+      <md-filled-card>
+        <div class="card-head"><div><div class="card-title">接收替换</div><div class="card-sub">收到响应后, 对文本按正则规则替换 (流式按行/片段处理)</div></div></div>
+        <div class="mm-row">
+          <md-outlined-text-field id="rp-inc-find" label="查找(正则)"></md-outlined-text-field>
+          <md-outlined-text-field id="rp-inc-to" label="替换为(可用$1)"></md-outlined-text-field>
+          <button type="button" class="mm-add-btn" id="rp-inc-add" aria-label="添加"><span class="msym">add</span></button>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;margin:6px 0 2px">
+          <md-checkbox id="rp-inc-ci"></md-checkbox><span style="font-size:12px;color:var(--md-sys-color-on-surface-variant)">忽略大小写</span>
+        </div>
+        <div class="mm-chips" id="rp-inc-chips"></div>
+      </md-filled-card>
+      <md-filled-card>
+        <div class="card-head"><div><div class="card-title">测试</div><div class="card-sub">在本地试跑当前规则, 看转换效果</div></div></div>
+        <md-outlined-text-field id="rp-test-in" label="输入文本" type="textarea" rows="2"></md-outlined-text-field>
+        <div style="display:flex;gap:8px;margin:10px 0">
+          <md-filled-tonal-button id="rp-test-out-btn">按发送规则替换</md-filled-tonal-button>
+          <md-filled-tonal-button id="rp-test-inc-btn">按接收规则替换</md-filled-tonal-button>
+        </div>
+        <div class="mono" id="rp-test-result" style="white-space:pre-wrap;word-break:break-all;font-size:13px;min-height:38px;padding:8px;border:1px solid var(--md-sys-color-outline-variant);border-radius:8px">（结果）</div>
+      </md-filled-card>
+    </section>
+    <section id="page-keys" class="page hidden" hidden>
+      <md-filled-card>
+        <div class="card-head"><div><div class="card-title">API 密钥</div><div class="card-sub">网关密码与渠道密钥</div></div></div>
+        <div class="grid-form" style="margin-bottom:16px">
+          <md-outlined-text-field id="ky-gatewayKey" label="网关密码 gatewayKey" type="password" helper="留空=不校验"></md-outlined-text-field>
+          <md-outlined-text-field id="ky-adminKey" label="管理密码 adminKey" type="password" helper="留空=免密管理(不设密码)"></md-outlined-text-field>
+        </div>
+        <div id="ky-channels" class="list-gap" style="margin-bottom:16px"></div>
+        <md-filled-button id="ky-save">保存密钥</md-filled-button>
+      </md-filled-card>
+    </section>
+
+    <section id="page-ports" class="page hidden" hidden>
+      <md-filled-card>
+        <div class="card-head">
+          <div><div class="card-title">服务端口</div><div class="card-sub">多实例管理</div></div>
+          <md-filled-button id="pt-new"><md-icon slot="icon">add</md-icon>新建实例</md-filled-button>
+        </div>
+        <div id="pt-list" class="list-gap"><md-linear-progress indeterminate></md-linear-progress></div>
+      </md-filled-card>
+    </section>
+
+    <section id="page-stats" class="page hidden" hidden>
+      <div class="stat-row">
+        <div class="stat-box"><div class="num" id="st-requests">-</div><div class="lbl">请求数</div></div>
+        <div class="stat-box"><div class="num" id="st-errors">-</div><div class="lbl">错误数</div></div>
+        <div class="stat-box"><div class="num" id="st-uptime">-</div><div class="lbl">运行时长</div></div>
+        <div class="stat-box"><div class="num" id="st-rps">-</div><div class="lbl">平均 RPS</div></div>
+      </div>
+      <md-filled-card>
+        <div class="card-head"><div class="card-title">渠道统计</div></div>
+        <div class="tbl-wrap"><table class="tbl" id="st-table" aria-label="渠道统计">
+          <thead><tr><th style="width:40%">渠道</th><th style="width:20%">请求数</th><th style="width:20%">入Token</th><th style="width:20%">出Token</th></tr></thead>
+          <tbody></tbody></table></div>
+      </md-filled-card>
+    </section>
+
+    <section id="page-requests" class="page hidden" hidden>
+      <md-filled-card>
+        <div class="card-head"><div class="card-title">请求记录</div>
+          <md-text-button id="rq-refresh">刷新</md-text-button></div>
+        <div class="tbl-wrap"><table class="tbl" id="rq-table" aria-label="请求记录">
+          <thead><tr><th style="width:22%">时间</th><th style="width:26%">模型</th><th style="width:26%">渠道</th><th style="width:12%">状态</th><th style="width:14%">耗时</th></tr></thead>
+          <tbody></tbody></table></div>
+      </md-filled-card>
+    </section>
+
+    <section id="page-logs" class="page hidden" hidden>
+      <md-filled-card>
+        <div class="card-head">
+          <div class="card-title">服务日志</div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <md-outlined-text-field id="lg-lines" label="行数" type="number" value="100" style="width:96px"></md-outlined-text-field>
+            <md-filled-tonal-button id="lg-refresh">刷新</md-filled-tonal-button>
+          </div>
+        </div>
+        <div class="log-box" id="lg-box" role="log" aria-live="polite" aria-label="日志内容">选择实例后加载日志…</div>
+      </md-filled-card>
+    </section>
+
+    <section id="page-chat" class="page hidden" hidden>
+      <md-filled-card style="position:relative">
+        <div class="card-head">
+          <div><div class="card-title">聊天测试</div><div class="card-sub">直接向网关发请求, 测试渠道是否通</div></div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:1;min-width:0">
+            <md-outlined-select id="ch-model" label="模型" aria-label="模型" style="flex:1 1 150px;min-width:0;max-width:200px"></md-outlined-select>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+              <md-switch id="ch-stream" selected aria-label="流式输出"></md-switch>流式</label>
+            <md-text-button id="ch-clear">清空</md-text-button>
+          </div>
+        </div>
+        <div class="chat-msgs" id="ch-messages" role="log" aria-live="polite" aria-label="聊天消息记录"></div>
+        <md-assist-chip id="ch-jump" label="回到底部" class="chat-jump hidden"><md-icon slot="icon">arrow_downward</md-icon></md-assist-chip>
+        <div class="chat-input-row">
+          <md-outlined-text-field id="ch-input" label="消息" placeholder="Enter 发送 / Shift+Enter 换行"></md-outlined-text-field>
+          <md-filled-button id="ch-send">发送</md-filled-button>
+        </div>
+      </md-filled-card>
+    </section>
+
+  </main>
+</div>
+
+<!-- ============ 移动底部导航 ============ -->
+<md-navigation-bar class="navbar" id="navbar" label="主导航"></md-navigation-bar>
+
+<!-- ============ 共享对话框(纯 HTML/CSS, 不依赖 shadow DOM) ============ -->
+<div id="dlgOverlay" class="dlg-overlay" hidden>
+  <div class="dlg-box" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
+    <div class="dlg-head"><h3 id="dlgTitle">标题</h3><button class="dlg-x" id="dlgX" aria-label="关闭">✕</button></div>
+    <div class="dlg-body" id="dlgBody"></div>
+    <div class="dlg-foot">
+      <button class="pbtn pbtn-text" id="dlgFetch" hidden style="margin-right:auto">获取模型列表</button>
+      <button class="pbtn pbtn-text" id="dlgCancel">取消</button>
+      <button class="pbtn pbtn-filled" id="dlgOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<div id="snackbar" role="status" aria-live="polite"></div>
+
+<script type="module">
+// ============ Material Web 组件库(本地 vendor, 零外部依赖) ============
+// 说明: 该 bundle 已把 lit 完全内联, 无裸模块引用, 故浏览器可直接加载。
+const MW_OK = await import('/admin/m3/vendor/mw-v2.js').then(()=>true).catch(e=>{
+  console.error('[MW] 组件库加载失败:', e); return false;
+});
+
+// ============ 能力探测: Form Association / dialog 是 Material Web 表单组件的硬依赖 ============
+(function detectCompat(){
+  const miss=[];
+  if(!('attachInternals' in HTMLElement.prototype)) miss.push('Element Internals');
+  else if(typeof ElementInternals!=='undefined' && !('setFormValue' in ElementInternals.prototype)) miss.push('Form Association');
+  if(!('showModal' in HTMLDialogElement.prototype)) miss.push('<dialog>');
+  if(!customElements.get('md-filled-button')) miss.push('组件库未加载');
+  if(miss.length){
+    const b=document.getElementById('compatBar');
+    b.textContent='⚠ 当前浏览器缺少 '+miss.join(' / ')+'，按钮/选择框/输入框可能失效。请用 Chrome 90+ / Edge 90+ / Safari 16.4+ / Firefox 143+ 打开。';
+    b.classList.add('show');
+  }
+})();
+
+// ============ 工具 ============
+const $  = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const escAttr = s => esc(s).replace(/\s/g,' ');
+const fmtNum = n => n?.toLocaleString?.() ?? '-';
+const fmtDur = s => { if(!s||s<0)return '-'; const h=Math.floor(s/3600),m=Math.floor(s%3600/60); return h?`${h}h${m}m`:`${m}m`; };
+// 略写 Base URL: 剥协议头与尾部 /v1, 同宽度多装约 40% 有效信息; 完整值挂 title
+const fmtHost = u => String(u||'-')
+  .replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
+  .replace(/\/+$/, '')
+  .replace(/\/v1\d*$/i, '');
+
+function snack(msg, isErr=false){
+  const el=$('#snackbar'); el.textContent=msg;
+  el.classList.toggle('err', !!isErr); el.classList.add('show');
+  clearTimeout(el._t);
+  el._t=setTimeout(()=>el.classList.remove('show'), isErr?4000:2000);
+}
+
+// ============ 数据适配层(与后端契约与手写版完全一致) ============
+class BaseAdapter{
+  async _fetch(url, opts={}, signal){
+    if(!Store.online) throw new Error('网络已断开');
+    let res;
+    try{ res = await fetch(url, {...opts, signal}); }
+    catch(e){ if(e.name==='AbortError') throw e;
+      throw new Error('无法连接到 ' + url.split('/admin/api/')[0] + ' (实例可能未运行或正在重启中)'); }
+    if(res.status===401) openKeyDialog(); // 密码缺失/错误: 弹出输入框
+    if(!res.ok) throw new Error(await res.text() || `HTTP ${res.status}`);
+    const ct = res.headers.get('content-type')||'';
+    return ct.includes('json') ? res.json() : res.text();
+  }
+}
+class MockAdapter extends BaseAdapter{
+  constructor(){ super();
+    this._insts=[
+      {name:'default',port:16384,running:true,tlsOn:false,chCount:3},
+      {name:'free-deepseek',port:16388,running:true,tlsOn:true,chCount:5},
+      {name:'nvidia',port:16386,running:false,tlsOn:false,chCount:1},
+    ];
+    this._chs={ default:[
+        {name:'deepseek-official',type:'openai',baseUrl:'https://api.deepseek.com/v1',proxy:'-',models:['deepseek-chat','deepseek-reasoner'],default:true,apiKey:'sk-mock-xxxx',hasKey:true},
+        {name:'local-minicpm',type:'openai',baseUrl:'http://127.0.0.1:8080/v1',proxy:'-',models:['minicpm5-1b'],apiKey:'',hasKey:false},
+      ], 'free-deepseek':[
+        {name:'pool-a',type:'openai',baseUrl:'https://api.example-provider-a.com/v1',proxy:'clash',models:['deepseek-chat'],default:true,hasKey:true},
+        {name:'pool-b',type:'claude',baseUrl:'https://api.anthropic.com/v1',proxy:'clash',models:['claude-sonnet-4-5'],hasKey:true},
+        {name:'pool-c',type:'gemini',baseUrl:'https://generativelanguage.googleapis.com/v1beta',proxy:'-',models:['gemini-2.5-pro'],hasKey:true},
+      ], nvidia:[
+        {name:'nvidia-k3-a',type:'openai',baseUrl:'https://integrate.api.nvidia.com',proxy:'-',models:['kimi-k3'],hasKey:true},
+      ]};
+    this._stats={ default:{requests:1287,errors:14,uptime:3600*5.2,byChannel:{'deepseek-official':{requests:1102,inputTokens:845210,outputTokens:233100},'local-minicpm':{requests:185,inputTokens:42100,outputTokens:18900}}},
+      'free-deepseek':{requests:4412,errors:88,uptime:3600*11.4,byChannel:{'pool-a':{requests:2001,inputTokens:1234567,outputTokens:345678},'pool-b':{requests:1400,inputTokens:998877,outputTokens:221100},'pool-c':{requests:1011,inputTokens:554433,outputTokens:120011}}},
+      nvidia:{requests:0,errors:0,uptime:0,byChannel:{}} };
+    this._pxs={};
+  }
+  async getInstances(){ return {instances:this._insts.map(i=>({...i})), current:'default'}; }
+  async getConfig(name){ return {name, port:this._insts.find(i=>i.name===name)?.port||16384,
+    gatewayKey:'', adminKey:'(已设)', channels:(this._chs[name]||[]).map(c=>({...c})),
+    proxies:this._pxs[name]||{},
+    routing:{maxRetry:3,timeoutSec:60,cooldownSec:30}}; }
+  async saveConfig(name,patch){ if(patch&&patch.proxies) this._pxs[name]=patch.proxies; return {ok:true,patch}; }
+  async createInstance(name,body){ this._insts.push({name,port:body.port,running:false,chCount:0,tlsOn:!!(body.tls&&body.tls.enable)}); return {ok:true}; }
+  async saveChannel(inst,ch){ const a=this._chs[inst]||(this._chs[inst]=[]);
+    const i=a.findIndex(c=>c.name===ch.name); if(i>=0)a[i]=ch; else a.push(ch); return {ok:true}; }
+  async deleteChannel(inst,chName){ this._chs[inst]=(this._chs[inst]||[]).filter(c=>c.name!==chName); return {ok:true}; }
+  async deleteInstance(name){ this._insts=this._insts.filter(x=>x.name!==name); return {ok:true}; }
+  async fetchModels(inst,body){ return {models:['mock-model-alpha','mock-model-beta','mock-model-gamma']}; }
+  async syncModels(inst){ return {ok:true,instance:inst,channels:0,added:0,fails:0}; }
+  async getStats(name){ return this._stats[name]||{requests:0,errors:0,uptime:0,byChannel:{}}; }
+  async getLogs(name,lines){ return Array.from({length:Math.min(lines||50,50)},(_,i)=>
+    `[0${i%9}:${10+i}:22] ai-gateway v1.0.0 就绪 (配置: .../config.${name}.json)`).join('\n'); }
+  async getRequests(name){ return [
+    {time:'09:41:22',model:'deepseek-chat',channel:'pool-a',status:200,duration:1840},
+    {time:'09:41:19',model:'kimi-k3',channel:'nvidia-k3-a',status:429,duration:310},
+    {time:'09:40:58',model:'claude-sonnet-4-5',channel:'pool-b',status:200,duration:7190}]; }
+  async action(name,a){ const i=this._insts.find(x=>x.name===name); if(i&&a==='start')i.running=true; if(i&&a==='stop')i.running=false; return {ok:true}; }
+  async shutdownAll(){ return {ok:true}; }
+  async chat(body){ return { json:()=>Promise.resolve({choices:[{message:{content:'(Mock 回复) 收到: '+body.messages.at(-1).content}}]}) }; }
+}
+class HttpAdapter extends BaseAdapter{
+  constructor(base){ super(); this.base=(base||localStorage.getItem('agw-base')||location.origin).replace(/\/$/,''); }
+  _hdr(){ const h={'Content-Type':'application/json'}; const k=localStorage.getItem('agw-admin-key'); if(k)h['x-admin-key']=k; return h; }
+  async getInstances(signal){ return this._fetch(`${this.base}/admin/api/instances`,{headers:this._hdr()},signal); }
+  async getConfig(name,signal){ return this._fetch(`${this.base}/admin/api/config/${encodeURIComponent(name)}?reveal=1`,{headers:this._hdr()},signal); }
+  async saveConfig(name,patch,signal){ return this._fetch(`${this.base}/admin/api/config/${encodeURIComponent(name)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(patch)},signal); }
+  async createInstance(name,body,signal){ return this._fetch(`${this.base}/admin/api/instance-create/${encodeURIComponent(name)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(body)},signal); }
+  async saveChannel(inst,ch,signal){ return this._fetch(`${this.base}/admin/api/channel/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(ch)},signal); }
+  async deleteChannel(inst,chName,signal){ return this._fetch(`${this.base}/admin/api/channel/${encodeURIComponent(inst)}/${encodeURIComponent(chName)}`,{method:'DELETE',headers:this._hdr()},signal); }
+  async deleteInstance(name,signal){ return this._fetch(`${this.base}/admin/api/instance/${encodeURIComponent(name)}`,{method:'DELETE',headers:this._hdr()},signal); }
+  async fetchModels(inst,body,signal){ return this._fetch(`${this.base}/admin/api/channel-models/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(body)},signal); }
+  async syncModels(inst,signal){ return this._fetch(`${this.base}/admin/api/sync-models`,{method:'POST',headers:this._hdr()},signal); }
+  async getStats(name,signal){ return this._fetch(`${this.base}/admin/api/stats?instance=${encodeURIComponent(name)}`,{headers:this._hdr()},signal); }
+  async getLogs(name,lines,signal){ const r=await fetch(`${this.base}/admin/api/logs/${encodeURIComponent(name)}?lines=${lines}`,{headers:this._hdr(),signal}); if(!r.ok) throw new Error(await r.text().catch(()=>'')); return r.text(); }
+  async getRequests(name,signal){ return this._fetch(`${this.base}/admin/api/requests/${encodeURIComponent(name)}`,{headers:this._hdr()},signal); }
+  async action(name,cmd,signal){ return this._fetch(`${this.base}/admin/api/action/${encodeURIComponent(name)}/${cmd}`,{method:'POST',headers:this._hdr()},signal); }
+  async shutdownAll(signal){ return this._fetch(`${this.base}/admin/api/shutdown-all`,{method:'POST',headers:this._hdr()},signal); }
+  async chat(body,signal){ const r=await fetch(`${this.base}/admin/api/chat`,{method:'POST',headers:{...this._hdr(),'Content-Type':'application/json'},body:JSON.stringify(body),signal});
+    if(!r.ok) throw new Error(await r.text().catch(()=>'聊天请求失败')); return r; }
+}
+
+// ============ 状态 ============
+const VIEWS = [
+  // icon 用 Material Symbols 词形(本地字体 ligature, 见 @font-face)
+  {id:'overview', label:'总览',   icon:'home'},
+  {id:'providers',label:'提供商', icon:'business'},
+  {id:'routing',  label:'路由',   icon:'sync'},
+  {id:'keys',     label:'密钥',   icon:'key'},
+  {id:'ports',    label:'端口',   icon:'power'},
+  {id:'replace',  label:'替换',   icon:'find_replace'},
+  {id:'stats',    label:'统计',   icon:'bar_chart'},
+  {id:'requests', label:'请求',   icon:'monitoring'},
+  {id:'logs',     label:'日志',   icon:'description'},
+  {id:'chat',     label:'聊天',   icon:'chat'},
+];
+const TITLES = {overview:'总览',providers:'AI 提供商',routing:'路由与重试',keys:'API 密钥',ports:'服务端口',replace:'文本替换',stats:'统计信息',requests:'请求记录',logs:'日志',chat:'聊天测试'};
+
+const Store = {
+  page:'overview', instances:[], configs:new Map(), aborts:new Map(), timer:null,
+  online:navigator.onLine, currentName:'', adapter:'mock',
+  inst:'default',
+  chat:{ messages:[], inst:'', streaming:false },
+  abort(key){ const c=this.aborts.get(key); if(c){ try{c.abort();}catch(e){} }
+    const n=new AbortController(); this.aborts.set(key,n); return n.signal; },
+  clearRefresh(){ if(this.timer){ clearInterval(this.timer); this.timer=null; } },
+  startRefresh(fn,ms){ this.clearRefresh(); this.timer=setInterval(fn,ms); },
+};
+let adapter = new MockAdapter();
+
+// ============ 导航 ============
+function buildNav(){
+  $('#railList').innerHTML = VIEWS.map(v=>
+    `<md-list-item data-page="${v.id}" tabindex="0" role="button" ${v.id===Store.page?'active':''}>
+       <span slot="start" class="msym" aria-hidden="true">${v.icon}</span>
+       <span slot="headline">${v.label}</span>
+     </md-list-item>`).join('');
+  // md-navigation-tab 的插槽名是 inactive-icon / active-icon (没有 icon 插槽),
+  // 写 slot="icon" 会被直接丢弃 → 底栏图标不显示。两个插槽都要给。
+  $('#navbar').innerHTML = VIEWS.slice(0,6).map(v=>
+    `<md-navigation-tab data-page="${v.id}" label="${v.label}" ${v.id===Store.page?'active':''}>
+       <md-icon slot="inactive-icon" aria-hidden="true">${v.icon}</md-icon>
+       <md-icon slot="active-icon" aria-hidden="true">${v.icon}</md-icon>
+     </md-navigation-tab>`).join('');
+}
+function syncNav(){
+  $$('#railList md-list-item').forEach(el=>el.toggleAttribute('active', el.dataset.page===Store.page));
+  const tabs=$$('#navbar md-navigation-tab');
+  const idx=tabs.findIndex(t=>t.dataset.page===Store.page);
+  const bar=$('#navbar');
+  if(idx>=0 && bar.activeIndex!==idx) bar.activeIndex=idx;
+  tabs.forEach(t=>t.toggleAttribute('active', t.dataset.page===Store.page));
+}
+async function go(page){
+  if(!VIEWS.some(v=>v.id===page)) return;
+  Store.page=page;
+  $$('.page').forEach(p=>{ const on=p.id===`page-${page}`; p.classList.toggle('hidden',!on); p.hidden=!on;
+    if(on){ p.classList.remove('anim-in'); void p.offsetWidth; p.classList.add('anim-in'); } });
+  $('#pageTitle').textContent = TITLES[page]||page;
+  syncNav();
+  Store.clearRefresh();
+  if(page==='overview'||page==='stats') Store.startRefresh(()=>{ if(Store.page==='overview')renderOverview(); if(Store.page==='stats')renderStats(); },5000);
+  const R={overview:renderOverview,providers:renderProviders,routing:renderRouting,keys:renderKeys,
+    ports:renderPorts,replace:renderReplace,stats:renderStats,requests:renderRequests,logs:renderLogs,chat:renderChat};
+  await R[page]?.();
+}
+
+// ============ 渲染: 文本替换 ============
+let rpLists={out:[],inc:[]};
+function rpCompileCli(rules){
+  const out=[];
+  for(const r of (rules||[])){ if(!r||!r.re) continue; try{ out.push({re:new RegExp(r.re,(r.ci?'i':'')+'g'),to:String(r.to==null?'':r.to)}); }catch(_){}}
+  return out;
+}
+function rpApplyCli(s,rules){ for(const r of rules) s=s.replace(r.re,r.to); return s; }
+function rpRenderChips(dir){
+  const box=$('#rp-'+dir+'-chips'); if(!box) return;
+  const list=rpLists[dir];
+  box.innerHTML=list.length?list.map((r,i)=>
+    '<span class="mm-chip" data-i="'+i+'"><span class="nm">'+esc(r.re)+'</span><span class="arrow">→</span><span class="nm">'+esc(r.to||'(删除匹配)')+'</span>'
+    +(r.ci?'<span class="tag default" style="margin-left:2px">Aa</span>':'')
+    +'<button class="mm-x" data-i="'+i+'" aria-label="删除">✕</button></span>').join('')
+    :'<span style="font-size:12px;color:var(--md-sys-color-on-surface-variant)">暂无规则 — 填上方两框后点 + 添加 (点 ✕ 删除)</span>';
+}
+async function rpSave(){
+  try{
+    await adapter.saveConfig(Store.inst,{replace:{out:rpLists.out,inc:rpLists.inc}});
+    snack('已保存 (重启实例后生效)');
+  }catch(e){ snack(e.message,true); }
+}
+function rpAdd(dir){
+  const f=$('#rp-'+dir+'-find'), t=$('#rp-'+dir+'-to'), ci=$('#rp-'+dir+'-ci');
+  const re=(f.value||'').trim(), to=(t.value==null?'':t.value);
+  if(!re){ snack('先填查找(正则)',true); return; }
+  try{ new RegExp(re, ci&&ci.selected?'i':''); }catch(e){ snack('正则无效: '+e.message,true); return; }
+  if(rpLists[dir].some(x=>x.re===re&&x.to===to&&!!x.ci===!!(ci&&ci.selected))){ snack('规则已存在',true); return; }
+  rpLists[dir].push({re,to,ci:!!(ci&&ci.selected)});
+  f.value=''; if(t) t.value='';
+  rpRenderChips(dir); rpSave(dir);
+}
+function rpDel(dir,i){ rpLists[dir].splice(i,1); rpRenderChips(dir); rpSave(dir); }
+function rpBindSwipe(dir){
+  const box=$('#rp-'+dir+'-chips'); let sx=0,sy=0,chip=null,idx=-1,dx=0;
+  box.addEventListener('touchstart',e=>{
+    const t=e.target.closest('.mm-chip'); if(!t) return;
+    chip=t; idx=+t.dataset.i; sx=e.touches[0].clientX; sy=e.touches[0].clientY; dx=0;
+    t.style.transition='none';
+  },{passive:true});
+  box.addEventListener('touchmove',e=>{
+    if(!chip) return;
+    dx=e.touches[0].clientX-sx;
+    const dy=e.touches[0].clientY-sy;
+    if(Math.abs(dx)>6&&Math.abs(dx)>Math.abs(dy)) chip.style.transform='translateX('+Math.max(-140,Math.min(140,dx))+'px)';
+  },{passive:true});
+  box.addEventListener('touchend',()=>{
+    if(!chip) return;
+    if(Math.abs(dx)>64){ chip.style.transition='transform .18s,opacity .18s'; chip.style.transform='translateX('+(dx>0?160:-160)+'px)'; chip.style.opacity='0'; const i=idx; setTimeout(()=>rpDel(dir,i),180); }
+    else { chip.style.transition='transform .18s'; chip.style.transform=''; }
+    chip=null; idx=-1; dx=0;
+  });
+}
+async function renderReplace(){
+  const signal=Store.abort('replace');
+  const cur = await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
+  try{
+    const cfg=await adapter.getConfig(cur,signal);
+    const rp=cfg.replace||{};
+    rpLists.out=Array.isArray(rp.out)?rp.out.map(r=>({re:String(r.re||''),to:String(r.to==null?'':r.to),ci:!!r.ci})):[];
+    rpLists.inc=Array.isArray(rp.inc)?rp.inc.map(r=>({re:String(r.re||''),to:String(r.to==null?'':r.to),ci:!!r.ci})):[];
+    rpRenderChips('out'); rpRenderChips('inc');
+  }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
+}
+
+// ============ 实例下拉(md-select 必须先挂选项再赋值, 否则 value 不生效) ============
+async function fillInstSelect(sel, current, signal){
+  if(!sel) return;
+  try{
+    const {instances}=await adapter.getInstances(signal);
+    Store.instances=instances;
+    if(!current || !instances.some(i=>i.name===current)) current = instances[0]?.name || '';
+    sel.innerHTML = instances.map(i=>`<md-select-option value="${escAttr(i.name)}" ${i.name===current?'selected':''}>${esc(i.name)}</md-select-option>`).join('');
+    await sel.updateComplete;
+    await Promise.all([...sel.querySelectorAll('md-select-option')].map(o=>o.updateComplete||Promise.resolve()));
+    sel.value = current;
+    await sel.updateComplete;
+    return current;
+  }catch(e){ if(e.name!=='AbortError') console.error(e); }
+  return current;
+}
+async function fillChatModels(sel, inst){
+  try{
+    const cfg=await adapter.getConfig(inst);
+    Store.configs.set(inst,cfg);
+    const models=new Set();
+    for(const ch of cfg.channels||[]){
+      (ch.models||[]).forEach(m=>models.add(m));
+      if(ch.modelMap) Object.keys(ch.modelMap).forEach(m=>models.add(m));
+    }
+    const arr=[...models];
+    sel.innerHTML = arr.length? arr.map((m,i)=>`<md-select-option value="${escAttr(m)}" ${i===0?'selected':''}>${esc(m)}</md-select-option>`).join('')
+                              : '<md-select-option value="">(无模型)</md-select-option>';
+    await sel.updateComplete;
+    await Promise.all([...sel.querySelectorAll('md-select-option')].map(o=>o.updateComplete||Promise.resolve()));
+    if(arr.length) sel.value=arr[0];
+  }catch(e){ sel.innerHTML='<md-select-option value="">(加载失败)</md-select-option>'; }
+}
+
+// ============ 列表项构造器: md-list-item 只支持 slot 写法(属性 headline 在 v2.5 不存在) ============
+function listItem({icon='', headline='', sub='', over='', endHtml='', active=false, data=''}){
+  return `<md-list-item ${data} tabindex="0" role="button">
+    ${icon?`<span slot="start" aria-hidden="true">${icon}</span>`:''}
+    ${over?`<span slot="overline">${over}</span>`:''}
+    <span slot="headline" title="${escAttr(headline)}">${headline}</span>
+    ${sub?`<span slot="supporting-text" title="${escAttr(sub.replace(/<[^>]+>/g,''))}">${sub}</span>`:''}
+    ${endHtml?`<span slot="end">${endHtml}</span>`:''}
+  </md-list-item>`;
+}
+
+// ============ 渲染: 总览 ============
+async function renderOverview(){
+  const signal=Store.abort('overview');
+  try{
+    const {instances,current}=await adapter.getInstances(signal);
+    Store.instances=instances; if(current) Store.currentName=current;
+    $('#ov-instances').textContent=instances.length;
+    $('#ov-running').textContent=instances.filter(i=>i.running).length;
+    $('#ov-channels').textContent=instances.reduce((a,i)=>a+(i.chCount||0),0);
+    let totalReq=0,maxUp=0;
+    for(const inst of instances){
+      const s=await adapter.getStats(inst.name,signal).catch(()=>({}));
+      totalReq+=s.requests||0; if(s.uptime>maxUp)maxUp=s.uptime;
+    }
+    $('#ov-requests').textContent=fmtNum(totalReq);
+    $('#ov-uptime').textContent=fmtDur(maxUp);
+    $('#ov-inst-list').innerHTML='<md-list>'+instances.map(i=>listItem({
+      icon:`<span class="msym ${i.running?'ok':'err'}">circle</span>`,
+      headline:esc(i.name)+(i.tlsOn?' <span class="tag default">TLS</span>':''),
+      sub:`端口 ${i.port} · ${i.chCount} 渠道 · ${i.running?'运行中':'已停止'}`,
+      endHtml:'<span class="muted">›</span>',
+      data:`data-goto="ports"`,
+    })).join('')+'</md-list>';
+    const chRows=[];
+    for(const inst of instances){
+      try{ const cfg=await adapter.getConfig(inst.name,signal);
+        for(const ch of (cfg.channels||[]).slice(0,3))
+          chRows.push(`<tr><td class="mono truncate" title="${escAttr(ch.name)}">${esc(ch.name)}</td><td><span class="tag ${esc(ch.type)}">${esc(ch.type)}</span></td><td class="mono truncate" title="${escAttr(ch.baseUrl)}">${esc(fmtHost(ch.baseUrl))}</td><td class="truncate" title="${escAttr(inst.name)}">${esc(inst.name)}</td></tr>`);
+      }catch(_){}
+    }
+    $('#ov-ch-list').innerHTML = chRows.length
+      ? `<div class="tbl-wrap"><table class="tbl" id="ov-ch-table" aria-label="渠道概览"><thead><tr><th style="width:24%">名称</th><th style="width:14%">类型</th><th style="width:46%">地址</th><th style="width:16%">实例</th></tr></thead><tbody>${chRows.join('')}</tbody></table></div>`
+      : '<div class="empty">无渠道</div>';
+  }catch(e){ if(e.name!=='AbortError'){ console.error(e); snack(e.message,true); } }
+}
+
+// ============ 渲染: 提供商 ============
+async function renderProviders(){
+  const signal=Store.abort('providers');
+  const cur = await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
+  try{
+    const cfg=await adapter.getConfig(cur,signal); Store.configs.set(cur,cfg);
+    const tb=$('#pv-table tbody');
+    tb.innerHTML=(cfg.channels||[]).map(ch=>{
+      const mm=(ch.modelMap?Object.entries(ch.modelMap).filter(([k,v])=>k!==v):[]);
+      const cell=[(ch.models||[]).join(', ')].concat(mm.length?['改名: '+mm.map(([k,v])=>k+'→'+v).join(', ')]:[]).filter(Boolean).join(' ｜ ');
+      return `<tr>
+      <td class="mono truncate" title="${escAttr(ch.name)}">${esc(ch.name)}${ch.default?' <span class="tag default">default</span>':''}</td>
+      <td><span class="tag ${esc(ch.type)}">${esc(ch.type)}</span></td>
+      <td class="mono truncate" title="${escAttr(ch.baseUrl)}">${esc(fmtHost(ch.baseUrl))}</td>
+      <td class="mono truncate" title="${escAttr(ch.proxy||'-')}">${esc(ch.proxy||'-')}</td>
+      <td class="mono truncate" title="${escAttr(cell)}">${esc(cell)}</td>
+      <td><div class="row-acts">
+        <md-outlined-button data-action="editProvider" data-name="${escAttr(ch.name)}">编辑</md-outlined-button>
+        <md-text-button data-action="deleteProvider" data-name="${escAttr(ch.name)}" style="color:var(--md-sys-color-error)">删除</md-text-button>
+      </div></td></tr>`;}).join('')
+      || '<tr><td colspan="6" class="empty">该实例暂无渠道，点右上「添加渠道」</td></tr>';
+    const px=Object.entries(cfg.proxies||{});
+    $('#px-table tbody').innerHTML=px.map(([n,p])=>`<tr>
+      <td class="mono truncate" title="${escAttr(n)}">${esc(n)}</td>
+      <td><span class="tag">${esc(p.type||'socks5')}</span></td>
+      <td class="mono truncate" title="${escAttr(p.host+':'+p.port)}">${esc(p.host+':'+p.port)}${p.username?' <span class="msym" style="font-size:12px;vertical-align:-2px;color:var(--md-sys-color-primary)">key</span>':''}</td>
+      <td><div class="row-acts">
+        <md-outlined-button data-action="editProxy" data-name="${escAttr(n)}">编辑</md-outlined-button>
+        <md-text-button data-action="delProxy" data-name="${escAttr(n)}" style="color:var(--md-sys-color-error)">删除</md-text-button>
+      </div></td></tr>`).join('')
+      || '<tr><td colspan="4" class="empty">暂无代理，渠道可留空直连</td></tr>';
+  }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
+}
+
+// ============ 渲染: 路由 ============
+async function renderRouting(){
+  const signal=Store.abort('routing');
+  const cur = await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
+  try{
+    const cfg=await adapter.getConfig(cur,signal); Store.configs.set(cur,cfg);
+    const r=cfg.routing||{};
+    $('#rt-maxRetry').value=String(r.maxRetry??3); $('#rt-timeout').value=String(r.timeoutSec??60); $('#rt-cooldown').value=String(r.cooldownSec??30);
+    $('#rt-redact').selected=!((cfg.redact||{}).enable===false);
+    $('#rt-modelSync').selected=!((cfg.modelSync||{}).enable===false);
+    $('#rt-syncInterval').value=String((cfg.modelSync||{}).intervalHours??24);
+    $('#rt-channels').innerHTML='<md-list>'+(cfg.channels||[]).map(ch=>listItem({
+      icon:`<span class="msym">${ch.type==='openai'?'bolt':'diamond'}</span>`,
+      headline:esc(ch.name)+(ch.default?' <span class="tag default">default</span>':''),
+      sub:esc((ch.models||[]).join(', '))||'未配置模型',
+      endHtml:`<span class="muted small mono" title="${escAttr(ch.baseUrl)}">${esc(fmtHost(ch.baseUrl))}</span>`,
+    })).join('')+'</md-list>' || '<div class="empty">无渠道</div>';
+  }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
+}
+
+// ============ 渲染: 密钥 ============
+async function renderKeys(){
+  const signal=Store.abort('keys');
+  const cur = await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
+  try{
+    const cfg=await adapter.getConfig(cur,signal);
+    $('#ky-gatewayKey').value = cfg.gatewayKey && cfg.gatewayKey!=='(已设)' ? cfg.gatewayKey : '';
+    $('#ky-gatewayKey').placeholder = cfg.gatewayKey==='(已设)' ? '(已设, 留空不改)' : '留空=不校验';
+    $('#ky-adminKey').value = cfg.adminKey && cfg.adminKey!=='(已设)' ? cfg.adminKey : '';
+    $('#ky-adminKey').placeholder = cfg.adminKey==='(已设)' ? '(已设, 留空不改)' : '留空=免密管理';
+    $('#ky-channels').innerHTML=(cfg.channels||[]).map(ch=>
+      `<md-outlined-text-field data-keyfor="${escAttr(ch.name)}" label="${esc(ch.name)} (${esc(ch.type)})" type="password" value="${esc(ch.apiKey||'')}" placeholder="${ch.hasKey?'(已设)':'API Key'}"></md-outlined-text-field>`
+    ).join('');
+  }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
+}
+
+// ============ 渲染: 端口 ============
+async function renderPorts(){
+  const signal=Store.abort('ports');
+  try{
+    const data=await adapter.getInstances(signal);
+    const instances=data.instances; if(data.current) Store.currentName=data.current;
+    $('#pt-list').innerHTML='<md-list>'+instances.map(i=>{
+      const isSelf=i.name===Store.currentName;
+      let acts;
+      if(!i.running) acts=`<md-filled-button data-cmd="start" data-name="${escAttr(i.name)}">启动</md-filled-button>`;
+      else if(isSelf) acts=`<md-text-button disabled title="面板运行在此实例上，停止后面板会消失。请用其他实例的面板或终端 agw.sh stop ${escAttr(i.name)}">停止 <span class="msym">lock</span></md-text-button>`;
+      else acts=`<md-text-button data-cmd="stop" data-name="${escAttr(i.name)}" style="color:var(--md-sys-color-error)">停止</md-text-button>`;
+      return listItem({
+        icon:`<span class="msym ${i.running?'ok':'err'}">circle</span>`,
+        headline:esc(i.name)+(isSelf?' <span class="tag default"><span class="msym">home</span>面板</span>':'')+(i.tlsOn?' <span class="tag default">TLS</span>':''),
+        sub:`端口 ${i.port} · ${i.chCount} 渠道 · ${i.running?'运行中':'已停止'}`,
+        endHtml:`<div class="row-acts"><md-outlined-button data-action="openPortDialog" data-name="${escAttr(i.name)}">编辑</md-outlined-button><md-text-button data-cmd="restart" data-name="${escAttr(i.name)}">重启</md-text-button>${acts}</div>`,
+      });
+    }).join('')+'</md-list>';
+  }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
+}
+
+// ============ 渲染: 统计 ============
+async function renderStats(){
+  const signal=Store.abort('stats');
+  const cur = await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
+  try{
+    const s=await adapter.getStats(cur,signal);
+    $('#st-requests').textContent=fmtNum(s.requests);
+    $('#st-errors').textContent=fmtNum(s.errors);
+    $('#st-uptime').textContent=fmtDur(s.uptime);
+    $('#st-rps').textContent=((s.requests||0)/(s.uptime||1)).toFixed(2);
+    const chs=Object.entries(s.byChannel||{});
+    $('#st-table tbody').innerHTML=chs.length?chs.map(([n,d])=>
+      `<tr><td class="mono truncate" title="${escAttr(n)}">${esc(n)}</td><td>${fmtNum(d.requests)}</td><td>${fmtNum(d.inputTokens)}</td><td>${fmtNum(d.outputTokens)}</td></tr>`).join('')
+      :'<tr><td colspan="4" class="empty">暂无数据</td></tr>';
+  }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
+}
+
+// ============ 渲染: 请求记录 ============
+async function renderRequests(){
+  const signal=Store.abort('requests');
+  const cur = await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
+  try{
+    const reqs=await adapter.getRequests(cur,signal);
+    $('#rq-table tbody').innerHTML=(reqs||[]).map(r=>`<tr>
+      <td class="mono">${esc(r.time)}</td>
+      <td class="mono truncate" title="${escAttr(r.model)}">${esc(r.model)}</td>
+      <td class="mono truncate" title="${escAttr(r.channel)}">${esc(r.channel)}</td>
+      <td>${r.status===200?'<span style="color:#4CAF50">✓</span>':'<span style="color:var(--md-sys-color-error)">✗</span>'} ${r.status}</td>
+      <td>${r.duration}ms</td></tr>`).join('') || '<tr><td colspan="5" class="empty">暂无记录</td></tr>';
+  }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
+}
+
+// ============ 渲染: 日志 ============
+async function renderLogs(){
+  const signal=Store.abort('logs');
+  const cur = await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
+  const box=$('#lg-box'); box.textContent='加载中…';
+  try{
+    const lines=+($('#lg-lines').value||100);
+    const txt=await adapter.getLogs(cur,lines,signal);
+    box.textContent=txt||'(空)';
+    box.scrollTop=box.scrollHeight;
+  }catch(e){ if(e.name!=='AbortError'){ box.textContent='读取失败: '+e.message; } }
+}
+
+// ============ 渲染: 聊天 ============
+let chatStick=true;
+const chatNow=()=>new Date().toTimeString().slice(0,5);
+const chatAtBottom=()=>{ const b=$('#ch-messages'); return b?(b.scrollHeight-b.scrollTop-b.clientHeight<80):true; };
+function chatUpdateJump(){ const j=$('#ch-jump'); if(j) j.classList.toggle('hidden', !( !chatStick && Store.chat.messages.length>0 )); }
+function renderChatMessages(force){
+  const box=$('#ch-messages'); if(!box) return;
+  chatStick = force ? true : chatAtBottom();
+  const msgs=Store.chat.messages;
+  if(!msgs.length){ box.innerHTML='<div class="empty" style="margin:auto">选择模型，输入消息后回车发送</div>'; chatUpdateJump(); return; }
+  box.innerHTML=msgs.map((m,i)=>{
+    const isUser=m.role==='user';
+    const cur=(!isUser&&Store.chat.streaming&&i===msgs.length-1)?' chat-cursor':'';
+    return `<div class="chat-msg ${isUser?'user':'ai'}">
+      <div class="chat-ava" aria-hidden="true">${isUser?'<span class="msym">person</span>':'<span class="msym">smart_toy</span>'}</div>
+      <div class="chat-body">
+        <div class="chat-meta"><span class="who">${isUser?'你':'助手'}</span>${m.t?`<span>${esc(m.t)}</span>`:''}
+          <button class="chat-copy" type="button" data-copy="${i}" aria-label="复制第 ${i+1} 条消息">复制</button></div>
+        <div class="chat-bubble${cur}">${esc(m.content)||'<span style="opacity:.5">…</span>'}</div>
+      </div></div>`;
+  }).join('');
+  if(chatStick) box.scrollTop=box.scrollHeight;
+  chatUpdateJump();
+}
+async function renderChat(){
+  const signal=Store.abort('chat');
+  const cur = await fillInstSelect($('#topInst'), Store.chat.inst||Store.inst, signal);
+  Store.chat.inst=cur; Store.inst=cur;
+  await fillChatModels($('#ch-model'), cur);
+  renderChatMessages(true);
+}
+async function copyText(t){
+  try{ if(navigator.clipboard&&window.isSecureContext){ await navigator.clipboard.writeText(t); snack('已复制'); return; } throw 0; }
+  catch(e){ const ta=document.createElement('textarea'); ta.value=t; ta.setAttribute('readonly','');
+    ta.style.cssText='position:fixed;top:0;left:0;opacity:0'; document.body.appendChild(ta); ta.select();
+    let ok=false; try{ ok=document.execCommand('copy'); }catch(_){}
+    document.body.removeChild(ta); ok?snack('已复制'):snack('复制失败（需 HTTPS 或手动长按选择）',true); }
+}
+async function sendChat(){
+  const inp=$('#ch-input'), text=String(inp.value||'').trim();
+  if(!text) return;
+  const model=$('#ch-model').value;
+  if(!model){ snack('请先选择模型',true); return; }
+  const stream=$('#ch-stream').selected;
+  inp.value='';
+  Store.chat.messages.push({role:'user',content:text,t:chatNow()});
+  renderChatMessages(true);
+  const btn=$('#ch-send'); btn.disabled=true; btn.textContent='…';
+  try{
+    const res=await adapter.chat({model,messages:Store.chat.messages.slice(),stream,instance:Store.chat.inst});
+    if(stream){
+      Store.chat.streaming=true;
+      Store.chat.messages.push({role:'assistant',content:'',t:chatNow()});
+      renderChatMessages(true);
+      const reader=res.body.getReader(), dec=new TextDecoder();
+      let buf='',ai='';
+      while(true){ const {done,value}=await reader.read(); if(done)break;
+        buf+=dec.decode(value,{stream:true}); const ls=buf.split('\n'); buf=ls.pop();
+        for(const line of ls){
+          const d=line.startsWith('data: ')?line.slice(6):(line.startsWith('data:')?line.slice(5):null);
+          if(!d||d.trim()==='[DONE]')continue;
+          try{ const j=JSON.parse(d); const delta=j.choices?.[0]?.delta?.content||j.choices?.[0]?.message?.content;
+            if(delta){ ai+=delta; Store.chat.messages.at(-1).content=ai; renderChatMessages(); } }catch(_){}
+        } }
+      if(!ai) Store.chat.messages.at(-1).content='(空响应)';
+    }else{
+      const data=await res.json();
+      Store.chat.messages.push({role:'assistant',content:data.choices?.[0]?.message?.content||'(空响应)',t:chatNow()});
+    }
+  }catch(e){ snack('聊天失败: '+e.message,true); Store.chat.messages.push({role:'assistant',content:'⚠️ '+e.message,t:chatNow()}); }
+  finally{ Store.chat.streaming=false; btn.disabled=false; btn.textContent='发送'; renderChatMessages(); try{inp.focus();}catch(_){} }
+}
+
+// ============ 对话框 ============
+// md-dialog 的「确定/取消」按钮在 actions 插槽里, 跨插槽无法用 <form method=dialog> 关联,
+// 因此改为显式绑定点击: 校验/保存失败时保持对话框打开(不再需要 show() 重开)。
+// 密码框加"眼睛"显示切换
+function upgradePwFields(root){
+  if(!root || !root.querySelectorAll) return;
+  root.querySelectorAll('md-outlined-text-field[type="password"]').forEach(f=>{
+    if(f.querySelector('.pw-eye')) return;
+    const b=document.createElement('md-outlined-icon-button');
+    b.className='pw-eye'; b.setAttribute('slot','trailing-icon'); b.title='显示/隐藏';
+    b.innerHTML='<md-icon>visibility</md-icon>';
+    f.appendChild(b);
+  });
+}
+document.body.addEventListener('click', e=>{
+  const eye=e.target.closest('.pw-eye'); if(!eye) return;
+  const f=eye.closest('md-outlined-text-field'); if(!f) return;
+  const show = f.type==='password';
+  f.type = show?'text':'password';
+  const ic=eye.querySelector('md-icon'); if(ic) ic.textContent = show?'visibility_off':'visibility';
+});
+
+let dlgOnOk = null;
+let mmList=[]; // 渠道弹窗的模型改名映射 [[对外名,真实名],...]
+let portDlgOrigKey; // 实例弹窗回填前的原管理密码(undefined=预填未完成)
+function openDialog(title, bodyHtml, {okText='确定', cancel=true, onOk=null}={}){
+  dlgOnOk = onOk;
+  $('#dlgTitle').textContent=title;
+  $('#dlgBody').innerHTML=bodyHtml;
+  upgradePwFields($('#dlgBody'));
+  $('#dlgOk').textContent=okText;
+  $('#dlgCancel').hidden=!cancel;
+  $('#dlgFetch').hidden=true;
+  $('#dlgOverlay').hidden=false;
+  // 自动聚焦首个输入控件; 聚焦失败不应影响对话框可用性
+  setTimeout(()=>{ try{ $('#dlgBody').querySelector('md-outlined-text-field,md-outlined-select')?.focus?.(); }catch(_){} },120);
+}
+const dlgValue = () => { const o={}; $$('#dlgBody [data-f]').forEach(el=>o[el.dataset.f]=el.value); return o; };
+// ---- 主题切换(深浅色 + Material You 主色) ----
+const SWATCHES=['#6750A4','#005AC1','#006C7C','#006E1C','#9A1E78','#9C4146','#8E4D00','#3B5BA5'];
+let themeState={mode:'dark',seed:'#6750A4'};
+function hexToHSL(hex){hex=hex.replace('#','');const r=parseInt(hex.substr(0,2),16)/255,g=parseInt(hex.substr(2,2),16)/255,b=parseInt(hex.substr(4,2),16)/255;const mx=Math.max(r,g,b),mn=Math.min(r,g,b);let h,s,l=(mx+mn)/2;if(mx===mn){h=s=0;}else{const d=mx-mn;s=l>0.5?d/(2-mx-mn):d/(mx+mn);switch(mx){case r:h=(g-b)/d+(g<b?6:0);break;case g:h=(b-r)/d+2;break;case b:h=(r-g)/d+4;break;}h/=6;}return{h:Math.round(h*360),s:Math.round(s*100),l:Math.round(l*100)};}
+function hslToHex(h,s,l){s/=100;l/=100;const a=s*Math.min(l,1-l);const f=n=>{const k=(n+h/30)%12;const c=l-a*Math.max(-1,Math.min(k-3,9-k,1));return Math.round(255*c).toString(16).padStart(2,'0');};return'#'+f(0)+f(8)+f(4);}
+function applyTheme(t){themeState={mode:t.mode||'dark',seed:t.seed||'#6750A4'};const el=document.documentElement;el.dataset.theme=themeState.mode;el.style.colorScheme=themeState.mode;const hsl=hexToHSL(themeState.seed),isDark=themeState.mode!=='light',pL=isDark?80:40,pS=Math.min(100,hsl.s+10);el.style.setProperty('--md-sys-color-primary',hslToHex(hsl.h,pS,pL));el.style.setProperty('--md-sys-color-on-primary',pL>55?'#1A1A1A':'#FFFFFF');el.style.setProperty('--md-sys-color-primary-container',hslToHex(hsl.h,hsl.s,isDark?25:90));el.style.setProperty('--md-sys-color-on-primary-container',hslToHex(hsl.h,hsl.s,isDark?90:25));}
+function loadTheme(){try{const t=JSON.parse(localStorage.getItem('agw-theme')||'{}');if(t.mode)applyTheme(t);else applyTheme({mode:'dark',seed:'#6750A4'});}catch(_){applyTheme({mode:'dark',seed:'#6750A4'});}}
+function saveTheme(){localStorage.setItem('agw-theme',JSON.stringify(themeState));}
+function openThemeDialog(){
+  openDialog('主题',`<div style="display:flex;flex-direction:column;gap:16px;padding-top:8px">
+    <label style="display:flex;align-items:center;gap:10px"><md-switch id="th-dark" ${themeState.mode==='dark'?'selected':''}></md-switch><span style="font-size:14px">深色主题</span></label>
+    <div><div style="font-size:13px;color:var(--md-sys-color-on-surface-variant);margin-bottom:8px">主色 (Material You)</div>
+    <div id="th-swatches" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:10px"><input type="color" id="th-custom" value="${themeState.seed}" style="width:40px;height:36px;border:none;border-radius:8px;cursor:pointer;background:none"><span style="font-size:13px;color:var(--md-sys-color-on-surface-variant)">自定义颜色</span></div></div>
+  </div>`,{okText:'完成',cancel:false});
+  const sw=$('#th-swatches');if(sw)sw.innerHTML=SWATCHES.map(c=>`<button type="button" class="th-swatch" data-c="${c}" style="width:36px;height:36px;border-radius:50%;border:2px solid ${c===themeState.seed?'var(--md-sys-color-on-surface)':'transparent'};background:${c};cursor:pointer;padding:0"></button>`).join('');
+  const dk=$('#th-dark');if(dk)dk.addEventListener('click',()=>setTimeout(()=>{applyTheme({mode:dk.selected?'dark':'light',seed:themeState.seed});saveTheme();},0));
+  if(sw)sw.addEventListener('click',e=>{const b=e.target.closest('.th-swatch');if(b){applyTheme({mode:themeState.mode,seed:b.dataset.c});saveTheme();sw.querySelectorAll('.th-swatch').forEach(s=>s.style.borderColor=s.dataset.c===themeState.seed?'var(--md-sys-color-on-surface)':'transparent');}});
+  const cu=$('#th-custom');if(cu)cu.addEventListener('input',e=>{applyTheme({mode:themeState.mode,seed:e.target.value});saveTheme();});
+}
+
+// ---- 管理密码(adminKey)输入: 顶栏钥匙按钮 / 接口 401 时自动弹出 ----
+function keyDlgVisible(){ return !$('#dlgOverlay').hidden && $('#dlgTitle').textContent==='管理密码'; }
+function openKeyDialog(){
+  if(keyDlgVisible()) return;
+  openDialog('管理密码', `
+    <div style="display:flex;flex-direction:column;gap:14px;padding-top:8px">
+      <md-outlined-text-field data-f="key" label="adminKey" type="password" value="${escAttr(localStorage.getItem('agw-admin-key')||'')}"
+        helper="实例设了管理密码就填它; 没设则免密无需填; 清空保存=清除记住的密码"></md-outlined-text-field>
+    </div>`, {okText:'保存', onOk:saveKey});
+}
+async function saveKey(){
+  const k=String(dlgValue().key||'').trim();
+  if(k) localStorage.setItem('agw-admin-key',k); else localStorage.removeItem('agw-admin-key');
+  snack(k?'密码已记住, 正在刷新…':'已清除记住的密码, 正在刷新…');
+  setTimeout(()=>location.reload(),600);
+  return true;
+}
+// ---- 模型改名标签编辑器(渠道弹窗内) ----
+function renderMmChips(){
+  const box=$('#mmChips'); if(!box) return;
+  box.innerHTML=mmList.length?mmList.map(([k,v],i)=>
+    '<span class="mm-chip" data-i="'+i+'"><span class="nm">'+esc(k)+'</span>'
+    +(k===v?'':'<span class="arrow">→</span><span class="nm">'+esc(v)+'</span>')
+    +'<button class="mm-x" data-i="'+i+'" aria-label="删除">✕</button></span>').join('')
+    :'<span style="font-size:12px;color:var(--md-sys-color-on-surface-variant)">暂无映射 — 填上方两框后点 + 添加 (左滑标签或点 ✕ 删除)</span>';
+}
+function mmAdd(){
+  const a=($('#mm-alias').value||'').trim(), r=($('#mm-real').value||'').trim();
+  if(!a){ snack('先填左框(对外名)',true); return; }
+  if(!/^[A-Za-z0-9_.\/:@+~-]+$/.test(a)){ snack('对外名建议只用字母/数字/._/:@+~-',true); return; }
+  if(mmList.some(([k])=>k===a)){ snack('覆盖名 '+a+' 已存在',true); return; }
+  mmList.push([a,r||a]);
+  $('#mm-alias').value=''; $('#mm-real').value='';
+  renderMmChips();
+}
+function mmDel(i){ mmList.splice(i,1); renderMmChips(); }
+function mmBindSwipe(){
+  const box=$('#mmChips'); let sx=0,sy=0,chip=null,idx=-1,dx=0;
+  box.addEventListener('touchstart',e=>{
+    const t=e.target.closest('.mm-chip'); if(!t) return;
+    chip=t; idx=+t.dataset.i; sx=e.touches[0].clientX; sy=e.touches[0].clientY; dx=0;
+    t.style.transition='none';
+  },{passive:true});
+  box.addEventListener('touchmove',e=>{
+    if(!chip) return;
+    dx=e.touches[0].clientX-sx;
+    const dy=e.touches[0].clientY-sy;
+    if(Math.abs(dx)>6&&Math.abs(dx)>Math.abs(dy)) chip.style.transform='translateX('+Math.max(-140,Math.min(140,dx))+'px)';
+  },{passive:true});
+  box.addEventListener('touchend',()=>{
+    if(!chip) return;
+    if(Math.abs(dx)>64){ // 滑动超过阈值 → 删除
+      chip.style.transition='transform .18s,opacity .18s';
+      chip.style.transform='translateX('+(dx>0?160:-160)+'px)'; chip.style.opacity='0';
+      const i=idx; setTimeout(()=>mmDel(i),180);
+    } else { chip.style.transition='transform .18s'; chip.style.transform=''; }
+    chip=null; idx=-1; dx=0;
+  });
+}
+// 已获取模型列表的勾选面板(插在弹窗顶部, 勾选后填入"模型"字段)
+function mmShowModelPicker(list){
+  const oldBox=$('#mmSelBox'); if(oldBox) oldBox.remove();
+  const box=document.createElement('div');
+  box.id='mmSelBox';
+  box.style.cssText='border:1px solid var(--md-sys-color-outline-variant);border-radius:12px;padding:10px;max-height:230px;overflow-y:auto';
+  const head=document.createElement('div');
+  head.style.cssText='display:flex;align-items:center;gap:8px;margin-bottom:6px';
+  head.innerHTML='<span style="font-size:12px;color:var(--md-sys-color-on-surface-variant)">已获取 '+list.length+' 个, 勾选后填入</span>'
+    +'<button type="button" class="pbtn pbtn-text" id="mmSelAll" style="height:26px;padding:0 10px;margin-left:auto">全选</button>'
+    +'<button type="button" class="pbtn pbtn-text" id="mmSelNone" style="height:26px;padding:0 10px">清空</button>'
+    +'<button type="button" class="pbtn pbtn-filled" id="mmSelOk" style="height:26px;padding:0 12px">填入</button>'
+    +'<button type="button" class="pbtn pbtn-text" id="mmSelX" style="height:26px;padding:0 8px" aria-label="关闭">✕</button>';
+  box.appendChild(head);
+  list.forEach(m=>{
+    const lab=document.createElement('label');
+    lab.style.cssText='display:flex;align-items:center;gap:6px;font-size:13px;padding:2px 0;cursor:pointer';
+    const cb=document.createElement('input'); cb.type='checkbox'; cb.className='mm-sel'; cb.value=m; cb.checked=true;
+    const sp=document.createElement('span'); sp.className='mono'; sp.textContent=m; sp.style.cssText='word-break:break-all';
+    lab.appendChild(cb); lab.appendChild(sp); box.appendChild(lab);
+  });
+  box.addEventListener('click',e=>{
+    const t=e.target.id;
+    if(t==='mmSelAll') box.querySelectorAll('.mm-sel').forEach(c=>c.checked=true);
+    else if(t==='mmSelNone') box.querySelectorAll('.mm-sel').forEach(c=>c.checked=false);
+    else if(t==='mmSelOk'){
+      const sel=[...box.querySelectorAll('.mm-sel')].filter(c=>c.checked).map(c=>c.value);
+      if(!sel.length){ snack('至少勾选一个模型',true); return; }
+      const f=$('#dlgBody [data-f=models]'); if(f) f.value=sel.join(', ');
+      box.remove(); snack('已填入 '+sel.length+' 个模型');
+    }
+    else if(t==='mmSelX') box.remove();
+  });
+  // 插到"模型"字段正上方(而不是弹窗顶部), 并滚动到可见位置
+  const mf=$('#dlgBody [data-f=models]');
+  if(mf && mf.parentNode) mf.parentNode.insertBefore(box, mf);
+  else $('#dlgBody').prepend(box);
+  try{ box.scrollIntoView({behavior:'smooth', block:'center'}); }
+  catch(_){ try{ $('#dlgBody').scrollTop = box.offsetTop - 8; }catch(_2){} }
+}
+function openProviderDialog(ch){
+  const c=ch||{name:'',type:'openai',baseUrl:'',proxy:'-',models:[],apiKey:'',default:false};
+  mmList=(c.modelMap?Object.entries(c.modelMap):[]);
+  const pxs=Object.keys((Store.configs.get(Store.inst)||{}).proxies||{});
+  const pOpts=['-'].concat(pxs); if(c.proxy&&!pOpts.includes(c.proxy)) pOpts.push(c.proxy);
+  const curP=c.proxy||'-';
+  openDialog(ch?'编辑渠道':'添加渠道', `
+    <div style="display:flex;flex-direction:column;gap:14px;padding-top:8px">
+      <md-outlined-text-field data-f="name" label="名称" value="${escAttr(c.name)}" required></md-outlined-text-field>
+      <md-outlined-select data-f="type" label="类型" style="width:100%">
+        ${['openai','claude','gemini'].map(t=>`<md-select-option value="${t}" ${t===c.type?'selected':''}>${t}</md-select-option>`).join('')}
+      </md-outlined-select>
+      <md-outlined-text-field data-f="baseUrl" label="Base URL" value="${escAttr(c.baseUrl)}" placeholder="https://…/v1"></md-outlined-text-field>
+      <md-outlined-select data-f="proxy" label="代理(-为直连)" style="width:100%">
+        ${pOpts.map(o=>`<md-select-option value="${escAttr(o)}" ${o===curP?'selected':''}>${o==='-'?'- 直连':esc(o)}</md-select-option>`).join('')}
+      </md-outlined-select>
+      <md-outlined-text-field data-f="models" label="模型(逗号分隔)" value="${escAttr((c.models||[]).join(', '))}"></md-outlined-text-field>
+      <div>
+        <div style="font-size:12px;color:var(--md-sys-color-on-surface-variant);margin-bottom:4px">模型改名 (对外名 → 真实名; 右框留空=按原名提供; 手机上左滑标签可删除; 对外名会出现在 /v1/models; 重启实例后生效)</div>
+        <div class="mm-row">
+          <md-outlined-text-field id="mm-alias" label="覆盖名(对外)"></md-outlined-text-field>
+          <md-outlined-text-field id="mm-real" label="原始名(可空)"></md-outlined-text-field>
+          <button type="button" class="mm-add-btn" id="mm-add" aria-label="添加"><span class="msym">add</span></button>
+        </div>
+        <div class="mm-chips" id="mmChips"></div>
+      </div>
+      <md-outlined-text-field data-f="apiKey" label="API Key" type="password" value="${escAttr(c.apiKey||'')}" placeholder="${c.hasKey?'(已设, 留空不改)':'API Key'}"></md-outlined-text-field>
+      <label style="display:flex;align-items:center;gap:8px;font-size:14px"><md-checkbox data-f="default" ${c.default?'selected':''}></md-checkbox>设为默认渠道</label>
+    </div>`, {onOk:saveProvider});
+  const s=$('#dlgBody [data-f=type]');
+  s.updateComplete.then(()=>Promise.all([...s.querySelectorAll('md-select-option')].map(o=>o.updateComplete||0))).then(()=>s.value=c.type);
+  const sp=$('#dlgBody [data-f=proxy]');
+  if(sp) sp.updateComplete.then(()=>Promise.all([...sp.querySelectorAll('md-select-option')].map(o=>o.updateComplete||0))).then(()=>sp.value=curP).catch(()=>{});
+  const cb=$('#dlgBody [data-f=default]'); if(c.default) cb.selected=true;
+  const ma=$('#mm-alias');
+  if(ma){
+    $('#mm-add').addEventListener('click',mmAdd);
+    [ma,$('#mm-real')].forEach(el=>el.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); mmAdd(); } }));
+    $('#mmChips').addEventListener('click',e=>{ const x=e.target.closest('.mm-x'); if(x) mmDel(+x.dataset.i); });
+    mmBindSwipe();
+    renderMmChips();
+  }
+  const fb=$('#dlgFetch');
+  if(fb){
+    fb.hidden=false;
+    fb.onclick=async ()=>{
+      if(fb.disabled) return;
+      const v=dlgValue();
+      fb.disabled=true; fb.textContent='获取中…';
+      try{
+        const r=await adapter.fetchModels(Store.inst,{ name:String(v.name||'').trim(), type:v.type||'openai',
+          baseUrl:String(v.baseUrl||'').trim(), apiKey:String(v.apiKey||'').trim(), proxy:v.proxy||'-' });
+        const list=r.models||[];
+        if(!list.length) snack('上游未返回任何模型',true);
+        else mmShowModelPicker(list);
+      }catch(e){ snack(e.message,true); }
+      fb.disabled=false; fb.textContent='获取模型列表';
+    };
+  }
+}
+function openPortDialog(name){
+  const i=Store.instances.find(x=>x.name===name)||{};
+  openDialog(name?'编辑实例 '+name:'新建实例', `
+    <div style="display:flex;flex-direction:column;gap:14px;padding-top:8px">
+      <md-outlined-text-field data-f="name" label="实例名" value="${escAttr(i.name||'')}" ${name?'disabled':''} required></md-outlined-text-field>
+      <md-outlined-text-field data-f="port" label="HTTP 端口" type="number" value="${i.port||16390}"></md-outlined-text-field>
+      <md-outlined-text-field data-f="tlsPort" label="HTTPS 端口" type="number" value="${(i.port||16390)+10}"></md-outlined-text-field>
+      <md-outlined-text-field data-f="adminKey" label="管理密码" type="password" value="" helper="留空保存=清除管理密码"></md-outlined-text-field>
+      <label style="display:flex;align-items:center;gap:8px;font-size:14px"><md-switch data-f="tls" ${i.tlsOn?'selected':''}></md-switch>启用 HTTPS</label>
+      ${(name&&name!=='default'&&name!==Store.currentName)?`<md-text-button data-action="delInstance" data-name="${escAttr(name)}" style="color:var(--md-sys-color-error);align-self:flex-start;margin-top:2px">删除实例</md-text-button>`:''}
+    </div>`, {onOk:()=>savePortSettings(name)});
+  if(name){ // 编辑模式: 拉真实配置回填端口/TLS/管理密码(reveal 明文, 所见即所得)
+    portDlgOrigKey=undefined;
+    adapter.getConfig(name).then(c=>{
+      const q=f=>$('#dlgBody [data-f='+f+']');
+      if(q('port')) q('port').value=(c.port!=null?c.port:16384);
+      if(q('tlsPort')) q('tlsPort').value=(c.tls&&c.tls.port)?c.tls.port:(Number(c.port||16384)+10);
+      const sw=q('tls'); if(sw) sw.selected=!!(c.tls&&c.tls.enable);
+      portDlgOrigKey=c.adminKey||'';
+      if(q('adminKey')) q('adminKey').value=portDlgOrigKey;
+    }).catch(()=>{});
+  }
+}
+
+// ============ 保存动作 ============
+// 新建/编辑实例(端口页弹窗的"确定")。editName 存在=编辑, 否则=新建。
+async function savePortSettings(editName){
+  const v=dlgValue();
+  const name=String(editName||v.name||'').trim();
+  const port=Number(v.port), tlsPort=Number(v.tlsPort);
+  const adminKey=String(v.adminKey||'').trim();
+  const tlsOn=!!($('#dlgBody [data-f=tls]')&&$('#dlgBody [data-f=tls]').selected);
+  if(!/^[A-Za-z0-9_-]{1,32}$/.test(name)){ snack('实例名只能含字母/数字/中划线/下划线(最长32字符)',true); return false; }
+  if(!port||port<1024||port>65535){ snack('HTTP 端口范围 1024-65535',true); return false; }
+  if(tlsOn&&(!tlsPort||tlsPort<1024||tlsPort>65535)){ snack('HTTPS 端口范围 1024-65535',true); return false; }
+  try{
+    if(editName){ // ---- 编辑已有实例 ----
+      const cur=await adapter.getConfig(editName);
+      const patch={ port, host:(cur&&cur.host)||'0.0.0.0',
+        tls:Object.assign({},(cur&&cur.tls)||{},{ enable:tlsOn, port:tlsPort||port+10 }) };
+      // 管理密码: 与回填原值不同才提交(含清空=移除密码); 预填失败(unknown)则不动
+      if(portDlgOrigKey!==undefined && adminKey!==portDlgOrigKey) patch.adminKey=adminKey;
+      await adapter.saveConfig(editName,patch);
+      snack('已保存实例 '+editName);
+      if(editName===Store.currentName&&cur&&cur.port&&Number(cur.port)!==port)
+        snack('面板实例端口已改为 '+port+', 稍后请用新地址访问面板',true);
+      let running=false;
+      try{ const d=await adapter.getInstances(); running=!!(d.instances||[]).find(x=>x.name===editName&&x.running); }catch(_){}
+      if(running) doInstanceAction(editName,'restart'); else renderPorts();
+    }else{ // ---- 新建实例 ----
+      const tls={ enable:tlsOn, port:tlsPort||port+10 };
+      if(tlsOn){ // 复用已有实例的证书(证书可跨实例共用); 都没有则降级纯 HTTP
+        try{
+          const d=await adapter.getInstances();
+          const names=(d.instances||[]).map(x=>x.name);
+          for(const n of names){
+            try{
+              const c=await adapter.getConfig(n);
+              if(c&&c.tls&&c.tls.cert&&c.tls.key){ tls.cert=c.tls.cert; tls.key=c.tls.key; break; }
+            }catch(_){}
+          }
+          if(!tls.cert){ tls.enable=false; snack('没有找到可用证书, 已按纯 HTTP 创建',true); }
+        }catch(_){ tls.enable=false; }
+      }
+      await adapter.createInstance(name,{ port, host:'0.0.0.0', tls, adminKey });
+      snack('实例 '+name+' 已创建, 正在启动…');
+      try{ await adapter.action(name,'start'); }catch(_){}
+      renderPorts();
+    }
+  }catch(e){ snack(e.message,true); return false; }
+  return true;
+}
+// ---- 代理服务器管理(增/改/删, 走 saveConfig 的 proxies 整体替换) ----
+function openProxyDialog(name){
+  const cur=Store.configs.get(Store.inst);
+  const p=(cur&&cur.proxies&&cur.proxies[name])||{};
+  openDialog(name?'编辑代理 '+name:'添加代理', `
+    <div style="display:flex;flex-direction:column;gap:14px;padding-top:8px">
+      <md-outlined-text-field data-f="name" label="名称" value="${escAttr(name||'')}" ${name?'disabled':''} required helper="渠道里用这个名字引用"></md-outlined-text-field>
+      <md-outlined-select data-f="type" label="类型" style="width:100%">
+        ${['socks5','http'].map(t=>`<md-select-option value="${t}" ${t===(p.type||'socks5')?'selected':''}>${t}</md-select-option>`).join('')}
+      </md-outlined-select>
+      <md-outlined-text-field data-f="host" label="服务器地址" value="${escAttr(p.host||'127.0.0.1')}" required></md-outlined-text-field>
+      <md-outlined-text-field data-f="port" label="端口" type="number" value="${p.port||7890}"></md-outlined-text-field>
+      <md-outlined-text-field data-f="username" label="用户名(可选)" value="${escAttr(p.username||'')}"></md-outlined-text-field>
+      <md-outlined-text-field data-f="password" label="密码(可选)" type="password" value="${escAttr(p.password||'')}"></md-outlined-text-field>
+    </div>`, {onOk:()=>saveProxy(name)});
+  const s=$('#dlgBody [data-f=type]');
+  if(s) s.updateComplete.then(()=>Promise.all([...s.querySelectorAll('md-select-option')].map(o=>o.updateComplete||0))).then(()=>s.value=p.type||'socks5').catch(()=>{});
+}
+async function saveProxy(origName){
+  const v=dlgValue();
+  const name=String(origName||v.name||'').trim();
+  const host=String(v.host||'').trim();
+  const port=Number(v.port);
+  if(!name){ snack('名称必填',true); return false; }
+  if(!/^[A-Za-z0-9_-]{1,32}$/.test(name)){ snack('代理名只能含字母/数字/中划线/下划线',true); return false; }
+  if(!host){ snack('服务器地址必填',true); return false; }
+  if(!port||port<1||port>65535){ snack('端口范围 1-65535',true); return false; }
+  try{
+    const cur=await adapter.getConfig(Store.inst);
+    const proxies=Object.assign({},(cur&&cur.proxies)||{});
+    if(!origName&&proxies[name]){ snack('代理 '+name+' 已存在',true); return false; }
+    const entry={ type:v.type||'socks5', host, port };
+    const un=String(v.username||'').trim(), pw=String(v.password||'');
+    if(un) entry.username=un;
+    else if(origName&&(cur.proxies[origName]||{}).username) entry.username=cur.proxies[origName].username; // 留空=保持原值
+    if(pw) entry.password=pw;
+    else if(origName&&(cur.proxies[origName]||{}).password) entry.password=cur.proxies[origName].password;
+    proxies[name]=entry;
+    await adapter.saveConfig(Store.inst,{proxies});
+    snack(origName?('代理 '+name+' 已保存'):'代理 '+name+' 已添加');
+    await renderProviders();
+  }catch(e){ snack(e.message,true); return false; }
+  return true;
+}
+async function delProxy(name){
+  if(!name) return;
+  try{
+    const cur=await adapter.getConfig(Store.inst);
+    const used=(cur.channels||[]).filter(c=>c.proxy===name).map(c=>c.name);
+    const msg=used.length
+      ? `确定删除代理 ${name}? 渠道 ${used.join(', ')} 正在引用它, 删除后这些渠道的代理会失效!`
+      : `确定删除代理 ${name}?`;
+    if(!confirm(msg)) return;
+    const proxies=Object.assign({},(cur&&cur.proxies)||{});
+    delete proxies[name];
+    await adapter.saveConfig(Store.inst,{proxies});
+    snack('代理 '+name+' 已删除');
+    await renderProviders();
+  }catch(e){ snack(e.message,true); }
+}
+async function saveProvider(){
+  const v=dlgValue();
+  if(!v.name||!v.baseUrl){ snack('名称与 Base URL 必填',true); return false; }
+  // 模型改名映射来自标签编辑器(mmList); 对外名→真实名, 相同=按原名提供
+  const modelMap={};
+  for(const [k,r] of mmList) modelMap[k]=r;
+  const ch={ name:v.name, type:v.type||'openai', baseUrl:v.baseUrl, proxy:v.proxy||'-',
+    models:String(v.models||'').split(',').map(s=>s.trim()).filter(Boolean),
+    apiKey:v.apiKey||'', default:!!v.default };
+  if(Object.keys(modelMap).length) ch.modelMap=modelMap; // 不带箭头的空映射就不发, 避免覆盖成空
+  try{ await adapter.saveChannel(Store.inst,ch);
+    snack('已保存渠道 '+ch.name+(Object.keys(modelMap).length?' (改名映射重启实例后生效)':''));
+    await renderProviders(); }
+  catch(e){ snack(e.message,true); return false; }
+  return true;
+}
+async function saveKeys(){
+  try{
+    const patch={gatewayKey:$('#ky-gatewayKey').value, adminKey:$('#ky-adminKey').value, channels:{}};
+    $$('#ky-channels [data-keyfor]').forEach(el=>{ patch.channels[el.dataset.keyfor]=el.value; });
+    await adapter.saveConfig(Store.inst,patch); snack('密钥已保存'); await renderKeys();
+  }catch(e){ snack(e.message,true); }
+}
+async function saveRouting(){
+  try{
+    await adapter.saveConfig(Store.inst,{routing:{
+      maxRetry:+$('#rt-maxRetry').value||0, timeoutSec:+$('#rt-timeout').value||0, cooldownSec:+$('#rt-cooldown').value||0 },
+      redact:{enable:!!$('#rt-redact').selected},
+      modelSync:{enable:!!$('#rt-modelSync').selected, intervalHours:+$('#rt-syncInterval').value||24}});
+    snack('已保存 (重启实例后生效)'); await renderRouting();
+  }catch(e){ snack(e.message,true); }
+}
+async function doInstanceAction(name,cmd){
+  if(cmd==='stop'&&name===Store.currentName){ snack('不能停止承载面板的实例',true); return; }
+  try{
+    await adapter.action(name,cmd); snack(`${name} ${cmd} 指令已发送`);
+    if(cmd==='restart'){ let n=0; const ping=setInterval(async()=>{ n++;
+      try{ await adapter.getInstances(); clearInterval(ping); snack(`${name} 已恢复`); renderPorts(); }
+      catch(_){ if(n>20){ clearInterval(ping); snack(`${name} 未在 20 秒内恢复，请检查日志`,true); } } },1000); }
+    else setTimeout(renderPorts,800);
+  }catch(e){ snack(e.message,true); }
+}
+
+// 删除实例(编辑弹窗内按钮): 确认后停止+删配置, 不可恢复
+async function delInstance(name){
+  if(!name||name==='default'||name===Store.currentName) return;
+  if(!confirm('确定删除实例 '+name+' ? 将停止它并删除其配置文件, 不可恢复!')) return;
+  try{
+    await adapter.deleteInstance(name);
+    $('#dlgOverlay').hidden=true;
+    snack('实例 '+name+' 已删除');
+    renderPorts();
+  }catch(e){ snack(e.message,true); }
+}
+
+// ============ 事件(集中委托) ============
+document.body.addEventListener('click', e=>{
+  const nav=e.target.closest('[data-page]');
+  if(nav?.dataset.page){ go(nav.dataset.page); return; }
+  const jump=e.target.closest('[data-goto]');
+  if(jump?.dataset.goto){ go(jump.dataset.goto); return; }
+  const act=e.target.closest('[data-action]');
+  if(act){
+    const a=act.dataset.action, n=act.dataset.name;
+    if(a==='editProvider'){ const cfg=Store.configs.get(Store.inst); openProviderDialog(cfg?.channels?.find(c=>c.name===n)); }
+    else if(a==='deleteProvider'){ if(confirm(`删除渠道 ${n}?`)) adapter.deleteChannel(Store.inst,n).then(renderProviders).catch(x=>snack(x.message,true)); }
+    else if(a==='openPortDialog') openPortDialog(n);
+    else if(a==='delInstance') delInstance(n);
+    else if(a==='editProxy') openProxyDialog(n);
+    else if(a==='delProxy') delProxy(n);
+    return;
+  }
+  const cmdBtn=e.target.closest('[data-cmd]');
+  if(cmdBtn?.dataset.cmd) doInstanceAction(cmdBtn.dataset.name, cmdBtn.dataset.cmd);
+});
+$('#navbar').addEventListener('navigation-bar-activated', e=>{
+  const t=e.detail?.tab; if(t?.dataset?.page) go(t.dataset.page);
+});
+$('#dlgOk').addEventListener('click', async ()=>{
+  const btn=$('#dlgOk'); btn.disabled=true;
+  try{
+    const ok = dlgOnOk ? await dlgOnOk() : true;
+    if(ok!==false) $('#dlgOverlay').hidden=true;
+  } finally { btn.disabled=false; }
+});
+$('#dlgCancel').addEventListener('click', ()=>$('#dlgOverlay').hidden=true);
+$('#dlgX').addEventListener('click', ()=>$('#dlgOverlay').hidden=true);
+$('#dlgOverlay').addEventListener('click', e=>{ if(e.target===e.currentTarget) $('#dlgOverlay').hidden=true; });
+$('#pv-add').addEventListener('click',()=>openProviderDialog());
+$('#px-add').addEventListener('click',()=>openProxyDialog());
+['out','inc'].forEach(dir=>{
+  const add=$('#rp-'+dir+'-add');
+  if(!add) return;
+  add.addEventListener('click',()=>rpAdd(dir));
+  [$('#rp-'+dir+'-find'),$('#rp-'+dir+'-to')].forEach(el=>el&&el.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); rpAdd(dir); } }));
+  rpBindSwipe(dir);
+  $('#rp-'+dir+'-chips').addEventListener('click',e=>{ const x=e.target.closest('.mm-x'); if(x) rpDel(dir,+x.dataset.i); });
+});
+const rpTestOut=$('#rp-test-out-btn'), rpTestInc=$('#rp-test-inc-btn');
+if(rpTestOut) rpTestOut.addEventListener('click',()=>{ const rules=rpCompileCli(rpLists.out); const r=rpApplyCli($('#rp-test-in')?$('#rp-test-in').value:'',rules); $('#rp-test-result').textContent = r===''?'(空)':r; });
+if(rpTestInc) rpTestInc.addEventListener('click',()=>{ const rules=rpCompileCli(rpLists.inc); const r=rpApplyCli($('#rp-test-in')?$('#rp-test-in').value:'',rules); $('#rp-test-result').textContent = r===''?'(空)':r; });
+$('#pt-new').addEventListener('click',()=>openPortDialog());
+$('#rt-save').addEventListener('click',saveRouting);
+$('#rt-reset').addEventListener('click',renderRouting);
+$('#rt-syncNow').addEventListener('click', async ()=>{
+  const btn=$('#rt-syncNow'); btn.disabled=true; const old='立即同步'; btn.textContent='同步中…';
+  try{ const r=await adapter.syncModels(Store.inst);
+    snack('已同步: '+r.added+' 个新模型'+(r.fails?', '+r.fails+' 失败':''));
+    await renderRouting();
+  }catch(e){ snack(e.message,true); }
+  btn.disabled=false; btn.textContent=old;
+});
+$('#ky-save').addEventListener('click',saveKeys);
+$('#rq-refresh').addEventListener('click',renderRequests);
+$('#lg-refresh').addEventListener('click',renderLogs);
+$('#refreshBtn').addEventListener('click',()=>{ go(Store.page); });
+$('#refreshBtn').addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ go(Store.page); } });
+$('#modeChip').addEventListener('click',()=>{
+  Store.adapter = Store.adapter==='mock'?'http':'mock';
+  adapter = Store.adapter==='mock' ? new MockAdapter() : new HttpAdapter();
+  $('#modeChip').label = Store.adapter==='mock'?'Mock':'HTTP';
+  $('#modeChipIc').textContent = Store.adapter==='mock'?'inventory_2':'public';
+  localStorage.setItem('agw-mode',Store.adapter);
+  go(Store.page);
+});
+$('#topInst').addEventListener('change', e=>{ Store.inst=e.target.value; go(Store.page); });
+$('#ch-send').addEventListener('click',sendChat);
+$('#ch-input').addEventListener('keydown', e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); sendChat(); } });
+$('#ch-clear').addEventListener('click',()=>{
+  const n=Store.chat.messages.length;
+  if(!n){ snack('没有可清空的消息'); return; }
+  if(!confirm(`确定清空全部 ${n} 条消息? 此操作不可撤销。`)) return;
+  Store.chat.messages=[]; Store.chat.streaming=false; renderChatMessages(true); snack('已清空');
+});
+$('#ch-jump').addEventListener('click',()=>{ const b=$('#ch-messages'); if(b){ chatStick=true; b.scrollTop=b.scrollHeight; chatUpdateJump(); } });
+$('#ch-messages')?.addEventListener('scroll',()=>{ chatStick=chatAtBottom(); chatUpdateJump(); });
+$('#ch-messages')?.addEventListener('click', e=>{
+  const b=e.target.closest('.chat-copy'); if(!b) return;
+  const m=Store.chat.messages[+b.dataset.copy]; if(m) copyText(m.content);
+});
+$('#ch-model').addEventListener('change', e=>{ Store.chat.model=e.target.value; });
+window.addEventListener('online',()=>{ Store.online=true; });
+window.addEventListener('offline',()=>{ Store.online=false; snack('网络已断开',true); });
+
+// ============ 启动 ============
+if(!MW_OK){
+  $('#compatBar').textContent='⚠ Material Web 组件库 (/admin/m3/vendor/mw-v2.js) 加载失败，页面将只有无样式内容。请确认文件已部署。';
+  $('#compatBar').classList.add('show');
+}
+$('#keyBtn').addEventListener('click',openKeyDialog);
+$('#thBtn').addEventListener('click',openThemeDialog);
+// ?adminKey=xxx 一键带密码访问: 存入 localStorage 并从地址栏抹掉
+try{
+  const u=new URL(location.href); const k=u.searchParams.get('adminKey');
+  if(k!=null){
+    if(k) localStorage.setItem('agw-admin-key',k); else localStorage.removeItem('agw-admin-key');
+    u.searchParams.delete('adminKey'); history.replaceState(null,'',u);
+  }
+}catch(_){}
+upgradePwFields(document.body);
+loadTheme();
+buildNav();
+if(localStorage.getItem('agw-mode')==='http'){
+  Store.adapter='http'; adapter=new HttpAdapter(); $('#modeChip').label='HTTP'; $('#modeChipIc').textContent='public';
+}
+await fillInstSelect($('#topInst'), Store.inst).catch(()=>{});
+go(Store.page);
+console.log('[AI Gateway] Material Web 面板已初始化 · 组件库', MW_OK?'就绪':'缺失');
+</script>
+</body>
+</html>
