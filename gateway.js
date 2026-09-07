@@ -28,7 +28,7 @@ const os = require('os');
 const admin = require('./admin');
 const { handleAdmin } = admin;
 
-const VERSION = '1.0.0';
+const VERSION = '1.4.0';
 
 /* ================= 小工具 ================= */
 function ts() { return new Date().toISOString().slice(11, 19); }
@@ -67,6 +67,7 @@ function rpWalk(v, rules, depth, skipModel) {
 
 /* ---- 配置加解密(可选, 由 crypt.js 提供) ---- */
 let crypt = null; try { crypt = require('./crypt.js'); } catch (_) {}
+const redactCache = require('./redact-cache.js'); // CDC 增量分块缓存: 干净内容只算 hash, 命中跳过正则
 
 /* ---- 隐私过滤: 请求体里的密钥/token 替换为 *** ---- */
 const REDACT_PATTERNS = [
@@ -82,9 +83,7 @@ const REDACT_PATTERNS = [
 ];
 const REDACT_FIELD_RE = /api[-_]?key|apikey|secret|password|passwd|token|authorization/i;
 function redactText(s, extra) {
-  for (const re of REDACT_PATTERNS) s = s.replace(re, '***');
-  if (extra) for (const p of extra) { try { s = s.replace(new RegExp(p, 'g'), '***'); } catch (_) {} }
-  return s;
+  return redactCache.redactSmart(s, extra);
 }
 function redactDeep(v, extra, depth) {
   if (v == null || depth > 12) return v;
@@ -146,6 +145,8 @@ function applyDefaults(cfg) {
   cfg.maxBodyBytes = Number(cfg.maxBodyBytes || 64 * 1024 * 1024);
   cfg.connectTimeout = Number(cfg.connectTimeout || 15000);
   cfg.responseTimeout = Number(cfg.responseTimeout || 180000);
+  // 连接级错误(socket hang up 等)的同渠道重试次数, 默认 2; 0 = 关闭
+  if (cfg.connRetry === undefined) cfg.connRetry = 2;
   cfg.cors = cfg.cors !== false;
   // TLS 配置解析
   cfg.tls = cfg.tls || (cfg.listen && cfg.listen.tls) || {};
@@ -164,10 +165,216 @@ function applyDefaults(cfg) {
     cfg.proxies = norm;
   } else cfg.proxies = {};
   cfg.channels = cfg.channels || [];
+  // 思考链精简: enable 时拦截推理模型的 reasoning 内容, 精简后再发给客户端(不展示完整思维链)
+  // mode: truncate=按段截取开头(零延迟实时) / summarize=用便宜模型逐段总结(有延迟)
+  cfg.thinkingSummary = cfg.thinkingSummary && typeof cfg.thinkingSummary === 'object' ? cfg.thinkingSummary : { enable: false };
+  cfg.thinkingSummary.enable = !!cfg.thinkingSummary.enable;
+  cfg.thinkingSummary.mode = cfg.thinkingSummary.mode === 'summarize' ? 'summarize' : 'truncate';
+  cfg.thinkingSummary.maxCharsPerSegment = Math.max(10, Number(cfg.thinkingSummary.maxCharsPerSegment) || 80);
+  cfg.thinkingSummary.summarizeBaseUrl = String(cfg.thinkingSummary.summarizeBaseUrl || '').trim(); // OpenAI 兼容端点, 如 https://api.deepseek.com 或 http://127.0.0.1:16392
+  cfg.thinkingSummary.summarizeApiKey = String(cfg.thinkingSummary.summarizeApiKey || '').trim();   // 对应 apiKey(指向另一 gateway 实例时填该实例 gatewayKey)
+  cfg.thinkingSummary.summarizeModel = String(cfg.thinkingSummary.summarizeModel || '').trim();     // 模型名
+  cfg.thinkingSummary.summarizePrompt = String(cfg.thinkingSummary.summarizePrompt || '').trim() || '用一句话中文概括以下思考片段:';
+  cfg.thinkingSummary.maxSegments = Math.max(1, Number(cfg.thinkingSummary.maxSegments) || 12);
+  // OpenAI 扩展端点: enable=对外启用 /v1/responses 与 /v1/images|embeddings|audio|completions|moderations 等直通端点,
+  // 并允许 OpenAI 渠道上游走 Responses API; upstreamResponses=全局默认上游用 /v1/responses(渠道级 useResponses 可覆盖)
+  cfg.openaiExtras = cfg.openaiExtras && typeof cfg.openaiExtras === 'object' ? cfg.openaiExtras : {};
+  cfg.openaiExtras.enable = !!cfg.openaiExtras.enable;
+  cfg.openaiExtras.upstreamResponses = !!cfg.openaiExtras.upstreamResponses;
   return cfg;
 }
 
+// 思考链截断(同步, 零延迟): 按行分段, 每段保留开头 maxChars 字; 长行按步长切成多块各取开头
+function truncateReasoning(text, maxChars) {
+  if (!text) return '';
+  const out = [];
+  for (const rawLine of text.split('\n')) {
+    if (!rawLine.trim()) continue;
+    if (rawLine.length <= maxChars) { out.push(rawLine); continue; }
+    const step = maxChars * 2;
+    for (let i = 0; i < rawLine.length && out.length < 60; i += step) {
+      const c = rawLine.slice(i, i + maxChars);
+      out.push(c + (i + maxChars < rawLine.length ? '…' : ''));
+    }
+  }
+  return out.join('\n');
+}
+
+// 规整 summarize 端点 URL 为完整 chat completions 路径(支持填 base / 带 /v1 / 完整路径)
+function normalizeSummarizeUrl(baseUrl) {
+  let u = String(baseUrl || '').trim().replace(/\/+$/, '');
+  if (!u) return '';
+  if (/\/chat\/completions$/.test(u)) return u;
+  if (/\/v1$/.test(u)) return u + '/chat/completions';
+  return u + '/v1/chat/completions';
+}
+
+// 调用一个 OpenAI 兼容端点做单轮文本生成(供 summarize 用); 返回文本或 null
+function callUpstreamText(cfg, baseUrl, apiKey, model, prompt, timeoutMs) {
+  return new Promise((resolve) => {
+    const url = normalizeSummarizeUrl(baseUrl);
+    if (!url || !model || !prompt) return resolve(null);
+    if (apiKey && !/^[\x09\x20-\x7e]*$/.test(apiKey)) return resolve(null); // 非 ASCII key 拒绝
+    const headers = { authorization: 'Bearer ' + (apiKey || '') };
+    const bodyBuf = Buffer.from(JSON.stringify({ model, stream: false, messages: [{ role: 'user', content: prompt }] }));
+    const sub = { ...cfg, responseTimeout: Math.min(timeoutMs || 30000, 60000) };
+    const tmpCh = { proxy: null, insecure: false }; // 直连, 不走渠道代理
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    try {
+      upstreamRequest(sub, tmpCh, url, headers, bodyBuf, (err, upRes) => {
+        if (err) return finish(null);
+        const chunks = [];
+        upRes.on('data', c => chunks.push(c));
+        upRes.on('end', () => {
+          if (upRes.statusCode >= 400) return finish(null);
+          let j; try { j = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (e) { return finish(null); }
+          try { const c = j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content; finish(typeof c === 'string' ? c : ''); }
+          catch (e) { finish(null); }
+        });
+        upRes.on('error', () => finish(null));
+      });
+    } catch (e) { finish(null); }
+  });
+}
+
+// 思考链总结(异步): 按段拆分后用配置的 OpenAI 兼容端点逐段总结成一句, 拼成精简链
+async function summarizeReasoningText(reasoning, tsCfg, ch, cfg) {
+  if (!reasoning) return '';
+  const baseUrl = String(tsCfg.summarizeBaseUrl || '').trim();
+  const apiKey = String(tsCfg.summarizeApiKey || '').trim();
+  const model = String(tsCfg.summarizeModel || '').trim();
+  if (!baseUrl || !model) return truncateReasoning(reasoning, Number(tsCfg.maxCharsPerSegment) || 80); // 未配端点则降级截断
+  const segs = reasoning.split('\n').map(s => s.trim()).filter(Boolean);
+  // 合并过短的相邻段, 减少调用次数(累计约 200 字一段)
+  const merged = [];
+  let cur = '';
+  for (const s of segs) {
+    if ((cur ? cur.length + 1 + s.length : s.length) < 200) cur = cur ? cur + '\n' + s : s;
+    else { if (cur) merged.push(cur); cur = s; }
+  }
+  if (cur) merged.push(cur);
+  const list = merged.slice(0, Number(tsCfg.maxSegments) || 12);
+  if (!list.length) return '';
+  const prompt = String(tsCfg.summarizePrompt || '用一句话中文概括以下思考片段:');
+  const results = await Promise.all(list.map(seg =>
+    callUpstreamText(cfg, baseUrl, apiKey, model, prompt + '\n\n' + seg, 30000).catch(() => '')
+  ));
+  return results.filter(Boolean).map(s => '• ' + String(s).trim()).join('\n');
+}
+
+// 思考链精简中间件: 包在 makeWriter 产出的 writer 外, 拦截 reasoning 事件
+// truncate=实时行缓冲截取(零延迟); summarize=缓冲整段后异步总结(promise chain 串行, end 事件会等总结完)
+function wrapThinkingSummary(writer, tsCfg, ch, cfg) {
+  if (!tsCfg || !tsCfg.enable) return writer;
+  const mode = tsCfg.mode === 'summarize' ? 'summarize' : 'truncate';
+  const maxChars = Math.max(10, Number(tsCfg.maxCharsPerSegment) || 80);
+
+  if (mode === 'truncate') {
+  // truncate 模式: 实时行缓冲截取(零延迟), 每个输出块之间用双换行分隔
+    let lineBuf = '', saw = false, done = false, needSep = false;
+    const emit = (t) => { if (needSep) writer.onEvent({ type: 'reasoning', t: '\n\n' }); writer.onEvent({ type: 'reasoning', t }); needSep = true; };
+    const emitSeg = (line) => {
+      line = line || '';
+      if (!line.trim()) return;
+      if (line.length <= maxChars) { emit(line); return; }
+      const step = maxChars * 2;
+      for (let i = 0; i < line.length; i += step) {
+        const c = line.slice(i, i + maxChars);
+        emit(c + (i + maxChars < line.length ? '…' : ''));
+      }
+    };
+    return {
+      onEvent(ev) {
+        if (ev.type === 'reasoning') {
+          saw = true;
+          lineBuf += ev.t;
+          const lines = lineBuf.split('\n');
+          lineBuf = lines.pop(); // 末行可能不完整, 留缓冲
+          for (const ln of lines) emitSeg(ln);
+        } else {
+          if (saw && !done) { done = true; if (lineBuf) emitSeg(lineBuf); lineBuf = ''; }
+          writer.onEvent(ev);
+        }
+      }
+    };
+  }
+
+  // summarize 模式: 边收思考边分段总结边流式输出(每段独立 promise, 谁回来谁先 flush)
+  // 顺序保证: 所有 reasoning 必须在第一个 text 前 flush——正文到达时若还有总结在飞, hold 住正文等完成(超时10s兜底强制放行, 迟到总结丢弃)
+  // 防护: 思考阶段结束后再有 reasoning 不再当思考喂给总结(防正文混入)
+  let buf = '', saw = false, closed = false, reasoningClosed = false, textFlushed = false;
+  let pending = 0;
+  let pendingEnd = null; // pending 为 0 时需发出的 end 事件
+  let textQ = null;      // 正文 hold 队列(非 null = 正在等总结)
+  const flushEnd = () => { if (pendingEnd && pending === 0) { const e = pendingEnd; pendingEnd = null; closed = true; writer.onEvent(e); } };
+  const releaseText = () => {
+    if (!textQ) return;
+    const q = textQ; textQ = null; textFlushed = true;
+    for (const e of q) writer.onEvent(e);
+  };
+  const dispatch = (seg) => {
+    pending++;
+    summarizeOneSegment(seg, tsCfg, cfg).then(s => {
+      if (s && !closed && !textFlushed) writer.onEvent({ type: 'reasoning', t: s });
+    }).catch(() => {}).then(() => {
+      pending--;
+      if (pending === 0) releaseText();
+      flushEnd();
+    });
+  };
+  return {
+    onEvent(ev) {
+      if (ev.type === 'reasoning') {
+        if (reasoningClosed) { if (textQ) textQ.push(ev); else writer.onEvent(ev); return; } // 思考已结束, 后续 reasoning 当正文透传(正文在 hold 则排队保持顺序)
+        saw = true;
+        buf += ev.t;
+        while (buf.length >= 200) { const seg = buf.slice(0, 200); buf = buf.slice(200); dispatch(seg); }
+      } else if (ev.type === 'text') {
+        // 第一个 text: 思考阶段结束, 剩余尾巴派最后一段总结, 然后 hold 正文等总结齐
+        if (saw && buf && !reasoningClosed) { const tail = buf; buf = ''; reasoningClosed = true; dispatch(tail); }
+        else if (!saw) reasoningClosed = true;
+        if (textQ) { textQ.push(ev); }
+        else if (pending > 0 && !textFlushed) {
+          textQ = [ev];
+          setTimeout(releaseText, 10000); // 超时兜底: 总结模型挂了也最多等 10s
+        } else writer.onEvent(ev);
+      } else if (ev.type === 'end') {
+        // end 可能早于总结到达: 若正文在 hold, end 也排队(必须排在正文后)
+        if (textQ) { textQ.push(ev); }
+        else { pendingEnd = ev; flushEnd(); }
+      } else {
+        writer.onEvent(ev);
+      }
+    }
+  };
+}
+
+// 流式总结: 单段异步调模型总结, 返回 "• 总结结果\n"; 模型失败/返回空时回退截断(保底不丢思考内容, 不带省略号保持格式统一)
+async function summarizeOneSegment(text, tsCfg, cfg) {
+  const baseUrl = String(tsCfg.summarizeBaseUrl || '').trim();
+  const apiKey = String(tsCfg.summarizeApiKey || '').trim();
+  const model = String(tsCfg.summarizeModel || '').trim();
+  const maxChars = Math.max(10, Number(tsCfg.maxCharsPerSegment) || 80);
+  if (!baseUrl || !model || !text) return null;
+  const prompt = String(tsCfg.summarizePrompt || '用一句话中文概括以下思考片段:');
+  // 回退: 简单截取开头(单块, 无省略号), 保持 "• " 格式与正常总结一致
+  const fallbackText = text.slice(0, maxChars).replace(/\n+/g, ' ').trim();
+  const fallback = fallbackText ? '• ' + fallbackText + '\n' : null;
+  try {
+    const s = await callUpstreamText(cfg, baseUrl, apiKey, model, prompt + '\n\n' + text, 30000);
+    if (s && String(s).trim()) return '• ' + String(s).trim() + '\n';
+    // 模型返回空 → 回退截断, 不吞思考(记日志方便排查哪些段没总结成功)
+    logErr('[thinkingSummary] 模型返回空, 回退截断(' + text.length + '字)');
+    return fallback || null;
+  } catch (e) {
+    logErr('[thinkingSummary] 单段总结失败, 回退截断:', e.message);
+    return fallback || null;
+  }
+}
+
 function loadConfig(file) {
+  redactCache.reset(); // 配置可能变了 extra 正则, 隐私过滤缓存必须作废
   let raw = fs.readFileSync(file, 'utf8');
   if (crypt && crypt.isEncText(raw)) {
     const pass = crypt.loadPass();
@@ -203,6 +410,8 @@ function loadConfig(file) {
       models: Array.isArray(ch.models) ? ch.models.map(String) : null,
       modelMap: (ch.modelMap && typeof ch.modelMap === 'object' && !Array.isArray(ch.modelMap)) ? ch.modelMap : null,
       default: !!ch.default,
+      delayMs: Math.max(0, Number(ch.delayMs) || 0),
+      useResponses: !!ch.useResponses,
       addUsage: ch.addUsage !== false,
       anthropicVersion: ch.anthropicVersion ? String(ch.anthropicVersion) : null,
     });
@@ -378,6 +587,24 @@ function getAgents(cfg, ch) {
     agentCache.set(key, a);
   }
   return a;
+}
+
+// 连接级错误判定: 对端提前断开/连不上等, 发生在收到任何响应之前 → 同渠道重试安全(不会重复计费)
+function isConnErr(e) {
+  const m = String((e && e.message) || e || '');
+  return /socket hang up|ECONNRESET|EPIPE|ECONNREFUSED|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|ENOTFOUND/i.test(m);
+}
+
+// 构造一次性 Agent (keepAlive 关闭, 不进缓存): 供同渠道重试用全新连接,
+// 避开已被上游悄悄关闭的 keep-alive 尸体 socket; 不 destroy 共享池, 不影响其他在途请求
+function makeFreshAgents(cfg, ch) {
+  const raw = ch.proxy ? cfg.proxies[ch.proxy] : null;
+  const proxy = (raw && typeof raw === 'object' && raw.type) ? raw : (ch.proxy ? normalizeProxy(ch.proxy) : null);
+  if (proxy) proxy._timeout = cfg.connectTimeout;
+  const o = { keepAlive: false, maxSockets: 4 };
+  if (proxy) return { http: new HttpTunnelAgent(proxy, o), https: new HttpsTunnelAgent(proxy, ch.insecure, o) };
+  if (ch.insecure) return { http: new http.Agent(o), https: new https.Agent({ ...o, rejectUnauthorized: false }) };
+  return { http: new http.Agent(o), https: new https.Agent(o) };
 }
 
 /* ================= 入口解析: 客户端格式 → canonical =================
@@ -565,6 +792,181 @@ function geminiToCanonical(body, urlModel) {
     tools: tools.length ? tools : undefined,
     tool_choice,
   };
+}
+
+/* ================= OpenAI Responses API 转换 ================= */
+// 上游 Responses 流式事件解析(响应输出 → canonical 事件)
+class ResponsesStreamParser {
+  constructor(emit) { this.emit = emit; this.finished = false; this.finishReason = undefined; this.usage = null; this.toolIdx = 0; }
+  handle(j) {
+    const evs = [];
+    switch (j.type) {
+      case 'response.output_text.delta':
+        if (typeof j.delta === 'string' && j.delta) evs.push({ type: 'text', t: j.delta });
+        break;
+      case 'response.output_item.added': {
+        const item = j.item || {};
+        if (item.type === 'function_call') {
+          const i = this.toolIdx++;
+          evs.push({ type: 'tool_start', i, id: item.id || item.call_id || ('call_' + (item.name || '')), name: item.name || '' });
+        }
+        break;
+      }
+      case 'response.function_call_arguments.delta':
+        if (typeof j.delta === 'string' && j.delta) evs.push({ type: 'tool_delta', i: Math.max(0, this.toolIdx - 1), s: j.delta });
+        break;
+      case 'response.completed':
+      case 'response.incomplete':
+      case 'response.failed': {
+        const r = j.response || {};
+        const st = String(r.status || j.type.replace('response.', ''));
+        if (st === 'incomplete') this.finishReason = 'length';
+        else if (st === 'failed') this.finishReason = 'content_filter';
+        else this.finishReason = 'stop';
+        const u = r.usage || j.usage;
+        if (u) this.usage = { input: u.input_tokens || 0, output: u.output_tokens || 0 };
+        break;
+      }
+      default: break;
+    }
+    for (const e of evs) this.emit(e);
+  }
+  finish() {
+    if (this.finished) return;
+    this.finished = true;
+    this.emit({ type: 'end', finish_reason: this.finishReason || 'stop', usage: this.usage || { input: 0, output: 0 } });
+  }
+}
+
+// Responses content 数组 → 通用 content(multi-modal 数组, 纯文本则简化字符串)
+function responsesContentToContent(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  const out = [];
+  for (const p of content) {
+    if (!p || typeof p !== 'object') continue;
+    if (p.type === 'input_text' || p.type === 'output_text' || p.type === 'text') {
+      if (typeof p.text === 'string') out.push({ type: 'text', text: p.text });
+    } else if (p.type === 'input_image' && p.image_url) {
+      out.push({ type: 'image_url', image_url: typeof p.image_url === 'string' ? { url: p.image_url } : p.image_url });
+    } else if (p.type === 'input_file' && (p.file_url || p.filename)) {
+      const u = typeof p.file_url === 'string' ? p.file_url : '';
+      if (u) out.push({ type: 'image_url', image_url: { url: u } });
+    }
+  }
+  if (!out.length) return '';
+  return (out.length === 1 && out[0].type === 'text') ? out[0].text : out;
+}
+
+// 客户端 Responses 请求 → canonical (input/instructions → messages)
+function responsesToCanonical(body, urlModel) {
+  const messages = [];
+  const instructions = body.instructions;
+  if (typeof instructions === 'string' && instructions) messages.push({ role: 'system', content: instructions });
+  else if (Array.isArray(instructions)) {
+    const txt = instructions.filter(p => p && typeof p.text === 'string').map(p => p.text).join('');
+    if (txt) messages.push({ role: 'system', content: txt });
+  }
+  const rawInput = typeof body.input === 'string' ? [body.input] : (Array.isArray(body.input) ? body.input : []);
+  for (const item of rawInput) {
+    if (typeof item === 'string') { messages.push({ role: 'user', content: item }); continue; }
+    if (!item || typeof item !== 'object') continue;
+    if (item.type === 'function_call') {
+      messages.push({
+        role: 'assistant', content: '',
+        tool_calls: [{ id: item.call_id || item.id || randId('call_'), type: 'function',
+          function: { name: item.name || '', arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments == null ? {} : item.arguments) } }],
+      });
+    } else if (item.type === 'function_call_output') {
+      messages.push({ role: 'tool', tool_call_id: item.call_id || '', content: typeof item.output === 'string' ? item.output : JSON.stringify(item.output == null ? {} : item.output) });
+    } else if (item.type === 'message' || item.role) {
+      let role = item.role || 'user';
+      if (role === 'developer') role = 'system';
+      if (role === 'system' && messages.length && messages[0].role === 'system') {
+        messages[0].content = toText(messages[0].content) + '\n' + toText(responsesContentToContent(item.content));
+        continue;
+      }
+      messages.push({ role, content: responsesContentToContent(item.content) });
+    }
+    // reasoning / 其它类型忽略
+  }
+  let tools;
+  if (Array.isArray(body.tools) && body.tools.length) {
+    tools = body.tools.map(t => (t && t.type === 'function') ? {
+      type: 'function', function: { name: t.name, description: t.description || '', parameters: (t.parameters && typeof t.parameters === 'object') ? t.parameters : { type: 'object' } },
+    } : t);
+  }
+  let tool_choice;
+  if (typeof body.tool_choice === 'string') tool_choice = body.tool_choice;
+  else if (body.tool_choice && body.tool_choice.type === 'function' && body.tool_choice.name) tool_choice = { type: 'function', function: { name: body.tool_choice.name } };
+  return {
+    model: body.model || urlModel,
+    stream: !!body.stream,
+    messages,
+    temperature: body.temperature,
+    top_p: body.top_p,
+    max_tokens: body.max_output_tokens != null ? body.max_output_tokens : body.max_tokens,
+    stop: normStop(body.stop),
+    tools,
+    tool_choice,
+  };
+}
+
+// canonical → 上游 Responses 请求体 (system → instructions, messages → input items)
+function canonicalToResponsesBody(c) {
+  const instructions = [];
+  const input = [];
+  for (const m of (c.messages || [])) {
+    if (!m || typeof m !== 'object') continue;
+    if (m.role === 'system' || m.role === 'developer') {
+      const t = toText(m.content);
+      if (t) instructions.push(t);
+    } else if (m.role === 'assistant') {
+      const parts = [];
+      if (typeof m.content === 'string') { if (m.content) parts.push({ type: 'output_text', text: m.content }); }
+      else if (Array.isArray(m.content)) {
+        for (const p of m.content) {
+          if (!p) continue;
+          if (p.type === 'text' && typeof p.text === 'string') parts.push({ type: 'output_text', text: p.text });
+          else if (p.type === 'image_url' && p.image_url && p.image_url.url) parts.push({ type: 'input_image', image_url: p.image_url.url });
+        }
+      }
+      if (Array.isArray(m.tool_calls) && m.tool_calls.length) {
+        for (const tc of m.tool_calls) {
+          input.push({ type: 'function_call', call_id: tc.id || randId('call_'), name: (tc.function && tc.function.name) || '', arguments: (tc.function && tc.function.arguments) != null ? String(tc.function.arguments) : '{}' });
+        }
+      }
+      if (parts.length) input.push({ type: 'message', role: 'assistant', content: parts });
+    } else if (m.role === 'tool') {
+      input.push({ type: 'function_call_output', call_id: m.tool_call_id || '', output: toText(m.content) });
+    } else {
+      const content = (typeof m.content === 'string') ? m.content : (Array.isArray(m.content) ? m.content.map(p => {
+        if (!p) return null;
+        if (p.type === 'text' && typeof p.text === 'string') return { type: 'input_text', text: p.text };
+        if (p.type === 'image_url' && p.image_url && p.image_url.url) return { type: 'input_image', image_url: p.image_url.url };
+        return null;
+      }).filter(Boolean) : '');
+      input.push({ type: 'message', role: 'user', content: content === '' ? ' ' : content });
+    }
+  }
+  const body = { model: c.model, input: input.length ? input : [' '], stream: !!c.stream };
+  if (instructions.length) body.instructions = instructions.join('\n');
+  if (c.temperature !== undefined) body.temperature = c.temperature;
+  if (c.top_p !== undefined) body.top_p = c.top_p;
+  if (c.max_tokens !== undefined) body.max_output_tokens = c.max_tokens;
+  if (c.stop && c.stop.length) body.stop = c.stop;
+  if (c.tools && c.tools.length) {
+    body.tools = c.tools.map(t => (t && t.type === 'function') ? {
+      type: 'function', name: t.function.name, description: t.function.description || '',
+      parameters: (t.function.parameters && typeof t.function.parameters === 'object') ? t.function.parameters : { type: 'object' },
+    } : t);
+    if (c.tool_choice) {
+      if (c.tool_choice === 'required' || c.tool_choice === 'none' || c.tool_choice === 'auto') body.tool_choice = c.tool_choice;
+      else if (c.tool_choice.type === 'function' && c.tool_choice.function) body.tool_choice = { type: 'function', name: c.tool_choice.function.name };
+      else body.tool_choice = 'auto';
+    }
+  }
+  return body;
 }
 
 /* ================= 出口构建: canonical → 上游格式 ================= */
@@ -868,6 +1270,62 @@ function canonicalToGeminiResp(cresp, model) {
   };
 }
 
+// 上游 Responses 非流式响应 → canonical 响应 (output 数组解析)
+function responsesRespToCanonical(j) {
+  let text = '';
+  const reasoningParts = [];
+  const toolCalls = [];
+  for (const item of (j.output || [])) {
+    if (!item) continue;
+    if (item.type === 'message') {
+      for (const p of (item.content || [])) {
+        if (p && p.type === 'output_text' && typeof p.text === 'string') text += p.text;
+      }
+    } else if (item.type === 'function_call') {
+      toolCalls.push({ id: item.id || item.call_id || randId('call_'), type: 'function', function: { name: item.name || '', arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments == null ? {} : item.arguments) } });
+    } else if (item.type === 'reasoning') {
+      const sums = (item.summary || []).filter(s => s && s.type === 'summary_text' && typeof s.text === 'string').map(s => s.text);
+      if (sums.length) reasoningParts.push(sums.join('\n'));
+    }
+  }
+  const usage = j.usage || {};
+  const st = String(j.status || 'completed');
+  let finish = 'stop';
+  if (st === 'incomplete') finish = 'length';
+  else if (st === 'failed') finish = 'content_filter';
+  if (toolCalls.length) finish = 'tool_calls';
+  return {
+    text,
+    reasoning: reasoningParts.length ? reasoningParts.join('\n') : undefined,
+    tool_calls: toolCalls.length ? toolCalls : undefined,
+    finish_reason: finish,
+    usage: { input: usage.input_tokens != null ? usage.input_tokens : 0, output: usage.output_tokens != null ? usage.output_tokens : 0 },
+  };
+}
+
+// canonical 响应 → 客户端 Responses 非流式响应
+function canonicalToResponsesResp(cresp, model) {
+  const output = [];
+  if (cresp.reasoning) {
+    output.push({ type: 'reasoning', id: randId('rs_'), summary: [{ type: 'summary_text', text: cresp.reasoning }] });
+  }
+  if (cresp.tool_calls && cresp.tool_calls.length) {
+    for (const tc of cresp.tool_calls) {
+      output.push({ type: 'function_call', id: randId('fc_'), call_id: tc.id || randId('call_'), name: (tc.function && tc.function.name) || '', arguments: (tc.function && tc.function.arguments) != null ? String(tc.function.arguments) : '{}', status: 'completed' });
+    }
+  }
+  const content = cresp.text !== '' ? [{ type: 'output_text', text: cresp.text, annotations: [] }] : [];
+  output.push({ type: 'message', id: randId('msg_'), status: 'completed', role: 'assistant', content });
+  const finStatus = (cresp.finish_reason === 'length' || cresp.finish_reason === 'content_filter') ? 'incomplete' : 'completed';
+  return {
+    id: randId('resp_'), object: 'response', created_at: nowSec(), status: finStatus, model, output,
+    incomplete_details: cresp.finish_reason === 'length' ? { reason: 'max_output_tokens' } : null,
+    instructions: null, metadata: {}, parallel_tool_calls: true,
+    usage: { input_tokens: cresp.usage.input, output_tokens: cresp.usage.output, total_tokens: cresp.usage.input + cresp.usage.output },
+    error: null,
+  };
+}
+
 /* ================= SSE 解码 + 上游流 → canonical 事件 ================= */
 class SSEDecoder {
   constructor(onData) { this.onData = onData; this.buf = ''; this.lines = []; }
@@ -1105,6 +1563,91 @@ function makeWriter(format, res, model, opts = {}) {
   };
 }
 
+/* ================= canonical 事件 → 客户端 Responses 流式 SSE ================= */
+function makeResponsesWriter(res, model) {
+  const respId = randId('resp_');
+  const msgId = randId('msg_');
+  const created = nowSec();
+  let started = false, nextOutIdx = 0, msgOutIdx = null, msgText = '';
+  let curReasoning = null, curTool = null;
+  const outputArr = [];
+  const usage = { input: 0, output: 0 };
+  const baseResp = (status) => ({ id: respId, object: 'response', created_at: created, status: status || 'in_progress', model, output: [], incomplete_details: null, instructions: null, metadata: {}, parallel_tool_calls: true, temperature: null, top_p: null, max_output_tokens: null, tools: [], tool_choice: 'auto', usage: null, error: null });
+  const ensureStart = () => {
+    if (started) return;
+    started = true;
+    sseData(res, { type: 'response.created', response: baseResp('in_progress') });
+    sseData(res, { type: 'response.in_progress', response: baseResp('in_progress') });
+  };
+  const ensureMsg = () => {
+    if (msgOutIdx != null) return;
+    msgOutIdx = nextOutIdx++;
+    sseData(res, { type: 'response.output_item.added', output_index: msgOutIdx, item: { id: msgId, type: 'message', status: 'in_progress', role: 'assistant', content: [] } });
+    sseData(res, { type: 'response.content_part.added', item_id: msgId, output_index: msgOutIdx, content_index: 0, part: { type: 'output_text', text: '', annotations: [] } });
+  };
+  const finishItems = () => {
+    if (msgOutIdx != null) {
+      const part = { type: 'output_text', text: msgText, annotations: [] };
+      sseData(res, { type: 'response.output_text.done', item_id: msgId, output_index: msgOutIdx, content_index: 0, part });
+      sseData(res, { type: 'response.content_part.done', item_id: msgId, output_index: msgOutIdx, content_index: 0, part });
+      sseData(res, { type: 'response.output_item.done', output_index: msgOutIdx, item: { id: msgId, type: 'message', status: 'completed', role: 'assistant', content: msgText !== '' ? [part] : [] } });
+      outputArr.push({ id: msgId, type: 'message', status: 'completed', role: 'assistant', content: msgText !== '' ? [part] : [] });
+      msgOutIdx = null;
+    }
+    if (curReasoning) {
+      const part = { type: 'summary_text', text: curReasoning.text };
+      sseData(res, { type: 'response.reasoning_summary_text.done', item_id: curReasoning.id, output_index: curReasoning.outIdx, part });
+      sseData(res, { type: 'response.output_item.done', output_index: curReasoning.outIdx, item: { id: curReasoning.id, type: 'reasoning', status: 'completed', summary: curReasoning.text ? [part] : [] } });
+      outputArr.push({ id: curReasoning.id, type: 'reasoning', status: 'completed', summary: curReasoning.text ? [part] : [] });
+      curReasoning = null;
+    }
+    if (curTool) {
+      sseData(res, { type: 'response.output_item.done', output_index: curTool.outIdx, item: { id: curTool.id, type: 'function_call', status: 'completed', call_id: curTool.callId, name: curTool.name, arguments: curTool.args } });
+      outputArr.push({ id: curTool.id, type: 'function_call', status: 'completed', call_id: curTool.callId, name: curTool.name, arguments: curTool.args });
+      curTool = null;
+    }
+  };
+  return {
+    onEvent(ev) {
+      if (ev.type === 'text') {
+        ensureStart(); ensureMsg(); msgText += ev.t;
+        sseData(res, { type: 'response.output_text.delta', item_id: msgId, output_index: msgOutIdx, content_index: 0, delta: ev.t });
+      } else if (ev.type === 'reasoning') {
+        ensureStart();
+        if (!curReasoning) {
+          curReasoning = { id: randId('rs_'), outIdx: nextOutIdx++, text: '' };
+          sseData(res, { type: 'response.output_item.added', output_index: curReasoning.outIdx, item: { id: curReasoning.id, type: 'reasoning', status: 'in_progress', summary: [] } });
+        }
+        curReasoning.text += ev.t;
+        sseData(res, { type: 'response.reasoning_summary_text.delta', item_id: curReasoning.id, output_index: curReasoning.outIdx, delta: ev.t });
+      } else if (ev.type === 'tool_start') {
+        ensureStart();
+        curTool = { id: randId('fc_'), callId: ev.id || randId('call_'), name: ev.name || '', outIdx: nextOutIdx++, args: '' };
+        sseData(res, { type: 'response.output_item.added', output_index: curTool.outIdx, item: { id: curTool.id, type: 'function_call', status: 'in_progress', call_id: curTool.callId, name: curTool.name, arguments: '' } });
+      } else if (ev.type === 'tool_delta') {
+        if (curTool && curTool.outIdx != null) {
+          curTool.args += ev.s;
+          sseData(res, { type: 'response.function_call_arguments.delta', item_id: curTool.id, output_index: curTool.outIdx, delta: ev.s });
+        }
+      } else if (ev.type === 'end') {
+        ensureStart();
+        finishItems();
+        const u = ev.usage || { input: 0, output: 0 };
+        usage.input = u.input || 0; usage.output = u.output || 0;
+        const finStatus = ev.finish_reason === 'length' ? 'incomplete' : (ev.finish_reason === 'content_filter' ? 'failed' : 'completed');
+        const full = baseResp(finStatus);
+        full.output = outputArr;
+        full.incomplete_details = finStatus === 'incomplete' ? { reason: 'max_output_tokens' } : null;
+        full.usage = { input_tokens: usage.input, output_tokens: usage.output, total_tokens: usage.input + usage.output };
+        if (finStatus === 'failed') full.error = { code: 'server_error', message: 'upstream finished with content_filter' };
+        sseData(res, { type: 'response.' + finStatus, response: full });
+        res.write('data: [DONE]\n\n');
+        res.end();
+      }
+    },
+  };
+}
+
 /* ================= 渠道路由 / 鉴权 / 错误 / 模型列表 ================= */
 
 // 收集所有匹配该 model 的候选渠道, 按 round-robin 计数器旋转起始位置
@@ -1207,10 +1750,10 @@ function joinUrl(base, suffix) {
   return b + suffix;
 }
 
-function upstreamRequest(cfg, ch, urlStr, headers, bodyBuf, cb, method) {
+function upstreamRequest(cfg, ch, urlStr, headers, bodyBuf, cb, method, agentsOverride) {
   const u = new URL(urlStr);
   const isHttps = u.protocol === 'https:';
-  const agents = getAgents(cfg, ch);
+  const agents = agentsOverride || getAgents(cfg, ch);
   const mod = isHttps ? https : http;
   const opts = {
     protocol: u.protocol,
@@ -1318,15 +1861,26 @@ const BUILD_BODY = { openai: canonicalToOpenAIBody, claude: canonicalToClaudeBod
 // 可重试的上游错误: 鉴权失败(换 key 重试)/限流/服务端错误/超时
 const RETRYABLE = new Set([401, 403, 408, 409, 425, 429, 500, 502, 503, 504, 529]);
 
+// OpenAI 渠道是否用 Responses API 上游 (仅 openaiExtras.enable 时生效; 渠道级 useResponses 覆盖全局 upstreamResponses)
+function chUsesResponses(cfg, ch) {
+  if (ch.type !== 'openai') return false;
+  const oe = cfg.openaiExtras || {};
+  if (!oe.enable) return false;
+  return ch.useResponses !== undefined ? !!ch.useResponses : !!oe.upstreamResponses;
+}
+
 // 为指定渠道构建上游请求的 url / headers / body
-function buildRequestForChannel(cfg, ch, clientFormat, canonical, body, urlInfo, req) {
-  const direct = clientFormat === ch.type;
+function buildRequestForChannel(cfg, ch, clientFormat, clientApi, canonical, body, urlInfo, req) {
+  // 思考链精简开启时, 即使同格式也走 canonical 转换路径(否则直通管道会绕过精简);
+  // 客户端 API(chat/responses) 与上游 API(chat/responses) 不一致时也必须走转换中枢
+  const upApi = chUsesResponses(cfg, ch) ? 'responses' : 'chat';
+  const direct = clientFormat === ch.type && clientApi === upApi && !(cfg.thinkingSummary && cfg.thinkingSummary.enable);
   const stream = canonical.stream;
   const upstreamModel = canonical.model; // 已被调用方改写为该渠道的上游模型名
   let url, headers = {}, bodyBuf;
   if (direct) {
     if (ch.type === 'openai') {
-      url = joinUrl(ch.baseUrl, '/v1/chat/completions');
+      url = joinUrl(ch.baseUrl, upApi === 'responses' ? '/v1/responses' : '/v1/chat/completions');
       body.model = upstreamModel;
       headers.authorization = 'Bearer ' + ch.apiKey;
     } else if (ch.type === 'claude') {
@@ -1343,8 +1897,8 @@ function buildRequestForChannel(cfg, ch, clientFormat, canonical, body, urlInfo,
   } else {
     const uc = { ...canonical, model: upstreamModel };
     if (ch.type === 'openai') {
-      url = joinUrl(ch.baseUrl, '/v1/chat/completions');
-      bodyBuf = Buffer.from(JSON.stringify(BUILD_BODY.openai(uc, { addUsage: ch.addUsage })));
+      url = joinUrl(ch.baseUrl, upApi === 'responses' ? '/v1/responses' : '/v1/chat/completions');
+      bodyBuf = Buffer.from(JSON.stringify(upApi === 'responses' ? canonicalToResponsesBody(uc) : BUILD_BODY.openai(uc, { addUsage: ch.addUsage })));
       headers.authorization = 'Bearer ' + ch.apiKey;
     } else if (ch.type === 'claude') {
       url = joinUrl(ch.baseUrl, '/v1/messages');
@@ -1359,14 +1913,55 @@ function buildRequestForChannel(cfg, ch, clientFormat, canonical, body, urlInfo,
     }
   }
   if (stream) headers.accept = 'text/event-stream';
-  return { url, headers, bodyBuf, direct, stream };
+  return { url, headers, bodyBuf, direct, stream, upApi };
 }
 
 // 处理上游成功响应(2xx): 直通或跨格式转换. 提取自原 handleChat.
-function handleUpstreamResponse(cfg, ch, clientFormat, canonical, body, urlInfo, req, res, upRes, built, ctx) {
-  const { direct, stream } = built;
+/* ================= 请求记录 (config.record: {enable, server, maxChars}) ================= */
+function instName(cfg) {
+  const bn = cfg._configFile ? path.basename(cfg._configFile, '.json') : 'config';
+  return bn === 'config' ? 'default' : bn.replace(/^config\./, '');
+}
+// 写一条记录: 配了 server 就 POST JSON 过去(异步, 不阻塞响应), 否则追加到本机 log/requests-<实例>.jsonl
+function writeRequestRecord(cfg, recCfg, rec) {
+  const line = JSON.stringify(rec);
+  if (recCfg.server) { postRequestRecord(recCfg.server, line); return; }
+  try {
+    const dir = path.join(path.dirname(cfg._configFile || process.cwd()), 'log');
+    fs.mkdirSync(dir, { recursive: true });
+    const f = path.join(dir, 'requests-' + instName(cfg) + '.jsonl');
+    // 简单轮转: 超过 5MB 时只保留尾部约 2MB (按行截断, 不截断 JSON)
+    try {
+      const st = fs.statSync(f);
+      if (st.size > 5 * 1024 * 1024) {
+        const txt = fs.readFileSync(f, 'utf8');
+        const cut = txt.indexOf('\n', Math.max(0, txt.length - 2 * 1024 * 1024));
+        fs.writeFileSync(f, cut >= 0 ? txt.slice(cut + 1) : txt.slice(-2 * 1024 * 1024));
+      }
+    } catch (_) {}
+    fs.appendFileSync(f, line + '\n');
+  } catch (e) { logErr('请求记录写入失败:', e.message); }
+}
+function postRequestRecord(server, line) {
+  try {
+    const u = new URL(server);
+    const mod = u.protocol === 'https:' ? https : http;
+    const r = mod.request({
+      method: 'POST', hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search, timeout: 10000,
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(line) },
+    }, (resp) => { resp.resume(); });
+    r.on('timeout', () => r.destroy(new Error('timeout')));
+    r.on('error', (e) => logErr('请求记录上报失败:', e.message));
+    r.end(line);
+  } catch (e) { logErr('请求记录服务器地址无效:', e.message); }
+}
+
+function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, body, urlInfo, req, res, upRes, built, ctx, retryHook) {
+  const { direct, stream, upApi } = built;
   const { logMeta, t0, usageCapture, stats } = ctx;
   const rpInc = (cfg.replace && Array.isArray(cfg.replace.inc)) ? rpCompile(cfg.replace.inc) : [];
+  const isResponsesUp = ch.type === 'openai' && upApi === 'responses';
 
   if (direct) {
     const ct = upRes.headers['content-type'] || (stream ? 'text/event-stream' : 'application/json');
@@ -1374,7 +1969,7 @@ function handleUpstreamResponse(cfg, ch, clientFormat, canonical, body, urlInfo,
       res.writeHead(upRes.statusCode, { 'Content-Type': ct, 'X-AI-Gateway-Channel': ch.name, 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' });
     } catch (_) { return; }
     if (stream) {
-      const parser = new UpstreamStreamParser(ch.type, () => {});
+      const parser = isResponsesUp ? new ResponsesStreamParser(() => {}) : new UpstreamStreamParser(ch.type, () => {});
       const dec = new SSEDecoder((data) => { try { if (data !== '[DONE]') parser.handle(JSON.parse(data)); } catch (_) {} });
       upRes.on('data', c => { try { dec.push(c.toString('utf8')); } catch (_) {} });
       upRes.on('end', () => { dec.end(); parser.finish(); usageCapture.input = parser.usage ? parser.usage.input : 0; usageCapture.output = parser.usage ? parser.usage.output : 0; ctx.logDone(upRes.statusCode); });
@@ -1384,7 +1979,7 @@ function handleUpstreamResponse(cfg, ch, clientFormat, canonical, body, urlInfo,
       upRes.on('data', c => chunks.push(c));
       upRes.on('end', () => {
         const j = safeParse(Buffer.concat(chunks).toString('utf8'));
-        if (j) { const cr = UP_RESP[ch.type](j); usageCapture.input = cr.usage.input; usageCapture.output = cr.usage.output; }
+        if (j) { const cr = isResponsesUp ? responsesRespToCanonical(j) : UP_RESP[ch.type](j); usageCapture.input = cr.usage.input; usageCapture.output = cr.usage.output; }
         ctx.logDone(upRes.statusCode);
       });
       upRes.on('error', () => { try { res.end(); } catch (_) {} });
@@ -1418,8 +2013,12 @@ function handleUpstreamResponse(cfg, ch, clientFormat, canonical, body, urlInfo,
         'X-AI-Gateway-Channel': ch.name, 'Access-Control-Allow-Origin': '*',
       });
     } catch (_) { return; }
-    const writer = makeWriter(clientFormat, res, canonical.model, { geminiArray: isArrayStream });
-    const parser = new UpstreamStreamParser(ch.type, ev => {
+    const writer = wrapThinkingSummary(
+      (clientFormat === 'openai' && clientApi === 'responses') ? makeResponsesWriter(res, canonical.model) : makeWriter(clientFormat, res, canonical.model, { geminiArray: isArrayStream }),
+      cfg.thinkingSummary, ch, cfg);
+    const parser = isResponsesUp ? new ResponsesStreamParser(ev => {
+      try { if (rpInc.length) rpWalk(ev, rpInc, 0, false); writer.onEvent(ev); } catch (e) { logErr('writer error:', e.message); }
+    }) : new UpstreamStreamParser(ch.type, ev => {
       try { if (rpInc.length) rpWalk(ev, rpInc, 0, false); writer.onEvent(ev); } catch (e) { logErr('writer error:', e.message); }
     });
     const dec = new SSEDecoder((data) => {
@@ -1437,18 +2036,27 @@ function handleUpstreamResponse(cfg, ch, clientFormat, canonical, body, urlInfo,
   } else {
     const chunks = [];
     upRes.on('data', c => chunks.push(c));
-    upRes.on('end', () => {
+    upRes.on('end', async () => {
       const txt = Buffer.concat(chunks).toString('utf8');
       const j = safeParse(txt);
       if (!j) {
+        // 上游 200 但正文不是 JSON(HTML 错误页等, content-type 也可能伪装成 json): 可重试
+        const why = 'upstream returned non-JSON: ' + redactText(txt.slice(0, 200), cfg.redact && cfg.redact.extra);
+        if (retryHook && retryHook(why)) return;
         stats.errors++;
-        return sendError(clientFormat, res, 502, 'upstream returned non-JSON: ' + redactText(txt.slice(0, 200), cfg.redact && cfg.redact.extra));
+        return sendError(clientFormat, res, 502, why);
       }
-      const cresp = UP_RESP[ch.type](j);
+      const cresp = isResponsesUp ? responsesRespToCanonical(j) : UP_RESP[ch.type](j);
       usageCapture.input = cresp.usage.input;
       usageCapture.output = cresp.usage.output;
+      if (cfg.thinkingSummary && cfg.thinkingSummary.enable && cresp.reasoning) {
+        try {
+          if (cfg.thinkingSummary.mode === 'summarize') { const s = await summarizeReasoningText(cresp.reasoning, cfg.thinkingSummary, ch, cfg); if (s) cresp.reasoning = s; }
+          else cresp.reasoning = truncateReasoning(cresp.reasoning, cfg.thinkingSummary.maxCharsPerSegment);
+        } catch (e) { logErr('[thinkingSummary] 非流式精简失败:', e.message); }
+      }
       let out;
-      if (clientFormat === 'openai') out = canonicalToOpenAIResp(cresp, canonical.model);
+      if (clientFormat === 'openai') out = clientApi === 'responses' ? canonicalToResponsesResp(cresp, canonical.model) : canonicalToOpenAIResp(cresp, canonical.model);
       else if (clientFormat === 'claude') out = canonicalToClaudeResp(cresp, canonical.model);
       else out = canonicalToGeminiResp(cresp, canonical.model);
       if (rpInc.length) rpWalk(out, rpInc, 0, false);
@@ -1462,7 +2070,7 @@ function handleUpstreamResponse(cfg, ch, clientFormat, canonical, body, urlInfo,
   }
 }
 
-function handleChat(cfg, clientFormat, req, res, urlInfo, bodyStr) {
+function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
   const stats = cfg._stats;
   let body;
   try { body = JSON.parse(bodyStr || '{}'); } catch (e) { return sendError(clientFormat, res, 400, 'invalid JSON body: ' + e.message); }
@@ -1473,7 +2081,7 @@ function handleChat(cfg, clientFormat, req, res, urlInfo, bodyStr) {
   const rpOutRules = (cfg.replace && Array.isArray(cfg.replace.out)) ? rpCompile(cfg.replace.out) : [];
   if (rpOutRules.length) body = rpWalk(body, rpOutRules, 0, true);
 
-  const canonical = TO_CANON[clientFormat](body, urlInfo.model);
+  const canonical = (clientApi === 'responses') ? responsesToCanonical(body, urlInfo.model) : TO_CANON[clientFormat](body, urlInfo.model);
   if (urlInfo.stream) canonical.stream = true; // gemini: 流式标志在 URL 路径里
   if (!canonical.model) return sendError(clientFormat, res, 400, 'missing "model"');
 
@@ -1481,13 +2089,45 @@ function handleChat(cfg, clientFormat, req, res, urlInfo, bodyStr) {
   if (!candidates.length) return sendError(clientFormat, res, 503, 'no channel configured in config.json');
 
   stats.requests++;
+  // 请求记录(可选, 默认关闭): 包一层 res.write/res.end 捕获实际发给客户端的响应正文
+  const reqId = randId('req');
+  const recCfg = (cfg.record && cfg.record.enable) ? cfg.record : null;
+  const recState = { status: 0, chName: '' };
+  let recChunks = null, recFinalized = false;
   const recordReq = (status, chName, inT, outT) => {
-    stats.recent.push({ id: randId('req'), time: new Date().toISOString().slice(0, 19).replace('T', ' '), model: canonical.model, channel: chName || '', status, duration: Date.now() - t0, inputTokens: inT || 0, outputTokens: outT || 0 });
+    recState.status = status; recState.chName = chName || '';
+    stats.recent.push({ id: reqId, time: new Date().toISOString().slice(0, 19).replace('T', ' '), model: canonical.model, channel: chName || '', status, duration: Date.now() - t0, inputTokens: inT || 0, outputTokens: outT || 0 });
     if (stats.recent.length > 200) stats.recent.shift();
   };
   const stream = canonical.stream;
   const t0 = Date.now();
   const usageCapture = { input: 0, output: 0 };
+  function finalizeRecord() {
+    if (!recCfg || recFinalized) return; recFinalized = true;
+    try {
+      const maxC = (recCfg.maxChars > 0 ? recCfg.maxChars : 200000);
+      let resp = Buffer.concat(recChunks).toString('utf8');
+      if (resp.length > maxC) resp = resp.slice(0, maxC) + '\n…[截断]';
+      let reqTxt = ''; try { reqTxt = JSON.stringify(body); } catch (_) {}
+      if (reqTxt.length > maxC) reqTxt = reqTxt.slice(0, maxC) + '…[截断]';
+      writeRequestRecord(cfg, recCfg, {
+        id: reqId, time: new Date().toISOString(), instance: instName(cfg), format: clientFormat,
+        model: canonical.model, channel: recState.chName, status: recState.status,
+        duration: Date.now() - t0, inputTokens: usageCapture.input || 0, outputTokens: usageCapture.output || 0,
+        request: safeParse(reqTxt) || reqTxt, response: resp,
+      });
+    } catch (_) {}
+  }
+  if (recCfg) {
+    recChunks = [];
+    const ow = res.write.bind(res), oe = res.end.bind(res);
+    res.write = (c, ...a) => { try { if (c) recChunks.push(Buffer.isBuffer(c) ? c : Buffer.from(String(c))); } catch (_) {} return ow(c, ...a); };
+    res.end = (c, ...a) => {
+      try { if (c && typeof c !== 'function') recChunks.push(Buffer.isBuffer(c) ? c : Buffer.from(String(c))); } catch (_) {}
+      finalizeRecord();
+      return oe(c, ...a);
+    };
+  }
   let attempt = 0;
   let lastErrStatus = 0;
   let lastErrMsg = '';
@@ -1504,7 +2144,7 @@ function handleChat(cfg, clientFormat, req, res, urlInfo, bodyStr) {
     const pick = candidates[attempt];
     const ch = pick.ch;
     const myCanonical = { ...canonical, model: pick.upstreamModel || canonical.model };
-    const built = buildRequestForChannel(cfg, ch, clientFormat, myCanonical, body, urlInfo, req);
+    const built = buildRequestForChannel(cfg, ch, clientFormat, clientApi, myCanonical, body, urlInfo, req);
     attempt++;
 
     // HTTP 头只允许 ASCII, 中文/全角字符的 apiKey 会让 node 抛内部错误
@@ -1528,14 +2168,61 @@ function handleChat(cfg, clientFormat, req, res, urlInfo, bodyStr) {
     stats.byChannel[ch.name] = stats.byChannel[ch.name] || { requests: 0, inputTokens: 0, outputTokens: 0 };
     stats.byChannel[ch.name].requests++;
 
-    upstreamRequest(cfg, ch, built.url, built.headers, built.bodyBuf, (err, upRes) => {
+    // 渠道级排队延迟(渠道字段 delayMs, 毫秒): 每个请求发出前先等待; 同一渠道的并发请求经 _gate 链按间隔串行发出(并发也撞不到上游), 缓解 429 限流
+    const delayMs = Math.min(120000, Number(ch.delayMs) || 0);
+    // 连接级错误 / HTML 冒充成功的同渠道重试(默认 cfg.connRetry=2 次, 每次换全新连接):
+    // socket hang up 等错误发生在收到任何响应之前, 重试安全不会重复计费
+    let connRetries = 0;
+    const maxConnRetry = Math.max(0, Number(cfg.connRetry) || 0);
+    // 返回 true = 已安排同渠道重试或切换下一候选; false = 没招了, 调用方走最终失败
+    const retrySameOrNext = (why) => {
+      if (connRetries < maxConnRetry) {
+        connRetries++;
+        log('RETRY', ctx.logMeta, why, '→ 同渠道重试 (' + connRetries + '/' + maxConnRetry + ')');
+        setTimeout(() => doSend(true), 400 * connRetries);
+        return true;
+      }
+      if (attempt < candidates.length) {
+        log('ERR', ctx.logMeta, why, '→ 切换渠道');
+        tryNext();
+        return true;
+      }
+      return false;
+    };
+    const doSend = (fresh) => upstreamRequest(cfg, ch, built.url, built.headers, built.bodyBuf, (err, upRes) => {
       if (err) {
         lastErrStatus = 502; lastErrMsg = 'upstream request failed: ' + err.message;
-        log('ERR', ctx.logMeta, err.message, attempt < candidates.length ? '→ 切换渠道' : '→ 无更多渠道');
-        if (attempt < candidates.length) return tryNext();
+        if (isConnErr(err)) {
+          if (retrySameOrNext(err.message)) return;
+        } else {
+          log('ERR', ctx.logMeta, err.message, attempt < candidates.length ? '→ 切换渠道' : '→ 无更多渠道');
+          if (attempt < candidates.length) return tryNext();
+        }
         stats.errors++;
         recordReq(502, ch.name, 0, 0);
         return sendError(clientFormat, res, 502, lastErrMsg);
+      }
+
+      // 上游拿 HTML 网页冒充成功(CDN 验证页/中转站故障页): 视为可重试错误, 先重试本渠道再换渠道
+      const upCt = String(upRes.headers['content-type'] || '');
+      if (upRes.statusCode < 400 && /text\/html/i.test(upCt)) {
+        const chunks = [];
+        upRes.on('data', c => chunks.push(c));
+        upRes.on('end', () => {
+          lastErrStatus = 502;
+          lastErrMsg = '渠道 ' + ch.name + ' 返回了 HTML 网页而非数据(content-type: ' + upCt + '): ' + redactText(Buffer.concat(chunks).toString('utf8'), cfg.redact && cfg.redact.extra).slice(0, 200);
+          if (retrySameOrNext('upstream returned HTML (content-type: ' + upCt + ')')) return;
+          stats.errors++;
+          recordReq(502, ch.name, 0, 0);
+          return sendError(clientFormat, res, 502, lastErrMsg);
+        });
+        upRes.on('error', () => {
+          if (retrySameOrNext('read HTML response failed')) return;
+          stats.errors++;
+          recordReq(502, ch.name, 0, 0);
+          try { sendError(clientFormat, res, 502, lastErrMsg || 'upstream HTML response read failed'); } catch (_) {}
+        });
+        return;
       }
 
       if (upRes.statusCode >= 400 && RETRYABLE.has(upRes.statusCode) && attempt < candidates.length) {
@@ -1570,15 +2257,127 @@ function handleChat(cfg, clientFormat, req, res, urlInfo, bodyStr) {
         return;
       }
 
-      // 成功(2xx) → 正常处理, 从此不可回退
-      handleUpstreamResponse(cfg, ch, clientFormat, myCanonical, body, urlInfo, req, res, upRes, built, ctx);
-    });
+      // 成功(2xx) → 正常处理, 从此不可回退(正文非 JSON 冒充成功时仍可经 hook 重试)
+      handleUpstreamResponse(cfg, ch, clientFormat, clientApi, myCanonical, body, urlInfo, req, res, upRes, built, ctx, (why) => {
+        lastErrStatus = 502; lastErrMsg = why;
+        return retrySameOrNext(why);
+      });
+    }, undefined, fresh ? makeFreshAgents(cfg, ch) : undefined);
+    if (delayMs > 0) {
+      ch._gate = (ch._gate || Promise.resolve()).catch(() => {}).then(() => new Promise(r => setTimeout(r, delayMs)));
+      ch._gate.then(() => { try { doSend(); } catch (e) { try { sendError(clientFormat, res, 500, 'upstream dispatch failed: ' + e.message); } catch (_) {} } });
+    } else {
+      doSend();
+    }
+  };
+  tryNext();
+}
+
+/* ================= 扩展 OpenAI 端点直通(images/embeddings/audio/completions/moderations) ================= */
+// 只支持 openai 类型渠道: 原样转发(JSON 端点应用 modelMap 改名; multipart 原样 Buffer), 响应透传; 带简单的故障切换
+function handleExtraEndpoint(cfg, req, res, pathname, bodyBuf, contentType) {
+  const stats = cfg._stats;
+  let model = '';
+  let parsed = null;
+  if (contentType && contentType.startsWith('application/json')) {
+    try { parsed = JSON.parse(bodyBuf.toString('utf8')); model = (parsed && parsed.model) || ''; } catch (_) {}
+  }
+  const candidates = pickChannels(cfg, model || undefined).filter(c => c.ch.type === 'openai');
+  if (!candidates.length) {
+    stats.errors++;
+    return sendError('openai', res, 503, 'no openai channel for extended endpoint ' + pathname + ' (扩展端点只支持 openai 类型渠道)');
+  }
+  stats.requests++;
+  let attempt = 0;
+  let lastErr = '';
+  const tryNext = () => {
+    if (attempt >= candidates.length) {
+      stats.errors++;
+      return sendError('openai', res, 502, lastErr || ('all ' + candidates.length + ' channels failed'));
+    }
+    const pick = candidates[attempt];
+    const ch = pick.ch;
+    attempt++;
+    const headers = { authorization: 'Bearer ' + ch.apiKey };
+    if (contentType) headers['Content-Type'] = contentType;
+    for (const [hk, hv] of Object.entries(headers)) {
+      if (typeof hv === 'string' && !/^[\x09\x20-\x7e]*$/.test(hv)) {
+        stats.errors++;
+        return sendError('openai', res, 500, `渠道 "${ch.name}" 的请求头 ${hk} 含非 ASCII 字符(可能是 apiKey 里残留了中文占位符), 请修改 config.json`);
+      }
+    }
+    let outBody = bodyBuf;
+    if (parsed) {
+      if (pick.upstreamModel && parsed.model !== undefined && parsed.model !== pick.upstreamModel) {
+        parsed.model = pick.upstreamModel;
+        outBody = Buffer.from(JSON.stringify(parsed));
+      }
+    }
+    stats.byChannel[ch.name] = stats.byChannel[ch.name] || { requests: 0, inputTokens: 0, outputTokens: 0 };
+    stats.byChannel[ch.name].requests++;
+    log('[extra]', pathname, 'model=' + (model || '-'), 'ch=' + ch.name);
+    let connRetries = 0;
+    const maxConnRetry = Math.max(0, Number(cfg.connRetry) || 0);
+    const doSend = (fresh) => upstreamRequest(cfg, ch, joinUrl(ch.baseUrl, pathname), headers, outBody, (err, upRes) => {
+      if (err) {
+        lastErr = 'upstream request failed: ' + err.message;
+        if (isConnErr(err) && connRetries < maxConnRetry) {
+          connRetries++;
+          log('RETRY', '[extra]', pathname, err.message, '→ 同渠道重试 (' + connRetries + '/' + maxConnRetry + ')');
+          return setTimeout(() => doSend(true), 400 * connRetries);
+        }
+        log('ERR', '[extra]', pathname, err.message, attempt < candidates.length ? '→ 切换渠道' : '→ 无更多渠道');
+        if (attempt < candidates.length) return tryNext();
+        stats.errors++;
+        return sendError('openai', res, 502, lastErr);
+      }
+      if (upRes.statusCode >= 400 && RETRYABLE.has(upRes.statusCode) && attempt < candidates.length) {
+        const sc = upRes.statusCode;
+        const chunks = [];
+        upRes.on('data', c => chunks.push(c));
+        upRes.on('end', () => {
+          lastErr = '渠道 ' + ch.name + ' 返回 ' + sc + ': ' + redactText(Buffer.concat(chunks).toString('utf8'), cfg.redact && cfg.redact.extra).slice(0, 300);
+          log('RETRY', '[extra]', pathname, 'status=' + sc, '→ 切换渠道 (' + (candidates.length - attempt) + ' 个剩余)');
+          tryNext();
+        });
+        upRes.on('error', () => tryNext());
+        return;
+      }
+      if (upRes.statusCode >= 400) {
+        const chunks = [];
+        upRes.on('data', c => chunks.push(c));
+        upRes.on('end', () => {
+          stats.errors++;
+          log('UPERR', '[extra]', pathname, 'status=' + upRes.statusCode);
+          try {
+            res.writeHead(upRes.statusCode, { 'Content-Type': upRes.headers['content-type'] || contentType || 'application/json', 'X-AI-Gateway-Channel': ch.name, ...corsHeaders() });
+            res.end(Buffer.concat(chunks));
+          } catch (_) {}
+        });
+        upRes.on('error', () => { try { res.end(); } catch (_) {} });
+        return;
+      }
+      // 成功 → 透传(含流式/二进制/音频)
+      try {
+        res.writeHead(upRes.statusCode, { 'Content-Type': upRes.headers['content-type'] || contentType || 'application/json', 'X-AI-Gateway-Channel': ch.name, ...corsHeaders(), 'Cache-Control': 'no-cache' });
+      } catch (_) { try { res.end(); } catch (_) {} return; }
+      upRes.pipe(res);
+    }, undefined, fresh ? makeFreshAgents(cfg, ch) : undefined);
+    doSend();
   };
   tryNext();
 }
 
 /* ================= HTTP 服务 ================= */
 const GEMINI_RE = /^\/v1(?:beta|alpha)?\/models\/([^:]+):(generateContent|streamGenerateContent|countTokens)$/;
+// OpenAI 扩展直通端点(仅 openaiExtras.enable 时开放; 原样转发到选中的 openai 渠道, 不做格式转换)
+const EXTRA_OPENAI_ENDPOINTS = new Set([
+  '/v1/images/generations', '/v1/images/edits', '/v1/images/variations',
+  '/v1/embeddings',
+  '/v1/audio/speech', '/v1/audio/transcriptions', '/v1/audio/translations',
+  '/v1/completions',
+  '/v1/moderations',
+]);
 
 async function handleHttp(cfg, req, res) {
   const u = new URL(req.url, 'http://localhost');
@@ -1595,7 +2394,8 @@ async function handleHttp(cfg, req, res) {
     return res.end(JSON.stringify({
       ok: true, version: VERSION, startedAt: cfg._stats.startedAt, uptime: Math.round(process.uptime()),
       listen: cfg.listen, configFile: cfg._configFile,
-      channels: cfg.channels.map(c => ({ name: c.name, type: c.type, baseUrl: c.baseUrl, proxy: c.proxy || null, models: c.models, modelMap: c.modelMap, default: c.default })),
+      openaiExtras: cfg.openaiExtras || { enable: false, upstreamResponses: false },
+      channels: cfg.channels.map(c => ({ name: c.name, type: c.type, baseUrl: c.baseUrl, proxy: c.proxy || null, models: c.models, modelMap: c.modelMap, default: c.default, delayMs: c.delayMs || 0, useResponses: !!c.useResponses })),
       proxies: Object.entries(cfg.proxies).map(([k, v]) => ({ name: k, type: v.type, host: v.host, port: v.port })),
       stats: { requests: cfg._stats.requests, errors: cfg._stats.errors, byChannel: cfg._stats.byChannel },
     }));
@@ -1625,10 +2425,16 @@ async function handleHttp(cfg, req, res) {
   if (req.method !== 'POST') return sendError('openai', res, 404, 'not found: ' + req.method + ' ' + p);
 
   let clientFormat = null;
+  let clientApi = 'chat';
   const urlInfo = { model: null, altSse: false };
+  const oe = cfg.openaiExtras || {};
   if (p === '/v1/chat/completions' || p === '/chat/completions') clientFormat = 'openai';
   else if (p === '/v1/messages' || p === '/messages') clientFormat = 'claude';
-  else {
+  else if (p === '/v1/responses') {
+    if (!oe.enable) return sendError('openai', res, 404, 'unknown endpoint: ' + p + ' (OpenAI 扩展端点未开启: 配置 openaiExtras.enable=true)');
+    clientFormat = 'openai';
+    clientApi = 'responses';
+  } else {
     const m = GEMINI_RE.exec(p);
     if (m) {
       clientFormat = 'gemini';
@@ -1638,7 +2444,23 @@ async function handleHttp(cfg, req, res) {
       if (m[2] === 'countTokens') return sendError('gemini', res, 501, 'countTokens is not supported by this gateway');
     }
   }
-  if (!clientFormat) return sendError('openai', res, 404, 'unknown endpoint: ' + p + ' (支持: /v1/chat/completions | /v1/messages | /v1beta/models/{model}:generateContent|:streamGenerateContent)');
+  // OpenAI 扩展直通端点(图片/嵌入/音频/补全/审核): 开启后原样转发到 openai 渠道(保留 multipart/流式)
+  if (!clientFormat && oe.enable && EXTRA_OPENAI_ENDPOINTS.has(p)) {
+    if (!checkAuth(cfg, req, u.searchParams)) return sendError('openai', res, 401, 'invalid gateway key');
+    const ct = req.headers['content-type'] || '';
+    const chunks = [];
+    let size = 0, aborted = false;
+    req.on('data', c => {
+      if (aborted) return;
+      size += c.length;
+      if (size > cfg.maxBodyBytes) { aborted = true; req.destroy(); sendError('openai', res, 413, 'request body too large (>' + cfg.maxBodyBytes + ' bytes)'); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => { if (!aborted) handleExtraEndpoint(cfg, req, res, p, Buffer.concat(chunks), ct); });
+    req.on('error', () => {});
+    return;
+  }
+  if (!clientFormat) return sendError('openai', res, 404, 'unknown endpoint: ' + p + ' (支持: /v1/chat/completions | /v1/messages | /v1beta/models/{model}:generateContent|:streamGenerateContent; 开启 openaiExtras.enable 后还有 /v1/responses 与 /v1/images|embeddings|audio|completions|moderations)');
 
   if (!checkAuth(cfg, req, u.searchParams)) return sendError(clientFormat, res, 401, 'invalid gateway key');
 
@@ -1659,7 +2481,7 @@ async function handleHttp(cfg, req, res) {
   req.on('end', () => {
     if (aborted) return;
     try {
-      handleChat(cfg, clientFormat, req, res, urlInfo, bodyStr);
+      handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr);
     } catch (e) {
       logErr('chat crash:', e);
       sendError(clientFormat, res, 500, 'internal: ' + e.message);
@@ -1802,7 +2624,10 @@ module.exports = {
   canonicalToOpenAIBody, canonicalToClaudeBody, canonicalToGeminiBody,
   openaiRespToCanonical, claudeRespToCanonical, geminiRespToCanonical,
   canonicalToOpenAIResp, canonicalToClaudeResp, canonicalToGeminiResp,
+  responsesToCanonical, canonicalToResponsesBody, responsesRespToCanonical, canonicalToResponsesResp,
+  ResponsesStreamParser, makeResponsesWriter, chUsesResponses, buildRequestForChannel,
   SSEDecoder, UpstreamStreamParser, makeWriter, claudeFinish, geminiFinish,
   socks5Connect, httpConnect, dialViaProxy, makeReader,
+  truncateReasoning, summarizeReasoningText, wrapThinkingSummary, callUpstreamText,
   startServer, checkAuth,
 };

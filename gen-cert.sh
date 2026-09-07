@@ -2,7 +2,7 @@
 # 为 ai-gateway 生成自签名 TLS 证书
 # 用法: bash ~/ai-gateway/gen-cert.sh [域名或IP]
 #   不带参数 → CN=localhost (本机用)
-#   带参数   → CN=你指定的IP或域名 (如局域网IP 192.168.1.7)
+#   带参数   → CN=你指定的IP或域名 (如局域网IP <IP或域名>)
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 CN="${1:-localhost}"

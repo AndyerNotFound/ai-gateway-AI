@@ -79,6 +79,24 @@ function runAgw(args) {
   });
 }
 
+// 保存配置后自动重启实例(300ms 后执行, 先让响应发出去; 自我重启用 setsid 临时脚本脱离进程组)
+function scheduleRestart(cfg, name) {
+  setTimeout(() => {
+    if (name === currentName(cfg)) {
+      try {
+        const tmpScript = path.join(os.tmpdir() || DIR, '.agw-self-restart.sh');
+        const agwPath = path.join(DIR, 'agw.sh');
+        fs.writeFileSync(tmpScript, '#!/bin/bash\nsleep 1\nbash "' + agwPath + '" stop ' + name + ' 2>/dev/null\nsleep 1\nbash "' + agwPath + '" start ' + name + ' >> "' + path.join(DIR, 'log', name + '.log') + '" 2>&1\nrm -f "' + tmpScript + '"\n');
+        fs.chmodSync(tmpScript, 0o755);
+        const cp = exec('setsid bash "' + tmpScript + '" </dev/null >/dev/null 2>&1 &', { stdio: 'ignore' }, () => {});
+        try { cp.unref(); } catch (_) {}
+      } catch (_) {}
+    } else {
+      try { runAgw(['restart', name]); } catch (_) {}
+    }
+  }, 300);
+}
+
 // 管理鉴权
 function checkAdminAuth(cfg, req, query) {
   const key = cfg.adminKey;
@@ -111,6 +129,7 @@ function maskedChannels(cfg, reveal) {
     name: c.name, type: c.type, baseUrl: c.baseUrl,
     proxy: c.proxy || null, models: c.models, modelMap: c.modelMap,
     default: c.default, hasKey: !!(c.apiKey && c.apiKey.length),
+    useResponses: !!c.useResponses, delayMs: c.delayMs || 0,
     keyPrefix: c.apiKey ? c.apiKey.slice(0, 4) + '***' : '',
     apiKey: reveal ? (c.apiKey || '') : undefined,
   }));
@@ -259,6 +278,9 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       tls: c.tls || { enable: false },
       redact: c.redact || { enable: true },
       replace: c.replace || { out: [], inc: [] },
+      record: c.record || { enable: false, server: '' },
+      thinkingSummary: c.thinkingSummary || { enable: false, mode: 'truncate', maxCharsPerSegment: 80, summarizeBaseUrl: '', summarizeApiKey: '', summarizeModel: '', summarizePrompt: '用一句话中文概括以下思考片段:', maxSegments: 12 },
+      openaiExtras: c.openaiExtras || { enable: false, upstreamResponses: false },
       modelSync: c.modelSync || { enable: true, intervalHours: 24 },
       proxies: c.proxies || {},
       channels: maskedChannels(c, reveal),
@@ -292,6 +314,35 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
         intervalHours: Math.max(1, Number(data.modelSync.intervalHours) || 24),
       };
     }
+    // OpenAI 扩展端点: enable=对外开 /v1/responses 与 images/embeddings/audio/completions 等; upstreamResponses=全局默认上游用 Responses API
+    if (data.openaiExtras !== undefined && data.openaiExtras && typeof data.openaiExtras === 'object') {
+      c.openaiExtras = {
+        enable: !!data.openaiExtras.enable,
+        upstreamResponses: !!data.openaiExtras.upstreamResponses,
+      };
+    }
+    // 请求记录: enable 开关 + server 收集地址(留空=本机 JSONL 文件)
+    if (data.record !== undefined && data.record && typeof data.record === 'object') {
+      c.record = {
+        enable: !!data.record.enable,
+        server: String(data.record.server || '').trim(),
+        maxChars: Number(data.record.maxChars) > 0 ? Number(data.record.maxChars) : 200000,
+      };
+    }
+    // 思考链精简: 拦截推理模型 reasoning, 精简后发给客户端
+    if (data.thinkingSummary !== undefined && data.thinkingSummary && typeof data.thinkingSummary === 'object') {
+      const ts = data.thinkingSummary;
+      c.thinkingSummary = {
+        enable: !!ts.enable,
+        mode: ts.mode === 'summarize' ? 'summarize' : 'truncate',
+        maxCharsPerSegment: Math.max(10, Number(ts.maxCharsPerSegment) || 80),
+        summarizeBaseUrl: String(ts.summarizeBaseUrl || '').trim(),
+        summarizeApiKey: String(ts.summarizeApiKey || '').trim(),
+        summarizeModel: String(ts.summarizeModel || '').trim(),
+        summarizePrompt: String(ts.summarizePrompt || '').trim() || '用一句话中文概括以下思考片段:',
+        maxSegments: Math.max(1, Number(ts.maxSegments) || 12),
+      };
+    }
     if (data.proxies !== undefined) c.proxies = data.proxies;
     if (Array.isArray(data.channels)) {
       // 保留 apiKey: 前端传的 channel 如果 hasKey 但没 apiKey, 从旧配置取
@@ -305,7 +356,9 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       });
     }
     try { saveCfg(name, c); } catch (e) { return jsonRes(res, 500, { error: '保存失败: ' + e.message }); }
-    return jsonRes(res, 200, { ok: true });
+    jsonRes(res, 200, { ok: true, restarting: true });
+    scheduleRestart(cfg, name);
+    return;
   }
 
   // POST /admin/api/instance-create/:name — 新建实例(写 config.<name>.json, 仅当不存在时; 启动由前端调 action/start)
@@ -352,7 +405,9 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     if (!ch.apiKey) ch.apiKey = '';
     c.channels.push(ch);
     try { saveCfg(name, c); } catch (e) { return jsonRes(res, 500, { error: '保存失败: ' + e.message }); }
-    return jsonRes(res, 200, { ok: true });
+    jsonRes(res, 200, { ok: true, restarting: true });
+    scheduleRestart(cfg, name);
+    return;
   }
 
   // DELETE /admin/api/channel/:name/:chname — 删除渠道
@@ -364,7 +419,12 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     if (!c) return jsonRes(res, 404, { error: '实例不存在' });
     const before = (c.channels || []).length;
     c.channels = (c.channels || []).filter(x => x.name !== chname);
-    if (c.channels.length < before) { saveCfg(name, c); return jsonRes(res, 200, { ok: true }); }
+    if (c.channels.length < before) {
+      saveCfg(name, c);
+      jsonRes(res, 200, { ok: true, restarting: true });
+      scheduleRestart(cfg, name);
+      return;
+    }
     return jsonRes(res, 404, { error: '渠道不存在' });
   }
 
@@ -458,18 +518,31 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return;
   }
 
-  // POST /admin/api/chat — 聊天测试(代理到本实例 /v1/chat/completions, 自动注入 gatewayKey, 透传流式)
+  // POST /admin/api/chat — 聊天测试(代理到目标实例 /v1/chat/completions, 自动注入 gatewayKey, 透传流式)
+  // body 里可带 instance 指定目标实例(面板顶栏选中的实例), 缺省=本实例
   if (req.method === 'POST' && api === 'chat') {
-    const port = (cfg.listen || {}).port || 16384;
-    const gwKey = cfg.gatewayKey || '';
+    let target = cfg, bodyOut = bodyStr || '{}';
+    try {
+      const bj = JSON.parse(bodyOut);
+      const inst = bj.instance;
+      delete bj.instance;
+      bodyOut = JSON.stringify(bj);
+      if (inst && inst !== currentName(cfg)) {
+        const tc = loadCfg(inst);
+        if (!tc) return jsonRes(res, 404, { error: '实例不存在: ' + inst });
+        target = tc;
+      }
+    } catch (e) { return jsonRes(res, 500, { error: '读取目标实例配置失败: ' + e.message }); }
+    const port = (target.listen || {}).port || 16384;
+    const gwKey = target.gatewayKey || '';
     const opts = { host: '127.0.0.1', port, path: '/v1/chat/completions', method: 'POST', headers: { 'Content-Type': 'application/json' } };
     if (gwKey) opts.headers['authorization'] = 'Bearer ' + gwKey;
     const up = http.request(opts, upRes => {
       res.writeHead(upRes.statusCode, { 'Content-Type': upRes.headers['content-type'] || 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS' });
       upRes.pipe(res);
     });
-    up.on('error', () => { try { res.end(); } catch (e) {} });
-    up.write(bodyStr || '{}');
+    up.on('error', (e) => { try { jsonRes(res, 502, { error: '目标实例不可达(端口 ' + port + '): ' + e.message }); } catch (_) {} });
+    up.write(bodyOut);
     up.end();
     return;
   }
@@ -506,6 +579,25 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     const j = await proxyInstance(inst, 'requests/' + inst);
     if (!j) return jsonRes(res, 200, []);
     return jsonRes(res, 200, Array.isArray(j) ? j : (j.recent || []));
+  }
+
+  // GET /admin/api/record-body/:name?id=req_xxx — 从本机 JSONL 记录文件里按 id 查请求/响应正文
+  if (req.method === 'GET' && api.startsWith('record-body/')) {
+    const name = decodeURIComponent(api.slice('record-body/'.length));
+    const id = (u.searchParams && u.searchParams.get('id')) || '';
+    if (!id) return jsonRes(res, 400, { error: '缺少 id 参数' });
+    const f = path.join(DIR, 'log', 'requests-' + name + '.jsonl');
+    if (!fs.existsSync(f)) return jsonRes(res, 404, { error: '没有记录文件 (该实例未开启本地记录, 或记录正发往远程服务器)' });
+    const needle = '"id":"' + id + '"';
+    const lines = fs.readFileSync(f, 'utf8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const ln = lines[i];
+      if (ln && ln.indexOf(needle) !== -1) {
+        try { return jsonRes(res, 200, { ok: true, record: JSON.parse(ln) }); }
+        catch (_) { return jsonRes(res, 500, { error: '记录解析失败' }); }
+      }
+    }
+    return jsonRes(res, 404, { error: '找不到该请求的正文记录 (该请求发生时可能未开启记录, 或记录文件已轮转)' });
   }
 
   return jsonRes(res, 404, { error: '未知 API: ' + api });

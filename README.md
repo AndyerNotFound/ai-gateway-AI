@@ -117,7 +117,7 @@ curl http://127.0.0.1:16384/v1/chat/completions \
 
 ## 三、三种客户端姿势（同一网关）
 
-设网关在 `http://192.168.1.7:16384`（手机局域网 IP，`ip -4 addr` 或 `ifconfig` 查看）。
+设网关在 `http://<手机局域网IP>:16384`（手机局域网 IP，`ip -4 addr` 或 `ifconfig` 查看）。
 
 ### 1. OpenAI 格式（适用：ChatGPT 客户端、openai SDK、ChatBox、NextChat 等）
 
@@ -129,7 +129,7 @@ curl http://127.0.0.1:16384/v1/chat/completions \
 
 ```python
 from openai import OpenAI
-client = OpenAI(base_url="http://192.168.1.7:16384/v1", api_key="随便填")
+client = OpenAI(base_url="http://<手机局域网IP>:16384/v1", api_key="随便填")
 r = client.chat.completions.create(model="gemini-2.0-flash",
     messages=[{"role": "user", "content": "你好"}], stream=True)
 for chunk in r:
@@ -139,7 +139,7 @@ for chunk in r:
 ### 2. Claude 格式（适用：Claude Code、anthropic SDK 等）
 
 ```bash
-curl http://192.168.1.7:16384/v1/messages \
+curl http://<手机局域网IP>:16384/v1/messages \
   -H "Content-Type: application/json" \
   -H "x-api-key: 随便填" \
   -H "anthropic-version: 2023-06-01" \
@@ -149,7 +149,7 @@ curl http://192.168.1.7:16384/v1/messages \
 ### 3. Gemini 格式（适用：Google AI SDK 等）
 
 ```bash
-curl "http://192.168.1.7:16384/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse" \
+curl "http://<手机局域网IP>:16384/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse" \
   -H "Content-Type: application/json" \
   -H "x-goog-api-key: 随便填" \
   -d '{"contents":[{"role":"user","parts":[{"text":"你好"}]}]}'
@@ -210,3 +210,52 @@ cp ~/ai-gateway/config.json ~/ai-gateway/config.proxy2.json
 沙箱测试套件 215 项全过：转换器单元测试、9 种组合互转 E2E（流式+非流式）、
 SOCKS5/HTTP 代理隧道（含认证、HTTPS 自签）、网关鉴权、渠道路由、多实例、
 轮询（严格交替）、故障切换（429/连接失败/不可重试400/全失败）。
+
+## OpenAI 扩展端点 (Responses / Images / Embeddings / Audio / Completions)
+
+> 版本: 2026-09-06 新增。默认关闭(向后兼容), 开启方式见下。
+
+### 配置开关 (config.json 顶层)
+
+```json
+{
+  "openaiExtras": {
+    "enable": false,            // 总开关: 对外开放扩展端点 + 允许 OpenAI 上游走 Responses API
+    "upstreamResponses": false  // 全局默认: OpenAI 渠道上游用 /v1/responses 而不是 /v1/chat/completions
+  }
+}
+```
+
+渠道级可覆盖(单个 OpenAI 渠道加字段):
+
+```json
+{ "name": "my-resp", "type": "openai", "baseUrl": "…", "useResponses": true }
+```
+
+- 渠道 `useResponses` 未设置时跟随全局 `upstreamResponses`; 仅 openai 类型渠道有效; 仅在 `enable=true` 时生效。
+- 保存后需重启实例: `bash agw.sh restart <实例名>` (m3 面板保存后会自动重启)。
+
+### 网关对外新增端点 (enable=true 时)
+
+| 端点 | 说明 |
+|---|---|
+| `POST /v1/responses` | OpenAI Responses API 入口(支持流式 SSE), 自动与 Chat Completions / Claude / Gemini 互转 |
+| `POST /v1/images/generations` | 图片生成(直通 openai 渠道, JSON) |
+| `POST /v1/images/edits` `POST /v1/images/variations` | 图片编辑/变体(multipart 直通) |
+| `POST /v1/embeddings` | 文本嵌入(直通) |
+| `POST /v1/audio/speech` | TTS(直通, 二进制/流式透传) |
+| `POST /v1/audio/transcriptions` `POST /v1/audio/translations` | 语音转写/翻译(multipart 直通) |
+| `POST /v1/completions` | 老版文本补全(直通) |
+| `POST /v1/moderations` | 内容审核(直通) |
+
+- 扩展直通端点只支持 openai 类型渠道(按 body.model 路由, modelMap 改名对 JSON 端点生效; multipart 端点不改名), 无匹配渠道返回 503。
+- `/v1/responses` 是完整转换端点: 客户端 Responses ↔ 上游 Chat/Responses/Claude/Gemini 任意组合均支持, 含流式、工具调用、reasoning。
+- 关闭开关时以上端点全部 404(与旧版本行为一致)。
+
+### 上游选择矩阵
+
+| 客户端 API | 上游渠道 useResponses=false | 上游渠道 useResponses=true |
+|---|---|---|
+| Chat Completions | 直通(原行为) | canonical 转换 → Responses body |
+| Responses | canonical 转换 → Chat body | 直通 |
+| Claude / Gemini | canonical 转换 | canonical 转换 → Responses body |

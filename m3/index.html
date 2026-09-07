@@ -142,14 +142,16 @@ body{
 .rail-brand{display:flex;align-items:center;gap:12px;padding:12px 16px 16px}
 .rail-brand .logo{width:40px;height:40px;border-radius:12px;background:var(--md-sys-color-primary-container);
   color:var(--md-sys-color-on-primary-container);display:grid;place-items:center;font-size:20px;flex-shrink:0}
+.rail-brand{cursor:pointer;border-radius:16px}
+.rail-brand:hover{background:var(--md-sys-color-surface-container-high)}
 .rail-brand .name{font-size:16px;font-weight:500}
 .rail-brand .ver{font-size:11px;color:var(--md-sys-color-on-surface-variant)}
-.rail md-list{display:flex;flex-direction:column;gap:2px}
-.rail md-list-item{border-radius:999px;cursor:pointer;min-height:56px;
-  --md-list-container-color:transparent;--md-list-item-leading-icon-color:var(--md-sys-color-on-surface-variant)}
-.rail md-list-item[active]{background:var(--md-sys-color-secondary-container);color:var(--md-sys-color-on-secondary-container)}
-.rail md-list-item[active] [slot=headline]{font-weight:600}
-.rail md-list-item [slot=start]{font-size:22px;width:24px;text-align:center}
+.rail-list{display:flex;flex-direction:column;gap:2px}
+.rail-item{display:flex;align-items:center;gap:14px;width:100%;height:48px;padding:0 18px;border:none;border-radius:999px;
+  background:transparent;color:var(--md-sys-color-on-surface-variant);cursor:pointer;font-size:14px;font-family:inherit;text-align:left;flex:none}
+.rail-item:hover{background:var(--md-sys-color-surface-container-high)}
+.rail-item .msym{font-size:22px;width:24px;text-align:center;flex:none}
+.rail-item[active]{background:var(--md-sys-color-secondary-container);color:var(--md-sys-color-on-secondary-container);font-weight:600}
 
 /* ============ 主区 ============ */
 .shell{flex:1;display:flex;flex-direction:column;min-width:0}
@@ -170,9 +172,17 @@ body{
 /* 页面切换动画 */
 .page.anim-in{animation:pageIn .28s cubic-bezier(.2,0,0,1)}
 @keyframes pageIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-@media(prefers-reduced-motion:reduce){.page.anim-in{animation:none}}
+/* 页面左右滑: 按导航顺序判断方向, 向后=从右进, 向前=从左进 */
+.page.anim-slide-r{animation:pageSlideR .26s cubic-bezier(.2,0,0,1)}
+.page.anim-slide-l{animation:pageSlideL .26s cubic-bezier(.2,0,0,1)}
+@keyframes pageSlideR{from{opacity:0;transform:translateX(30px)}to{opacity:1;transform:translateX(0)}}
+@keyframes pageSlideL{from{opacity:0;transform:translateX(-30px)}to{opacity:1;transform:translateX(0)}}
+@media(prefers-reduced-motion:reduce){.page.anim-in,.page.anim-slide-r,.page.anim-slide-l{animation:none}}
 @media(min-width:840px){ .rail{display:flex} .navbar{display:none!important} .main{padding:24px 28px} }
 @media(max-width:839px){ .main{padding:16px;padding-bottom:calc(96px + env(safe-area-inset-bottom))} }
+/* 宽屏/大屏: 内容限宽居中, 不摊满整个显示器 */
+@media(min-width:1200px){ .page{max-width:1080px;width:100%;margin:0 auto} .main{padding:28px 32px} }
+@media(min-width:1800px){ .page{max-width:1280px} }
 
 /* ============ 移动底部导航 ============ */
 .navbar{position:fixed;bottom:0;left:0;right:0;z-index:100;padding-bottom:env(safe-area-inset-bottom)}
@@ -226,6 +236,9 @@ table.tbl{width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px}
     --md-sys-typescale-label-large-size:12px;--md-sys-typescale-label-large-line-height:16px}
   .tbl .row-acts{gap:4px}
   #ov-ch-table th:nth-child(2),#ov-ch-table td:nth-child(2){display:none}
+  /* 请求记录表: 手机隐藏日期只留时分秒, 状态码紧贴勾叉 */
+  .rq-date{display:none}
+  #rq-table th,#rq-table td{padding:8px 6px}
 }
 
 /* 日志 */
@@ -279,6 +292,25 @@ md-list-item{--md-list-container-color:transparent}
 .tag{display:inline-block;font-size:10px;font-weight:600;padding:2px 8px;border-radius:4px;text-transform:uppercase;letter-spacing:.04em}
 .tag.openai{background:#10A37F;color:#fff}.tag.claude{background:#D97757;color:#fff}.tag.gemini{background:#4285F4;color:#fff}
 .tag.default{background:var(--md-sys-color-primary-container);color:var(--md-sys-color-on-primary-container)}
+.pv-setdef{cursor:pointer}
+.ov-nav{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.ov-nav-btn{display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px 4px;border:1px solid var(--md-sys-color-outline-variant);border-radius:16px;background:var(--md-sys-color-surface-container-low);color:var(--md-sys-color-on-surface);cursor:pointer;font-size:13px}
+.ov-nav-btn:active{background:var(--md-sys-color-surface-container-high)}
+.ov-nav-btn .msym{font-size:24px;color:var(--md-sys-color-primary)}
+.icon-act{width:32px;height:32px;min-width:32px;border:none;border-radius:50%;cursor:pointer;background:transparent;color:var(--md-sys-color-on-surface-variant);display:inline-flex;align-items:center;justify-content:center;padding:0;flex:none}
+.icon-act:hover{background:var(--md-sys-color-surface-container-high)}
+.icon-act .msym{font-size:19px}
+.icon-act.on{color:var(--md-sys-color-primary)}
+.icon-act.err{color:var(--md-sys-color-error)}
+.icon-act:disabled{opacity:.5;cursor:default}
+.pv-setdef:hover{text-decoration:underline;text-decoration-color:var(--md-sys-color-primary)}
+.rec-pre{max-height:36vh;overflow:auto;background:var(--md-sys-color-surface-container);border:1px solid var(--md-sys-color-outline-variant);padding:10px;border-radius:8px;font-size:12px;white-space:pre-wrap;word-break:break-all;margin:6px 0 12px}
+.rec-meta{font-size:12px;color:var(--md-sys-color-on-surface-variant);margin-bottom:8px}
+.rp-help summary{cursor:pointer;padding:4px 0;font-size:14px;font-weight:500}
+.rp-help table{width:100%;border-collapse:collapse;font-size:12.5px;margin:8px 0}
+.rp-help td,.rp-help th{border:1px solid var(--md-sys-color-outline-variant);padding:5px 8px;text-align:left}
+.rp-help td:first-child{font-family:monospace;white-space:nowrap}
+.rp-help .ex{color:var(--md-sys-color-on-surface-variant)}
 .muted{color:var(--md-sys-color-on-surface-variant)}
 .small{font-size:12px}
 .grid-form{display:flex;gap:16px;flex-wrap:wrap}
@@ -295,11 +327,16 @@ md-list-item{--md-list-container-color:transparent}
 /* ============ Dialog 样式 ============ */
 /* ============ 对话框(纯 HTML/CSS, 不依赖 shadow DOM) ============ */
 .dlg-overlay{position:fixed;inset:0;z-index:5000;display:flex;align-items:center;justify-content:center;
-  background:rgba(0,0,0,.5);backdrop-filter:blur(2px);padding:16px}
+  background:rgba(0,0,0,.5);backdrop-filter:blur(2px);padding:16px;
+  animation:dlgFade .18s ease-out}
 .dlg-overlay[hidden]{display:none}
 .dlg-box{background:var(--md-sys-color-surface-container-high);border-radius:28px;
   width:min(420px,100%);max-height:min(80vh,600px);display:flex;flex-direction:column;
-  box-shadow:0 8px 32px rgba(0,0,0,.4);overflow:hidden}
+  box-shadow:0 8px 32px rgba(0,0,0,.4);overflow:hidden;
+  animation:dlgPop .24s cubic-bezier(.34,1.3,.5,1)}
+@keyframes dlgFade{from{opacity:0}to{opacity:1}}
+@keyframes dlgPop{from{opacity:0;transform:scale(.9) translateY(14px)}to{opacity:1;transform:scale(1) translateY(0)}}
+@media(prefers-reduced-motion:reduce){.dlg-overlay,.dlg-box{animation:none}}
 .dlg-head{display:flex;align-items:center;justify-content:space-between;padding:20px 24px 0;flex-shrink:0}
 .dlg-head h3{font-size:18px;font-weight:500;line-height:26px;margin:0;color:var(--md-sys-color-on-surface)}
 .dlg-x{background:none;border:none;color:var(--md-sys-color-on-surface-variant);font-size:18px;
@@ -384,11 +421,12 @@ md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wg
 
 <!-- ============ 桌面侧栏 ============ -->
 <nav class="rail" id="rail" aria-label="主导航">
-  <div class="rail-brand">
+  <div class="rail-brand" id="railBrand" title="点击修改页面名称">
     <div class="logo" aria-hidden="true"><span class="msym">smart_toy</span></div>
-    <div><div class="name">AI Gateway</div><div class="ver">Material Web v2.11</div></div>
+    <div style="min-width:0"><div class="name">AI Gateway</div><div class="ver">Material Web v2.11</div></div>
+    <span class="msym" style="font-size:16px;color:var(--md-sys-color-on-surface-variant);margin-left:auto;flex:none">edit</span>
   </div>
-  <md-list id="railList"></md-list>
+  <div id="railList" class="rail-list"></div>
 </nav>
 
 <!-- ============ 主区 ============ -->
@@ -414,6 +452,15 @@ md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wg
         <div class="stat-box"><div class="num" id="ov-requests">-</div><div class="lbl">总请求</div></div>
         <div class="stat-box"><div class="num" id="ov-uptime">-</div><div class="lbl">运行时长</div></div>
       </div>
+      <md-filled-card>
+        <div class="card-head"><div><div class="card-title">全部功能</div><div class="card-sub">底栏放不下的页面从这里进</div></div></div>
+        <div class="ov-nav">
+          <button type="button" class="ov-nav-btn" data-goto="stats"><span class="msym">bar_chart</span>统计</button>
+          <button type="button" class="ov-nav-btn" data-goto="requests"><span class="msym">monitoring</span>请求</button>
+          <button type="button" class="ov-nav-btn" data-goto="logs"><span class="msym">description</span>日志</button>
+          <button type="button" class="ov-nav-btn" data-goto="chat"><span class="msym">chat</span>聊天</button>
+        </div>
+      </md-filled-card>
       <md-filled-card>
         <div class="card-head"><div><div class="card-title">实例状态</div></div>
           <md-text-button data-goto="ports">管理端口</md-text-button></div>
@@ -470,6 +517,20 @@ md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wg
           <md-outlined-text-field id="rt-syncInterval" label="间隔(小时)" type="number" style="width:100px" value="24"></md-outlined-text-field>
           <md-filled-tonal-button id="rt-syncNow">立即同步</md-filled-tonal-button>
         </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;padding:10px 14px;border:1px solid var(--md-sys-color-outline-variant);border-radius:12px;flex-wrap:wrap">
+          <md-switch id="rt-oeEnable"></md-switch>
+          <div style="min-width:0;flex:1">
+            <div style="font-size:14px">OpenAI 扩展端点 (Responses / Images / Embeddings / Audio…)</div>
+            <div style="font-size:12px;color:var(--md-sys-color-on-surface-variant)">开启后网关对外开放 <b>/v1/responses</b> 与 <b>/v1/images/generations · /v1/embeddings · /v1/audio/speech · /v1/audio/transcriptions · /v1/completions · /v1/moderations</b>; 且 OpenAI 渠道可走 Responses API 上游; 重启实例后生效</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;padding:10px 14px 10px 44px;border:1px solid var(--md-sys-color-outline-variant);border-radius:12px">
+          <md-switch id="rt-oeUpstream"></md-switch>
+          <div style="min-width:0">
+            <div style="font-size:14px">OpenAI 上游默认用 Responses API (/v1/responses)</div>
+            <div style="font-size:12px;color:var(--md-sys-color-on-surface-variant)">全局默认; 单个渠道可在渠道设置里用「上游用 Responses API」覆盖; 不开启时上游仍走 /v1/chat/completions</div>
+          </div>
+        </div>
         <div class="flex" style="display:flex;gap:8px;margin-bottom:16px">
           <md-filled-button id="rt-save">保存策略</md-filled-button>
           <md-text-button id="rt-reset">重置</md-text-button>
@@ -489,7 +550,7 @@ md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wg
         </div>
         <div style="display:flex;align-items:center;gap:6px;margin:6px 0 2px">
           <md-checkbox id="rp-out-ci"></md-checkbox><span style="font-size:12px;color:var(--md-sys-color-on-surface-variant)">忽略大小写</span>
-          <span style="font-size:12px;color:var(--md-sys-color-on-surface-variant);margin-left:auto">改动即时保存, 重启实例生效</span>
+          <span style="font-size:12px;color:var(--md-sys-color-on-surface-variant);margin-left:auto">改动即时保存, 实例自动重启生效</span>
         </div>
         <div class="mm-chips" id="rp-out-chips"></div>
       </md-filled-card>
@@ -513,6 +574,46 @@ md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wg
           <md-filled-tonal-button id="rp-test-inc-btn">按接收规则替换</md-filled-tonal-button>
         </div>
         <div class="mono" id="rp-test-result" style="white-space:pre-wrap;word-break:break-all;font-size:13px;min-height:38px;padding:8px;border:1px solid var(--md-sys-color-outline-variant);border-radius:8px">（结果）</div>
+      </md-filled-card>
+      <md-filled-card>
+        <details class="rp-help">
+          <summary>📖 正则表达式速查（点击展开）</summary>
+          <div class="card-sub" style="margin:6px 0">「查找」里写正则，匹配到的文本会被「替换为」的内容取代。所有匹配都会被替换（全局替换）。</div>
+          <table>
+            <tr><th>写法</th><th>含义</th><th>例子</th></tr>
+            <tr><td>.</td><td>任意一个字符（除换行）</td><td class="ex">a.c 匹配 abc、a1c</td></tr>
+            <tr><td>\d &nbsp;\w &nbsp;\s</td><td>数字 / 字母数字下划线 / 空白</td><td class="ex">\d+ 匹配 123</td></tr>
+            <tr><td>[abc] &nbsp;[^abc]</td><td>字符集合 / 排除集合</td><td class="ex">[0-9a-f] 匹配十六进制字符</td></tr>
+            <tr><td>* &nbsp;+ &nbsp;?</td><td>0次+ / 1次+ / 0或1次</td><td class="ex">colou?r 匹配 color、colour</td></tr>
+            <tr><td>{n} &nbsp;{n,m}</td><td>精确n次 / n到m次</td><td class="ex">\d{4} 匹配 2026</td></tr>
+            <tr><td>(…)</td><td>分组（捕获，可在替换里用）</td><td class="ex">见下方 $1 例子</td></tr>
+            <tr><td>|</td><td>或</td><td class="ex">猫|狗 匹配「猫」或「狗」</td></tr>
+            <tr><td>^ &nbsp;$</td><td>行首 / 行尾</td><td class="ex">\s+$ 匹配行尾空白</td></tr>
+            <tr><td>\</td><td>转义特殊字符</td><td class="ex">\. 匹配真正的点号；\( 匹配括号</td></tr>
+          </table>
+          <table>
+            <tr><th>替换为</th><th>含义</th></tr>
+            <tr><td>$1 $2…</td><td>第1/2个分组捕获的内容</td></tr>
+            <tr><td>$&amp;</td><td>整个匹配到的文本</td></tr>
+            <tr><td>留空</td><td>删除匹配到的内容</td></tr>
+          </table>
+          <div class="card-sub" style="margin:6px 0 2px">实用例子：</div>
+          <table>
+            <tr><th>查找</th><th>替换为</th><th>效果</th></tr>
+            <tr><td>第(\d+)章</td><td>第 $1 节</td><td class="ex">「第3章」→「第 3 节」</td></tr>
+            <tr><td>sk-[A-Za-z0-9]+</td><td>***</td><td class="ex">抹掉 API Key</td></tr>
+            <tr><td>(你好|您好)</td><td>[$&amp;]</td><td class="ex">「你好」→「[你好]」</td></tr>
+            <tr><td>\s+$</td><td>(留空)</td><td class="ex">删除每行行尾空白</td></tr>
+            <tr><td>(?i)openai</td><td>AI</td><td class="ex">行内忽略大小写写法；也可用「忽略大小写」开关</td></tr>
+          </table>
+          <div class="card-sub" style="margin:8px 0 2px">注意：</div>
+          <ul style="font-size:12.5px;color:var(--md-sys-color-on-surface-variant);margin:0 0 4px;padding-left:20px;line-height:1.8">
+            <li>流式响应是<b>按行/按片段</b>匹配的，跨行/跨片段的规则在流式下不生效（阻塞式正常）。</li>
+            <li>正则里的 <span class="mono">.</span> 不匹配换行符。</li>
+            <li>发送方向会跳过 model 字段和图片数据（data:URL），不会误伤路由和图片。</li>
+            <li>写错了正则会添加失败并提示，先点「测试」按钮本地试跑再加更稳妥。</li>
+          </ul>
+        </details>
       </md-filled-card>
     </section>
     <section id="page-keys" class="page hidden" hidden>
@@ -554,10 +655,18 @@ md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wg
 
     <section id="page-requests" class="page hidden" hidden>
       <md-filled-card>
+        <div class="card-head"><div><div class="card-title">请求记录收集</div><div class="card-sub">记录请求结构 + 请求/响应正文 (默认关闭)</div></div>
+          <md-switch id="rq-rec-enable" aria-label="开启请求记录"></md-switch></div>
+        <div class="grid-form">
+          <md-outlined-text-field id="rq-rec-server" label="收集服务器地址 (可选)" placeholder="如 http://192.168.x.x:9000/collect" helper="留空 = 存本机 log/requests-<实例>.jsonl; 填写 = 每条 POST JSON 到该地址。保存后实例自动重启生效"></md-outlined-text-field>
+        </div>
+        <md-filled-tonal-button id="rq-rec-save">保存记录设置</md-filled-tonal-button>
+      </md-filled-card>
+      <md-filled-card>
         <div class="card-head"><div class="card-title">请求记录</div>
           <md-text-button id="rq-refresh">刷新</md-text-button></div>
         <div class="tbl-wrap"><table class="tbl" id="rq-table" aria-label="请求记录">
-          <thead><tr><th style="width:22%">时间</th><th style="width:26%">模型</th><th style="width:26%">渠道</th><th style="width:12%">状态</th><th style="width:14%">耗时</th></tr></thead>
+          <thead><tr><th style="width:23%">时间</th><th style="width:22%">模型</th><th style="width:19%">渠道</th><th style="width:11%">状态</th><th style="width:13%">耗时</th><th style="width:12%">正文</th></tr></thead>
           <tbody></tbody></table></div>
       </md-filled-card>
     </section>
@@ -682,7 +791,7 @@ class MockAdapter extends BaseAdapter{
         {name:'deepseek-official',type:'openai',baseUrl:'https://api.deepseek.com/v1',proxy:'-',models:['deepseek-chat','deepseek-reasoner'],default:true,apiKey:'sk-mock-xxxx',hasKey:true},
         {name:'local-minicpm',type:'openai',baseUrl:'http://127.0.0.1:8080/v1',proxy:'-',models:['minicpm5-1b'],apiKey:'',hasKey:false},
       ], 'free-deepseek':[
-        {name:'pool-a',type:'openai',baseUrl:'https://api.example-provider-a.com/v1',proxy:'clash',models:['deepseek-chat'],default:true,hasKey:true},
+        {name:'pool-a',type:'openai',baseUrl:'https://api.example-provider-a.com/v1',proxy:'clash',models:['deepseek-chat'],default:true,delayMs:800,hasKey:true},
         {name:'pool-b',type:'claude',baseUrl:'https://api.anthropic.com/v1',proxy:'clash',models:['claude-sonnet-4-5'],hasKey:true},
         {name:'pool-c',type:'gemini',baseUrl:'https://generativelanguage.googleapis.com/v1beta',proxy:'-',models:['gemini-2.5-pro'],hasKey:true},
       ], nvidia:[
@@ -697,8 +806,10 @@ class MockAdapter extends BaseAdapter{
   async getConfig(name){ return {name, port:this._insts.find(i=>i.name===name)?.port||16384,
     gatewayKey:'', adminKey:'(已设)', channels:(this._chs[name]||[]).map(c=>({...c})),
     proxies:this._pxs[name]||{},
+    record:(this._rec&&this._rec[name])||{enable:false,server:''},
     routing:{maxRetry:3,timeoutSec:60,cooldownSec:30}}; }
-  async saveConfig(name,patch){ if(patch&&patch.proxies) this._pxs[name]=patch.proxies; return {ok:true,patch}; }
+  async saveConfig(name,patch){ if(patch&&patch.proxies) this._pxs[name]=patch.proxies; if(patch&&patch.record){ this._rec=this._rec||{}; this._rec[name]=patch.record; } return {ok:true,patch}; }
+  async getRecordBody(name,id){ return {ok:true,record:{id,time:'2026-08-29 09:41:22',model:'deepseek-chat',channel:'pool-a',status:200,duration:1840,inputTokens:128,outputTokens:64,request:{model:'deepseek-chat',messages:[{role:'user',content:'你好'}]},response:'data: {"choices":[{"delta":{"content":"你好!"}}]}\n\ndata: [DONE]\n'}}; }
   async createInstance(name,body){ this._insts.push({name,port:body.port,running:false,chCount:0,tlsOn:!!(body.tls&&body.tls.enable)}); return {ok:true}; }
   async saveChannel(inst,ch){ const a=this._chs[inst]||(this._chs[inst]=[]);
     const i=a.findIndex(c=>c.name===ch.name); if(i>=0)a[i]=ch; else a.push(ch); return {ok:true}; }
@@ -710,9 +821,9 @@ class MockAdapter extends BaseAdapter{
   async getLogs(name,lines){ return Array.from({length:Math.min(lines||50,50)},(_,i)=>
     `[0${i%9}:${10+i}:22] ai-gateway v1.0.0 就绪 (配置: .../config.${name}.json)`).join('\n'); }
   async getRequests(name){ return [
-    {time:'09:41:22',model:'deepseek-chat',channel:'pool-a',status:200,duration:1840},
-    {time:'09:41:19',model:'kimi-k3',channel:'nvidia-k3-a',status:429,duration:310},
-    {time:'09:40:58',model:'claude-sonnet-4-5',channel:'pool-b',status:200,duration:7190}]; }
+    {id:'req_mock01',time:'09:41:22',model:'deepseek-chat',channel:'pool-a',status:200,duration:1840},
+    {id:'req_mock02',time:'09:41:19',model:'kimi-k3',channel:'nvidia-k3-a',status:429,duration:310},
+    {id:'req_mock03',time:'09:40:58',model:'claude-sonnet-4-5',channel:'pool-b',status:200,duration:7190}]; }
   async action(name,a){ const i=this._insts.find(x=>x.name===name); if(i&&a==='start')i.running=true; if(i&&a==='stop')i.running=false; return {ok:true}; }
   async shutdownAll(){ return {ok:true}; }
   async chat(body){ return { json:()=>Promise.resolve({choices:[{message:{content:'(Mock 回复) 收到: '+body.messages.at(-1).content}}]}) }; }
@@ -722,10 +833,27 @@ class HttpAdapter extends BaseAdapter{
   _hdr(){ const h={'Content-Type':'application/json'}; const k=localStorage.getItem('agw-admin-key'); if(k)h['x-admin-key']=k; return h; }
   async getInstances(signal){ return this._fetch(`${this.base}/admin/api/instances`,{headers:this._hdr()},signal); }
   async getConfig(name,signal){ return this._fetch(`${this.base}/admin/api/config/${encodeURIComponent(name)}?reveal=1`,{headers:this._hdr()},signal); }
-  async saveConfig(name,patch,signal){ return this._fetch(`${this.base}/admin/api/config/${encodeURIComponent(name)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(patch)},signal); }
+  async saveConfig(name,patch,signal){
+    const r=await this._fetch(`${this.base}/admin/api/config/${encodeURIComponent(name)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(patch)},signal);
+    if(r&&r.restarting){ snack('已保存, 实例 '+name+' 重启中…'); await this._waitUp(name); snack('实例 '+name+' 已重启'); }
+    return r;
+  }
+  // 等实例重启完成(轮询实例列表直到 running)
+  async _waitUp(name,timeoutMs=40000){
+    const t0=Date.now();
+    await new Promise(r=>setTimeout(r,3500)); // 先让旧进程退出+新进程启动(自我重启脚本约2-3s)
+    while(Date.now()-t0<timeoutMs){
+      try{ const d=await this.getInstances(); const i=(d.instances||[]).find(x=>x.name===name); if(i&&i.running) return true; }catch(_){}
+      await new Promise(r=>setTimeout(r,1000));
+    }
+    return false;
+  }
+  async getRecordBody(name,id,signal){ return this._fetch(`${this.base}/admin/api/record-body/${encodeURIComponent(name)}?id=${encodeURIComponent(id)}`,{headers:this._hdr()},signal); }
   async createInstance(name,body,signal){ return this._fetch(`${this.base}/admin/api/instance-create/${encodeURIComponent(name)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(body)},signal); }
-  async saveChannel(inst,ch,signal){ return this._fetch(`${this.base}/admin/api/channel/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(ch)},signal); }
-  async deleteChannel(inst,chName,signal){ return this._fetch(`${this.base}/admin/api/channel/${encodeURIComponent(inst)}/${encodeURIComponent(chName)}`,{method:'DELETE',headers:this._hdr()},signal); }
+  async saveChannel(inst,ch,signal){ const r=await this._fetch(`${this.base}/admin/api/channel/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(ch)},signal);
+    if(r&&r.restarting){ snack('已保存, 实例 '+inst+' 重启中…'); await this._waitUp(inst); snack('实例 '+inst+' 已重启'); } return r; }
+  async deleteChannel(inst,chName,signal){ const r=await this._fetch(`${this.base}/admin/api/channel/${encodeURIComponent(inst)}/${encodeURIComponent(chName)}`,{method:'DELETE',headers:this._hdr()},signal);
+    if(r&&r.restarting){ snack('已删除, 实例 '+inst+' 重启中…'); await this._waitUp(inst); snack('实例 '+inst+' 已重启'); } return r; }
   async deleteInstance(name,signal){ return this._fetch(`${this.base}/admin/api/instance/${encodeURIComponent(name)}`,{method:'DELETE',headers:this._hdr()},signal); }
   async fetchModels(inst,body,signal){ return this._fetch(`${this.base}/admin/api/channel-models/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(body)},signal); }
   async syncModels(inst,signal){ return this._fetch(`${this.base}/admin/api/sync-models`,{method:'POST',headers:this._hdr()},signal); }
@@ -768,11 +896,11 @@ let adapter = new MockAdapter();
 
 // ============ 导航 ============
 function buildNav(){
+  // 侧栏项用自绘按钮: MW md-list-item 的行高/间距在部分屏幕异常(条目过高、激活胶囊过大)
   $('#railList').innerHTML = VIEWS.map(v=>
-    `<md-list-item data-page="${v.id}" tabindex="0" role="button" ${v.id===Store.page?'active':''}>
-       <span slot="start" class="msym" aria-hidden="true">${v.icon}</span>
-       <span slot="headline">${v.label}</span>
-     </md-list-item>`).join('');
+    `<button type="button" class="rail-item" data-page="${v.id}" ${v.id===Store.page?'active':''}>
+       <span class="msym" aria-hidden="true">${v.icon}</span><span>${v.label}</span>
+     </button>`).join('');
   // md-navigation-tab 的插槽名是 inactive-icon / active-icon (没有 icon 插槽),
   // 写 slot="icon" 会被直接丢弃 → 底栏图标不显示。两个插槽都要给。
   $('#navbar').innerHTML = VIEWS.slice(0,6).map(v=>
@@ -782,7 +910,7 @@ function buildNav(){
      </md-navigation-tab>`).join('');
 }
 function syncNav(){
-  $$('#railList md-list-item').forEach(el=>el.toggleAttribute('active', el.dataset.page===Store.page));
+  $$('#railList .rail-item').forEach(el=>el.toggleAttribute('active', el.dataset.page===Store.page));
   const tabs=$$('#navbar md-navigation-tab');
   const idx=tabs.findIndex(t=>t.dataset.page===Store.page);
   const bar=$('#navbar');
@@ -791,9 +919,13 @@ function syncNav(){
 }
 async function go(page){
   if(!VIEWS.some(v=>v.id===page)) return;
+  // 按导航顺序决定滑动方向: 目标页在当前页后面=从右滑入, 前面=从左滑入
+  // 同页(go 被重复触发, 如底栏点击+导航事件双发)不动画, 避免第二次 go 把滑动覆盖成淡入
+  const oldIdx=VIEWS.findIndex(v=>v.id===Store.page), newIdx=VIEWS.findIndex(v=>v.id===page);
+  const anim=newIdx>oldIdx?'anim-slide-r':newIdx<oldIdx?'anim-slide-l':'';
   Store.page=page;
   $$('.page').forEach(p=>{ const on=p.id===`page-${page}`; p.classList.toggle('hidden',!on); p.hidden=!on;
-    if(on){ p.classList.remove('anim-in'); void p.offsetWidth; p.classList.add('anim-in'); } });
+    if(on && anim){ p.classList.remove('anim-in','anim-slide-r','anim-slide-l'); void p.offsetWidth; p.classList.add(anim); } });
   $('#pageTitle').textContent = TITLES[page]||page;
   syncNav();
   Store.clearRefresh();
@@ -823,7 +955,7 @@ function rpRenderChips(dir){
 async function rpSave(){
   try{
     await adapter.saveConfig(Store.inst,{replace:{out:rpLists.out,inc:rpLists.inc}});
-    snack('已保存 (重启实例后生效)');
+    snack('已保存');
   }catch(e){ snack(e.message,true); }
 }
 function rpAdd(dir){
@@ -961,14 +1093,15 @@ async function renderProviders(){
       const mm=(ch.modelMap?Object.entries(ch.modelMap).filter(([k,v])=>k!==v):[]);
       const cell=[(ch.models||[]).join(', ')].concat(mm.length?['改名: '+mm.map(([k,v])=>k+'→'+v).join(', ')]:[]).filter(Boolean).join(' ｜ ');
       return `<tr>
-      <td class="mono truncate" title="${escAttr(ch.name)}">${esc(ch.name)}${ch.default?' <span class="tag default">default</span>':''}</td>
+      <td class="mono truncate pv-setdef" data-action="setDefaultProvider" data-name="${escAttr(ch.name)}" title="点击设为默认渠道">${esc(ch.name)}${ch.default?' <span class="tag default">default</span>':''}${ch.useResponses?' <span class="tag default" title="上游走 Responses API">⚡Responses</span>':''}${ch.delayMs?` <span class="tag default" title="请求延迟">⏱${esc(String(ch.delayMs))}ms</span>`:''}</td>
       <td><span class="tag ${esc(ch.type)}">${esc(ch.type)}</span></td>
       <td class="mono truncate" title="${escAttr(ch.baseUrl)}">${esc(fmtHost(ch.baseUrl))}</td>
       <td class="mono truncate" title="${escAttr(ch.proxy||'-')}">${esc(ch.proxy||'-')}</td>
       <td class="mono truncate" title="${escAttr(cell)}">${esc(cell)}</td>
       <td><div class="row-acts">
-        <md-outlined-button data-action="editProvider" data-name="${escAttr(ch.name)}">编辑</md-outlined-button>
-        <md-text-button data-action="deleteProvider" data-name="${escAttr(ch.name)}" style="color:var(--md-sys-color-error)">删除</md-text-button>
+        <button type="button" class="icon-act ${ch.default?'on':''}" data-action="setDefaultProvider" data-name="${escAttr(ch.name)}" ${ch.default?'disabled':''} title="${ch.default?'当前默认渠道':'设为默认渠道'}"><span class="msym">${ch.default?'star':'star_outline'}</span></button>
+        <button type="button" class="icon-act" data-action="editProvider" data-name="${escAttr(ch.name)}" title="编辑"><span class="msym">edit</span></button>
+        <button type="button" class="icon-act err" data-action="deleteProvider" data-name="${escAttr(ch.name)}" title="删除"><span class="msym">delete</span></button>
       </div></td></tr>`;}).join('')
       || '<tr><td colspan="6" class="empty">该实例暂无渠道，点右上「添加渠道」</td></tr>';
     const px=Object.entries(cfg.proxies||{});
@@ -977,11 +1110,23 @@ async function renderProviders(){
       <td><span class="tag">${esc(p.type||'socks5')}</span></td>
       <td class="mono truncate" title="${escAttr(p.host+':'+p.port)}">${esc(p.host+':'+p.port)}${p.username?' <span class="msym" style="font-size:12px;vertical-align:-2px;color:var(--md-sys-color-primary)">key</span>':''}</td>
       <td><div class="row-acts">
-        <md-outlined-button data-action="editProxy" data-name="${escAttr(n)}">编辑</md-outlined-button>
-        <md-text-button data-action="delProxy" data-name="${escAttr(n)}" style="color:var(--md-sys-color-error)">删除</md-text-button>
+        <button type="button" class="icon-act" data-action="editProxy" data-name="${escAttr(n)}" title="编辑"><span class="msym">edit</span></button>
+        <button type="button" class="icon-act err" data-action="delProxy" data-name="${escAttr(n)}" title="删除"><span class="msym">delete</span></button>
       </div></td></tr>`).join('')
       || '<tr><td colspan="4" class="empty">暂无代理，渠道可留空直连</td></tr>';
   }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
+}
+
+// 点击渠道名/星标 → 设为默认渠道 (其余渠道去掉 default 标记, 保存后实例自动重启)
+async function setDefaultChannel(n){
+  try{
+    const cfg=await adapter.getConfig(Store.inst);
+    const chs=(cfg.channels||[]).map(c=>{ const{hasKey,...rest}=c; rest.default=c.name===n; return rest; });
+    if(!chs.some(c=>c.name===n)) return;
+    await adapter.saveConfig(Store.inst,{channels:chs});
+    snack('已将 '+n+' 设为默认渠道');
+    await renderProviders();
+  }catch(e){ snack(e.message,true); }
 }
 
 // ============ 渲染: 路由 ============
@@ -995,9 +1140,11 @@ async function renderRouting(){
     $('#rt-redact').selected=!((cfg.redact||{}).enable===false);
     $('#rt-modelSync').selected=!((cfg.modelSync||{}).enable===false);
     $('#rt-syncInterval').value=String((cfg.modelSync||{}).intervalHours??24);
+    $('#rt-oeEnable').selected=!!((cfg.openaiExtras||{}).enable);
+    $('#rt-oeUpstream').selected=!!((cfg.openaiExtras||{}).upstreamResponses);
     $('#rt-channels').innerHTML='<md-list>'+(cfg.channels||[]).map(ch=>listItem({
       icon:`<span class="msym">${ch.type==='openai'?'bolt':'diamond'}</span>`,
-      headline:esc(ch.name)+(ch.default?' <span class="tag default">default</span>':''),
+      headline:esc(ch.name)+(ch.default?' <span class="tag default">default</span>':'')+(ch.useResponses?' <span class="tag default" title="该 OpenAI 渠道上游走 Responses API">⚡Responses</span>':''),
       sub:esc((ch.models||[]).join(', '))||'未配置模型',
       endHtml:`<span class="muted small mono" title="${escAttr(ch.baseUrl)}">${esc(fmtHost(ch.baseUrl))}</span>`,
     })).join('')+'</md-list>' || '<div class="empty">无渠道</div>';
@@ -1064,14 +1211,39 @@ async function renderRequests(){
   const signal=Store.abort('requests');
   const cur = await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
   try{
-    const reqs=await adapter.getRequests(cur,signal);
-    $('#rq-table tbody').innerHTML=(reqs||[]).map(r=>`<tr>
-      <td class="mono">${esc(r.time)}</td>
+    const [reqs,cfg]=await Promise.all([adapter.getRequests(cur,signal), adapter.getConfig(cur,signal)]);
+    const rec=cfg.record||{};
+    $('#rq-rec-enable').selected=!!rec.enable;
+    $('#rq-rec-server').value=rec.server||'';
+    $('#rq-table tbody').innerHTML=(reqs||[]).map(r=>{
+      const tp=String(r.time||'').split(' ');
+      return `<tr>
+      <td class="mono"><span class="rq-date">${esc(tp[0]||'')} </span>${esc(tp[1]||tp[0]||'')}</td>
       <td class="mono truncate" title="${escAttr(r.model)}">${esc(r.model)}</td>
       <td class="mono truncate" title="${escAttr(r.channel)}">${esc(r.channel)}</td>
-      <td>${r.status===200?'<span style="color:#4CAF50">✓</span>':'<span style="color:var(--md-sys-color-error)">✗</span>'} ${r.status}</td>
-      <td>${r.duration}ms</td></tr>`).join('') || '<tr><td colspan="5" class="empty">暂无记录</td></tr>';
+      <td title="HTTP ${r.status}">${r.status===200?'<span style="color:#4CAF50">✓</span>':'<span style="color:var(--md-sys-color-error)">✗</span>'}<span class="mono" style="font-size:11px">${r.status}</span></td>
+      <td class="mono" style="font-size:11px">${r.duration}ms</td>
+      <td>${r.id?`<button type="button" class="icon-act" data-action="viewBody" data-id="${escAttr(r.id)}" title="查看正文"><span class="msym">article</span></button>`:''}</td></tr>`;}).join('') || '<tr><td colspan="6" class="empty">暂无记录</td></tr>';
   }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
+}
+// 保存记录设置(开关/服务器地址)
+async function saveRecCfg(){
+  try{
+    await adapter.saveConfig(Store.inst,{record:{enable:!!$('#rq-rec-enable').selected, server:($('#rq-rec-server').value||'').trim()}});
+    snack('记录设置已保存');
+  }catch(e){ snack(e.message,true); }
+}
+// 从记录文件里按 id 取请求/响应正文并弹窗展示
+async function viewRecordBody(id){
+  openDialog('请求正文', '<div style="padding:8px">加载中…</div>', {okText:'关闭', cancel:false});
+  try{
+    const d=await adapter.getRecordBody(Store.inst,id);
+    const r=d.record||{};
+    const fmt=v=>typeof v==='string'?v:JSON.stringify(v,null,2);
+    $('#dlgBody').innerHTML='<div class="rec-meta mono">'+esc(r.time||'')+' · '+esc(r.model||'')+' · 渠道 '+esc(r.channel||'-')+' · 状态 '+(r.status??'')+' · '+(r.duration||0)+'ms · tokens '+(r.inputTokens||0)+'/'+(r.outputTokens||0)+'</div>'
+      +'<div style="font-size:13px;font-weight:600">请求</div><pre class="rec-pre mono">'+esc(fmt(r.request??'(无)'))+'</pre>'
+      +'<div style="font-size:13px;font-weight:600">响应</div><pre class="rec-pre mono">'+esc(fmt(r.response??'(无)'))+'</pre>';
+  }catch(e){ $('#dlgBody').innerHTML='<div style="padding:8px;color:var(--md-sys-color-error)">'+esc(e.message)+'</div>'; }
 }
 
 // ============ 渲染: 日志 ============
@@ -1203,7 +1375,25 @@ const SWATCHES=['#6750A4','#005AC1','#006C7C','#006E1C','#9A1E78','#9C4146','#8E
 let themeState={mode:'dark',seed:'#6750A4'};
 function hexToHSL(hex){hex=hex.replace('#','');const r=parseInt(hex.substr(0,2),16)/255,g=parseInt(hex.substr(2,2),16)/255,b=parseInt(hex.substr(4,2),16)/255;const mx=Math.max(r,g,b),mn=Math.min(r,g,b);let h,s,l=(mx+mn)/2;if(mx===mn){h=s=0;}else{const d=mx-mn;s=l>0.5?d/(2-mx-mn):d/(mx+mn);switch(mx){case r:h=(g-b)/d+(g<b?6:0);break;case g:h=(b-r)/d+2;break;case b:h=(r-g)/d+4;break;}h/=6;}return{h:Math.round(h*360),s:Math.round(s*100),l:Math.round(l*100)};}
 function hslToHex(h,s,l){s/=100;l/=100;const a=s*Math.min(l,1-l);const f=n=>{const k=(n+h/30)%12;const c=l-a*Math.max(-1,Math.min(k-3,9-k,1));return Math.round(255*c).toString(16).padStart(2,'0');};return'#'+f(0)+f(8)+f(4);}
-function applyTheme(t){themeState={mode:t.mode||'dark',seed:t.seed||'#6750A4'};const el=document.documentElement;el.dataset.theme=themeState.mode;el.style.colorScheme=themeState.mode;const hsl=hexToHSL(themeState.seed),isDark=themeState.mode!=='light',pL=isDark?80:40,pS=Math.min(100,hsl.s+10);el.style.setProperty('--md-sys-color-primary',hslToHex(hsl.h,pS,pL));el.style.setProperty('--md-sys-color-on-primary',pL>55?'#1A1A1A':'#FFFFFF');el.style.setProperty('--md-sys-color-primary-container',hslToHex(hsl.h,hsl.s,isDark?25:90));el.style.setProperty('--md-sys-color-on-primary-container',hslToHex(hsl.h,hsl.s,isDark?90:25));}
+// 由种子色派生整套主/次/第三角色色, 否则底栏指示器(secondary-container)与部分按钮(filled-tonal=secondary-container)不跟随换色
+function applyTheme(t){
+  themeState={mode:t.mode||'dark',seed:t.seed||'#6750A4'};
+  const el=document.documentElement; el.dataset.theme=themeState.mode; el.style.colorScheme=themeState.mode;
+  const hsl=hexToHSL(themeState.seed), isDark=themeState.mode!=='light';
+  const set=(k,v)=>el.style.setProperty(k,v);
+  // 一组角色色: 主色/主色上文字/容器色/容器上文字
+  const role=(h,s,cL,onCL)=>{
+    const pL=isDark?80:40;
+    set('--md-sys-color-'+cL,hslToHex(h,s,pL));
+    set('--md-sys-color-on-'+cL,pL>55?'#1A1A1A':'#FFFFFF');
+    set('--md-sys-color-'+cL+'-container',hslToHex(h,s,isDark?onCL[0]:onCL[1]));
+    set('--md-sys-color-on-'+cL+'-container',hslToHex(h,s,isDark?onCL[2]:onCL[3]));
+  };
+  role(hsl.h, Math.min(100,hsl.s+10), 'primary', [25,90,90,25]);
+  role(hsl.h, Math.max(8,Math.round(hsl.s*0.35)), 'secondary', [30,90,90,20]);
+  role((hsl.h+60)%360, Math.max(10,Math.round(hsl.s*0.55)), 'tertiary', [30,90,90,20]);
+  set('--md-sys-color-surface-tint', hslToHex(hsl.h, Math.min(100,hsl.s+10), isDark?80:40));
+}
 function loadTheme(){try{const t=JSON.parse(localStorage.getItem('agw-theme')||'{}');if(t.mode)applyTheme(t);else applyTheme({mode:'dark',seed:'#6750A4'});}catch(_){applyTheme({mode:'dark',seed:'#6750A4'});}}
 function saveTheme(){localStorage.setItem('agw-theme',JSON.stringify(themeState));}
 function openThemeDialog(){
@@ -1335,6 +1525,7 @@ function openProviderDialog(ch){
         ${pOpts.map(o=>`<md-select-option value="${escAttr(o)}" ${o===curP?'selected':''}>${o==='-'?'- 直连':esc(o)}</md-select-option>`).join('')}
       </md-outlined-select>
       <md-outlined-text-field data-f="models" label="模型(逗号分隔)" value="${escAttr((c.models||[]).join(', '))}"></md-outlined-text-field>
+      <md-outlined-text-field data-f="delayMs" label="请求延迟(毫秒, 0=关闭)" type="number" value="${escAttr(String(c.delayMs||0))}" helper="每个请求发出前等待这么久; 同渠道并发请求按此间隔排队发出, 可缓解 429 限流"></md-outlined-text-field>
       <div>
         <div style="font-size:12px;color:var(--md-sys-color-on-surface-variant);margin-bottom:4px">模型改名 (对外名 → 真实名; 右框留空=按原名提供; 手机上左滑标签可删除; 对外名会出现在 /v1/models; 重启实例后生效)</div>
         <div class="mm-row">
@@ -1345,6 +1536,7 @@ function openProviderDialog(ch){
         <div class="mm-chips" id="mmChips"></div>
       </div>
       <md-outlined-text-field data-f="apiKey" label="API Key" type="password" value="${escAttr(c.apiKey||'')}" placeholder="${c.hasKey?'(已设, 留空不改)':'API Key'}"></md-outlined-text-field>
+      <label style="display:flex;align-items:center;gap:8px;font-size:14px"><md-checkbox data-f="useResponses" ${c.useResponses?'selected':''}></md-checkbox>上游用 Responses API <span class="muted small">(仅 openai 类型; 需在路由策略里开启扩展端点)</span></label>
       <label style="display:flex;align-items:center;gap:8px;font-size:14px"><md-checkbox data-f="default" ${c.default?'selected':''}></md-checkbox>设为默认渠道</label>
     </div>`, {onOk:saveProvider});
   const s=$('#dlgBody [data-f=type]');
@@ -1352,6 +1544,7 @@ function openProviderDialog(ch){
   const sp=$('#dlgBody [data-f=proxy]');
   if(sp) sp.updateComplete.then(()=>Promise.all([...sp.querySelectorAll('md-select-option')].map(o=>o.updateComplete||0))).then(()=>sp.value=curP).catch(()=>{});
   const cb=$('#dlgBody [data-f=default]'); if(c.default) cb.selected=true;
+  const ur=$('#dlgBody [data-f=useResponses]'); if(c.useResponses) ur.selected=true;
   const ma=$('#mm-alias');
   if(ma){
     $('#mm-add').addEventListener('click',mmAdd);
@@ -1518,7 +1711,10 @@ async function saveProvider(){
   for(const [k,r] of mmList) modelMap[k]=r;
   const ch={ name:v.name, type:v.type||'openai', baseUrl:v.baseUrl, proxy:v.proxy||'-',
     models:String(v.models||'').split(',').map(s=>s.trim()).filter(Boolean),
-    apiKey:v.apiKey||'', default:!!v.default };
+    apiKey:v.apiKey||'', default:!!v.default,
+    useResponses:!!($('#dlgBody [data-f=useResponses]')&&$('#dlgBody [data-f=useResponses]').selected) };
+  const delayMs=Math.max(0,Math.min(120000,+v.delayMs||0));
+  if(delayMs) ch.delayMs=delayMs; // 0=不带, 覆盖掉旧值
   if(Object.keys(modelMap).length) ch.modelMap=modelMap; // 不带箭头的空映射就不发, 避免覆盖成空
   try{ await adapter.saveChannel(Store.inst,ch);
     snack('已保存渠道 '+ch.name+(Object.keys(modelMap).length?' (改名映射重启实例后生效)':''));
@@ -1538,7 +1734,8 @@ async function saveRouting(){
     await adapter.saveConfig(Store.inst,{routing:{
       maxRetry:+$('#rt-maxRetry').value||0, timeoutSec:+$('#rt-timeout').value||0, cooldownSec:+$('#rt-cooldown').value||0 },
       redact:{enable:!!$('#rt-redact').selected},
-      modelSync:{enable:!!$('#rt-modelSync').selected, intervalHours:+$('#rt-syncInterval').value||24}});
+      modelSync:{enable:!!$('#rt-modelSync').selected, intervalHours:+$('#rt-syncInterval').value||24},
+      openaiExtras:{enable:!!$('#rt-oeEnable').selected, upstreamResponses:!!$('#rt-oeUpstream').selected}});
     snack('已保存 (重启实例后生效)'); await renderRouting();
   }catch(e){ snack(e.message,true); }
 }
@@ -1575,11 +1772,13 @@ document.body.addEventListener('click', e=>{
   if(act){
     const a=act.dataset.action, n=act.dataset.name;
     if(a==='editProvider'){ const cfg=Store.configs.get(Store.inst); openProviderDialog(cfg?.channels?.find(c=>c.name===n)); }
+    else if(a==='setDefaultProvider'){ setDefaultChannel(n); }
     else if(a==='deleteProvider'){ if(confirm(`删除渠道 ${n}?`)) adapter.deleteChannel(Store.inst,n).then(renderProviders).catch(x=>snack(x.message,true)); }
     else if(a==='openPortDialog') openPortDialog(n);
     else if(a==='delInstance') delInstance(n);
     else if(a==='editProxy') openProxyDialog(n);
     else if(a==='delProxy') delProxy(n);
+    else if(a==='viewBody') viewRecordBody(act.dataset.id);
     return;
   }
   const cmdBtn=e.target.closest('[data-cmd]');
@@ -1624,6 +1823,8 @@ $('#rt-syncNow').addEventListener('click', async ()=>{
 });
 $('#ky-save').addEventListener('click',saveKeys);
 $('#rq-refresh').addEventListener('click',renderRequests);
+$('#rq-rec-save').addEventListener('click',saveRecCfg);
+$('#rq-rec-enable').addEventListener('change',saveRecCfg);
 $('#lg-refresh').addEventListener('click',renderLogs);
 $('#refreshBtn').addEventListener('click',()=>{ go(Store.page); });
 $('#refreshBtn').addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ go(Store.page); } });
@@ -1670,6 +1871,31 @@ try{
   }
 }catch(_){}
 upgradePwFields(document.body);
+// ---- 品牌名称自定义(点左上角品牌区修改, 存浏览器 localStorage, 各设备独立) ----
+let brandState={name:'AI Gateway',ver:'Material Web v2.11'};
+function applyBrand(b){
+  brandState={name:(b&&b.name)||'AI Gateway', ver:b&&b.ver!=null?b.ver:'Material Web v2.11'};
+  const n=$('.rail-brand .name'), v=$('.rail-brand .ver');
+  if(n) n.textContent=brandState.name;
+  if(v){ v.textContent=brandState.ver; v.style.display=brandState.ver?'':'none'; }
+  document.title=brandState.name+(brandState.ver?' · '+brandState.ver:'');
+}
+function loadBrand(){ try{ applyBrand(JSON.parse(localStorage.getItem('agw-brand')||'null')); }catch(_){ applyBrand(null); } }
+function openBrandDialog(){
+  openDialog('修改页面名称', `<div style="display:flex;flex-direction:column;gap:14px;padding-top:8px">
+    <md-outlined-text-field data-f="bname" label="名称" value="${escAttr(brandState.name)}"></md-outlined-text-field>
+    <md-outlined-text-field data-f="bver" label="副标题(留空隐藏)" value="${escAttr(brandState.ver)}"></md-outlined-text-field>
+  </div>`, {onOk:()=>{
+    const v=dlgValue();
+    const name=String(v.bname||'').trim()||'AI Gateway', ver=String(v.bver||'').trim();
+    applyBrand({name,ver});
+    try{ localStorage.setItem('agw-brand',JSON.stringify({name,ver})); }catch(_){}
+    snack('页面名称已更新');
+    return true;
+  }});
+}
+loadBrand();
+$('#railBrand').addEventListener('click', openBrandDialog);
 loadTheme();
 buildNav();
 if(localStorage.getItem('agw-mode')==='http'){

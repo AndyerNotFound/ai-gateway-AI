@@ -1,8 +1,25 @@
-config*.json
-!.gitignore
-!.config.example.json
+# ===== 运行时配置 (含真实密钥, 绝不提交) =====
+config.json
+config.*.json
+!config.example.json
 .agwkey
+
+# ===== 证书与私钥 (gen-cert 重新生成, 绝不提交) =====
 *.pem
+cert.pem
+key.pem
+
+# ===== 运行时产物 =====
 log/
 .run/
+*.log
+*.pid
+*.jsonl
+*.bak
+*.bak-*
+*.orig
+*.part
 node_modules/
+
+# ===== 私有部署工具 (沙箱专用, 非项目功能) =====
+fsrv.js
