@@ -419,7 +419,7 @@ md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wg
 
 <div class="compat-bar" id="compatBar" role="alert"></div>
 
-<!-- ============ 桌面侧栏 ============ -->
+
 <nav class="rail" id="rail" aria-label="主导航">
   <div class="rail-brand" id="railBrand" title="点击修改页面名称">
     <div class="logo" aria-hidden="true"><span class="msym">smart_toy</span></div>
@@ -429,7 +429,7 @@ md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wg
   <div id="railList" class="rail-list"></div>
 </nav>
 
-<!-- ============ 主区 ============ -->
+
 <div class="shell">
   <header class="topbar">
     <h1 id="pageTitle">总览</h1>
@@ -626,9 +626,80 @@ md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wg
         <div id="ky-channels" class="list-gap" style="margin-bottom:16px"></div>
         <md-filled-button id="ky-save">保存密钥</md-filled-button>
       </md-filled-card>
+
+      <md-filled-card style="margin-top:16px">
+        <div class="card-head"><div><div class="card-title">管理端第二验证</div><div class="card-sub">开启后管理面板除管理密码外还需第二重验证(第二密码 或 TOTP 动态码)</div></div></div>
+        <div id="ka-status" style="margin-bottom:12px;color:var(--md-sys-color-on-surface-variant);font-size:14px">加载中…</div>
+        <div class="grid-form" style="margin-bottom:12px">
+          <md-outlined-text-field id="ka-secondKey" label="第二密码" type="password" helper="留空=不启用第二密码"></md-outlined-text-field>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <md-outlined-button id="ka-save-second">保存第二密码</md-outlined-button>
+          <md-outlined-button id="ka-totp-enable">启用 TOTP</md-outlined-button>
+          <md-outlined-button id="ka-totp-disable">停用 TOTP</md-outlined-button>
+        </div>
+        <div id="ka-totp-info" style="display:none;margin-top:12px">
+          <div class="card-sub">用验证器 App(Google Authenticator 等)扫码或手输密钥:</div>
+          <div class="mono" id="ka-totp-secret" style="word-break:break-all;background:var(--md-sys-color-surface-container);padding:10px;border-radius:10px;margin-top:6px;user-select:all"></div>
+          <div class="mono" id="ka-totp-url" style="word-break:break-all;font-size:11px;color:var(--md-sys-color-on-surface-variant);margin-top:4px;user-select:all"></div>
+        </div>
+      </md-filled-card>
+
+      <md-filled-card style="margin-top:16px">
+        <div class="card-head"><div><div class="card-title">注册与卡密</div><div class="card-sub">开放注册(用户端自助注册自动发卡) + 卡密生成长度 · 目标实例=顶栏当前选择</div></div></div>
+        <div class="grid-form">
+          <md-outlined-text-field id="rg-keyLength" label="卡密长度(8-128)" type="number" helper="默认24, 不含 sk- 前缀"></md-outlined-text-field>
+          <md-outlined-text-field id="rg-defaultQuota" label="注册默认额度(万tokens)" type="number" helper="0=不限"></md-outlined-text-field>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin:10px 0">
+          <md-switch id="rg-enable" aria-label="开放注册"></md-switch>
+          <span>开放注册(公网中转站才开)</span>
+        </div>
+        <div class="grid-form" id="rg-more" style="display:none">
+          <md-outlined-text-field id="rg-minPw" label="密码最小长度" type="number" value="8"></md-outlined-text-field>
+          <md-outlined-select id="rg-captcha" label="人机验证">
+            <md-select-option value="none">无</md-select-option>
+            <md-select-option value="turnstile">Cloudflare Turnstile(免费)</md-select-option>
+          </md-outlined-select>
+          <md-outlined-text-field id="rg-captchaSiteKey" label="Turnstile Site Key (公开)" helper="cloudflare.com → Turnstile → Add site, 免费"></md-outlined-text-field>
+          <md-outlined-text-field id="rg-captchaSecret" label="Turnstile Secret Key (保密)" type="password"></md-outlined-text-field>
+        </div>
+        <md-filled-button id="rg-save" style="margin-top:8px">保存注册设置</md-filled-button>
+      </md-filled-card>
+    </section>
+
+    <section id="page-cards" class="page hidden" hidden>
+      <md-filled-card>
+        <div class="card-head">
+          <div style="display:flex;gap:8px;align-items:center">
+            <md-text-button id="cd-tab-keys" style="font-weight:600">卡密</md-text-button>
+            <md-text-button id="cd-tab-users">用户</md-text-button>
+          </div>
+          <md-filled-button id="cd-new"><md-icon slot="icon">add</md-icon><span id="cd-new-label">发卡</span></md-filled-button>
+        </div>
+        <div id="cd-pane-keys">
+          <div class="card-sub" style="margin-bottom:10px">多用户 Key: 发卡给朋友用, 限额/禁用/过期/模型白名单 · 目标实例=顶栏当前选择</div>
+          <div id="cd-list" class="list-gap"><md-linear-progress indeterminate></md-linear-progress></div>
+        </div>
+        <div id="cd-pane-users" style="display:none">
+          <div class="card-sub" style="margin-bottom:10px">账密登录体系: 用户可用 UID+密码登录用户端, 自动拿到名下卡密</div>
+          <div id="cu-list" class="list-gap"></div>
+        </div>
+      </md-filled-card>
     </section>
 
     <section id="page-ports" class="page hidden" hidden>
+      <md-filled-card style="margin-bottom:16px">
+        <div class="card-head"><div><div class="card-title">公网域名 (cloudflared 隧道)</div><div class="card-sub">免费临时域名, 让外网访问本网关 · 适合手机/内网部署; 服务器部署请用 Nginx</div></div>
+          <md-outlined-button id="tn-toggle">启动隧道</md-outlined-button></div>
+        <div id="tn-status" style="font-size:14px;color:var(--md-sys-color-on-surface-variant)">未启动</div>
+        <div id="tn-url-row" style="display:none;margin-top:8px;align-items:center;gap:8px">
+          <span class="mono" id="tn-url" style="word-break:break-all;background:var(--md-sys-color-surface-container);padding:10px;border-radius:10px;user-select:all"></span>
+          <md-icon-button id="tn-copy" title="复制"><md-icon>content_copy</md-icon></md-icon-button>
+        </div>
+        <div class="card-sub" style="margin-top:8px;color:var(--md-sys-color-error)">⚠️ 隧道开启=公网可访问! 务必设 gatewayKey 和 adminKey</div>
+      </md-filled-card>
+
       <md-filled-card>
         <div class="card-head">
           <div><div class="card-title">服务端口</div><div class="card-sub">多实例管理</div></div>
@@ -658,7 +729,7 @@ md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wg
         <div class="card-head"><div><div class="card-title">请求记录收集</div><div class="card-sub">记录请求结构 + 请求/响应正文 (默认关闭)</div></div>
           <md-switch id="rq-rec-enable" aria-label="开启请求记录"></md-switch></div>
         <div class="grid-form">
-          <md-outlined-text-field id="rq-rec-server" label="收集服务器地址 (可选)" placeholder="如 http://192.168.x.x:9000/collect" helper="留空 = 存本机 log/requests-<实例>.jsonl; 填写 = 每条 POST JSON 到该地址。保存后实例自动重启生效"></md-outlined-text-field>
+          <md-outlined-text-field id="rq-rec-server" label="收集服务器地址 (可选)" placeholder="如 http://192.168.1.100:9000/collect" helper="留空 = 存本机 log/requests-<实例>.jsonl; 填写 = 每条 POST JSON 到该地址。保存后实例自动重启生效"></md-outlined-text-field>
         </div>
         <md-filled-tonal-button id="rq-rec-save">保存记录设置</md-filled-tonal-button>
       </md-filled-card>
@@ -707,10 +778,10 @@ md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wg
   </main>
 </div>
 
-<!-- ============ 移动底部导航 ============ -->
+
 <md-navigation-bar class="navbar" id="navbar" label="主导航"></md-navigation-bar>
 
-<!-- ============ 共享对话框(纯 HTML/CSS, 不依赖 shadow DOM) ============ -->
+
 <div id="dlgOverlay" class="dlg-overlay" hidden>
   <div class="dlg-box" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
     <div class="dlg-head"><h3 id="dlgTitle">标题</h3><button class="dlg-x" id="dlgX" aria-label="关闭">✕</button></div>
@@ -815,6 +886,7 @@ class MockAdapter extends BaseAdapter{
     const i=a.findIndex(c=>c.name===ch.name); if(i>=0)a[i]=ch; else a.push(ch); return {ok:true}; }
   async deleteChannel(inst,chName){ this._chs[inst]=(this._chs[inst]||[]).filter(c=>c.name!==chName); return {ok:true}; }
   async deleteInstance(name){ this._insts=this._insts.filter(x=>x.name!==name); return {ok:true}; }
+  async renameInstance(name,newName){ const i=this._insts.find(x=>x.name===name); if(i)i.name=newName; return {ok:true,hotReload:true,name:newName}; }
   async fetchModels(inst,body){ return {models:['mock-model-alpha','mock-model-beta','mock-model-gamma']}; }
   async syncModels(inst){ return {ok:true,instance:inst,channels:0,added:0,fails:0}; }
   async getStats(name){ return this._stats[name]||{requests:0,errors:0,uptime:0,byChannel:{}}; }
@@ -825,6 +897,20 @@ class MockAdapter extends BaseAdapter{
     {id:'req_mock02',time:'09:41:19',model:'kimi-k3',channel:'nvidia-k3-a',status:429,duration:310},
     {id:'req_mock03',time:'09:40:58',model:'claude-sonnet-4-5',channel:'pool-b',status:200,duration:7190}]; }
   async action(name,a){ const i=this._insts.find(x=>x.name===name); if(i&&a==='start')i.running=true; if(i&&a==='stop')i.running=false; return {ok:true}; }
+  async getKeys(inst){ return {keys:this._keys||(this._keys=[{key:'sk-mock1234567890abcdef',name:'演示卡',enable:true,quotaTokens:100000,usedTokens:35210,models:[],channels:[],expiresAt:'',note:'',createdAt:'2026-09-01T00:00:00Z'}]),gatewayKeySet:true}; }
+  async createKey(inst,body){ const k={key:'sk-mock'+Math.random().toString(36).slice(2,20),name:body.name||'',enable:true,quotaTokens:body.quotaTokens||0,usedTokens:0,models:body.models||[],channels:[],expiresAt:body.expiresAt||'',note:body.note||'',createdAt:new Date().toISOString()}; (this._keys=this._keys||[]).push(k); return {ok:true,key:k}; }
+  async updateKey(inst,body){ const k=(this._keys||[]).find(x=>x.key===body.key); if(k){ if(body.enable!==undefined)k.enable=body.enable; if(body.resetUsage)k.usedTokens=0; if(body.addQuota)k.quotaTokens+=body.addQuota; } return {ok:true}; }
+  async deleteKey(inst,key){ this._keys=(this._keys||[]).filter(x=>x.key!==key); return {ok:true}; }
+  async getUsers(inst){ return {users:this._users||(this._users=[{uid:'u-demo01',name:'演示用户',keyCount:1,hasPassword:true,createdAt:'2026-09-01T00:00:00Z',note:''}])}; }
+  async createUser(inst,body){ const u={uid:'u'+Math.random().toString(16).slice(2,10),name:body.name,keyCount:0,hasPassword:true,createdAt:new Date().toISOString()}; (this._users=this._users||[]).push(u); return {ok:true,uid:u.uid}; }
+  async updateUser(inst,body){ return {ok:true}; }
+  async deleteUser(inst,uid){ this._users=(this._users||[]).filter(x=>x.uid!==uid); return {ok:true}; }
+  async getAdminAuth(inst){ return {hasAdminKey:true,secondKeySet:false,totpEnabled:false}; }
+  async setAdminAuth(inst,body){ return {ok:true,secondKeySet:!!body.secondKey,totpEnabled:body.totpAction==='enable',totpSecret:body.totpAction==='enable'?'JBSWY3DPEHPK3PXP':null,otpauthUrl:'otpauth://totp/ai-gateway-demo?secret=JBSWY3DPEHPK3PXP&issuer=ai-gateway'}; }
+  async getTunnel(){ return this._tunnel||{running:false,url:'',log:[]}; }
+  async tunnelAction(action){ this._tunnel = action==='start' ? {running:true,url:'https://demo-abc-xyz.trycloudflare.com',log:[]} : {running:false,url:'',log:[]}; return {ok:true,...this._tunnel}; }
+  async getBalance(inst,ch){ return {ok:true,channel:ch,balance:'42.00',unit:'CNY'}; }
+  async probeNow(inst){ return {ok:true,probe:{}}; }
   async shutdownAll(){ return {ok:true}; }
   async chat(body){ return { json:()=>Promise.resolve({choices:[{message:{content:'(Mock 回复) 收到: '+body.messages.at(-1).content}}]}) }; }
 }
@@ -855,12 +941,27 @@ class HttpAdapter extends BaseAdapter{
   async deleteChannel(inst,chName,signal){ const r=await this._fetch(`${this.base}/admin/api/channel/${encodeURIComponent(inst)}/${encodeURIComponent(chName)}`,{method:'DELETE',headers:this._hdr()},signal);
     if(r&&r.restarting){ snack('已删除, 实例 '+inst+' 重启中…'); await this._waitUp(inst); snack('实例 '+inst+' 已重启'); } return r; }
   async deleteInstance(name,signal){ return this._fetch(`${this.base}/admin/api/instance/${encodeURIComponent(name)}`,{method:'DELETE',headers:this._hdr()},signal); }
+  async renameInstance(name,newName,signal){ return this._fetch(`${this.base}/admin/api/instance-rename/${encodeURIComponent(name)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify({newName})},signal); }
   async fetchModels(inst,body,signal){ return this._fetch(`${this.base}/admin/api/channel-models/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(body)},signal); }
   async syncModels(inst,signal){ return this._fetch(`${this.base}/admin/api/sync-models`,{method:'POST',headers:this._hdr()},signal); }
   async getStats(name,signal){ return this._fetch(`${this.base}/admin/api/stats?instance=${encodeURIComponent(name)}`,{headers:this._hdr()},signal); }
   async getLogs(name,lines,signal){ const r=await fetch(`${this.base}/admin/api/logs/${encodeURIComponent(name)}?lines=${lines}`,{headers:this._hdr(),signal}); if(!r.ok) throw new Error(await r.text().catch(()=>'')); return r.text(); }
   async getRequests(name,signal){ return this._fetch(`${this.base}/admin/api/requests/${encodeURIComponent(name)}`,{headers:this._hdr()},signal); }
   async action(name,cmd,signal){ return this._fetch(`${this.base}/admin/api/action/${encodeURIComponent(name)}/${cmd}`,{method:'POST',headers:this._hdr()},signal); }
+  async getKeys(inst,signal){ return this._fetch(`${this.base}/admin/api/keys/${encodeURIComponent(inst)}`,{headers:this._hdr()},signal); }
+  async createKey(inst,body,signal){ return this._fetch(`${this.base}/admin/api/keys/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(body)},signal); }
+  async updateKey(inst,body,signal){ return this._fetch(`${this.base}/admin/api/keys-update/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(body)},signal); }
+  async deleteKey(inst,key,signal){ return this._fetch(`${this.base}/admin/api/keys/${encodeURIComponent(inst)}/${encodeURIComponent(key)}`,{method:'DELETE',headers:this._hdr()},signal); }
+  async getUsers(inst,signal){ return this._fetch(`${this.base}/admin/api/users/${encodeURIComponent(inst)}`,{headers:this._hdr()},signal); }
+  async createUser(inst,body,signal){ return this._fetch(`${this.base}/admin/api/users/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(body)},signal); }
+  async updateUser(inst,body,signal){ return this._fetch(`${this.base}/admin/api/users-update/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(body)},signal); }
+  async deleteUser(inst,uid,signal){ return this._fetch(`${this.base}/admin/api/users/${encodeURIComponent(inst)}/${encodeURIComponent(uid)}`,{method:'DELETE',headers:this._hdr()},signal); }
+  async getAdminAuth(inst,signal){ return this._fetch(`${this.base}/admin/api/admin-auth/${encodeURIComponent(inst)}`,{headers:this._hdr()},signal); }
+  async setAdminAuth(inst,body,signal){ return this._fetch(`${this.base}/admin/api/admin-auth/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(body)},signal); }
+  async getTunnel(signal){ return this._fetch(`${this.base}/admin/api/tunnel`,{headers:this._hdr()},signal); }
+  async tunnelAction(action,signal){ return this._fetch(`${this.base}/admin/api/tunnel`,{method:'POST',headers:this._hdr(),body:JSON.stringify({action})},signal); }
+  async getBalance(inst,ch,signal){ return this._fetch(`${this.base}/admin/api/balance/${encodeURIComponent(inst)}/${encodeURIComponent(ch)}`,{headers:this._hdr()},signal); }
+  async probeNow(inst,signal){ return this._fetch(`${this.base}/admin/api/probe/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr()},signal); }
   async shutdownAll(signal){ return this._fetch(`${this.base}/admin/api/shutdown-all`,{method:'POST',headers:this._hdr()},signal); }
   async chat(body,signal){ const r=await fetch(`${this.base}/admin/api/chat`,{method:'POST',headers:{...this._hdr(),'Content-Type':'application/json'},body:JSON.stringify(body),signal});
     if(!r.ok) throw new Error(await r.text().catch(()=>'聊天请求失败')); return r; }
@@ -873,6 +974,7 @@ const VIEWS = [
   {id:'providers',label:'提供商', icon:'business'},
   {id:'routing',  label:'路由',   icon:'sync'},
   {id:'keys',     label:'密钥',   icon:'key'},
+  {id:'cards',    label:'卡密',   icon:'confirmation_number'},
   {id:'ports',    label:'端口',   icon:'power'},
   {id:'replace',  label:'替换',   icon:'find_replace'},
   {id:'stats',    label:'统计',   icon:'bar_chart'},
@@ -880,7 +982,7 @@ const VIEWS = [
   {id:'logs',     label:'日志',   icon:'description'},
   {id:'chat',     label:'聊天',   icon:'chat'},
 ];
-const TITLES = {overview:'总览',providers:'AI 提供商',routing:'路由与重试',keys:'API 密钥',ports:'服务端口',replace:'文本替换',stats:'统计信息',requests:'请求记录',logs:'日志',chat:'聊天测试'};
+const TITLES = {overview:'总览',providers:'AI 提供商',routing:'路由与重试',keys:'API 密钥',cards:'卡密管理',ports:'服务端口',replace:'文本替换',stats:'统计信息',requests:'请求记录',logs:'日志',chat:'聊天测试'};
 
 const Store = {
   page:'overview', instances:[], configs:new Map(), aborts:new Map(), timer:null,
@@ -930,7 +1032,7 @@ async function go(page){
   syncNav();
   Store.clearRefresh();
   if(page==='overview'||page==='stats') Store.startRefresh(()=>{ if(Store.page==='overview')renderOverview(); if(Store.page==='stats')renderStats(); },5000);
-  const R={overview:renderOverview,providers:renderProviders,routing:renderRouting,keys:renderKeys,
+  const R={overview:renderOverview,providers:renderProviders,routing:renderRouting,keys:renderKeys,cards:renderCards,
     ports:renderPorts,replace:renderReplace,stats:renderStats,requests:renderRequests,logs:renderLogs,chat:renderChat};
   await R[page]?.();
 }
@@ -1100,6 +1202,7 @@ async function renderProviders(){
       <td class="mono truncate" title="${escAttr(cell)}">${esc(cell)}</td>
       <td><div class="row-acts">
         <button type="button" class="icon-act ${ch.default?'on':''}" data-action="setDefaultProvider" data-name="${escAttr(ch.name)}" ${ch.default?'disabled':''} title="${ch.default?'当前默认渠道':'设为默认渠道'}"><span class="msym">${ch.default?'star':'star_outline'}</span></button>
+        <button type="button" class="icon-act" data-action="chBalance" data-name="${escAttr(ch.name)}" title="查余额"><span class="msym">account_balance_wallet</span></button>
         <button type="button" class="icon-act" data-action="editProvider" data-name="${escAttr(ch.name)}" title="编辑"><span class="msym">edit</span></button>
         <button type="button" class="icon-act err" data-action="deleteProvider" data-name="${escAttr(ch.name)}" title="删除"><span class="msym">delete</span></button>
       </div></td></tr>`;}).join('')
@@ -1164,7 +1267,40 @@ async function renderKeys(){
     $('#ky-channels').innerHTML=(cfg.channels||[]).map(ch=>
       `<md-outlined-text-field data-keyfor="${escAttr(ch.name)}" label="${esc(ch.name)} (${esc(ch.type)})" type="password" value="${esc(ch.apiKey||'')}" placeholder="${ch.hasKey?'(已设)':'API Key'}"></md-outlined-text-field>`
     ).join('');
+    // 注册设置回填
+    const reg=cfg.registration||{};
+    $('#rg-keyLength').value=cfg.keyLength||24;
+    $('#rg-enable').selected=!!reg.enable;
+    $('#rg-defaultQuota').value=Math.round((reg.defaultQuota||0)/10000);
+    $('#rg-minPw').value=reg.minPasswordLen||8;
+    $('#rg-captcha').value=reg.captchaProvider||'none';
+    $('#rg-captchaSiteKey').value=reg.captchaSiteKey||'';
+    $('#rg-captchaSecret').value=reg.captchaSecret||'';
+    $('#rg-more').style.display=reg.enable?'':'none';
   }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
+  loadAdminAuth(cur);
+}
+
+// ---- 管理端第二验证 ----
+async function loadAdminAuth(inst){
+  try{
+    const d=await adapter.getAdminAuth(inst);
+    $('#ka-status').innerHTML = '管理密码: '+(d.hasAdminKey?'<b style="color:var(--md-sys-color-primary)">已设</b>':'<b style="color:var(--md-sys-color-error)">未设(危险)</b>')
+      +' · 第二密码: '+(d.secondKeySet?'<b style="color:var(--md-sys-color-primary)">已启用</b>':'未启用')
+      +' · TOTP: '+(d.totpEnabled?'<b style="color:var(--md-sys-color-primary)">已启用</b>':'未启用');
+    if(d.totpEnabled && d.totpSecret){ $('#ka-totp-info').style.display=''; $('#ka-totp-secret').textContent=d.totpSecret; $('#ka-totp-url').textContent=''; }
+    else $('#ka-totp-info').style.display='none';
+  }catch(e){ $('#ka-status').textContent='加载失败: '+e.message; }
+}
+
+// ---- 注册设置保存 ----
+async function saveRegistration(){
+  try{
+    await adapter.saveConfig(Store.inst,{ keyLength:Number($('#rg-keyLength').value)||24,
+      registration:{ enable:!!$('#rg-enable').selected, defaultQuota:Math.round((Number($('#rg-defaultQuota').value)||0)*10000),
+        minPasswordLen:Number($('#rg-minPw').value)||8, captchaProvider:$('#rg-captcha').value, captchaSecret:$('#rg-captchaSecret').value.trim(), captchaSiteKey:$('#rg-captchaSiteKey').value.trim() } });
+    snack('注册设置已保存');
+  }catch(e){ snack(e.message,true); }
 }
 
 // ============ 渲染: 端口 ============
@@ -1173,20 +1309,235 @@ async function renderPorts(){
   try{
     const data=await adapter.getInstances(signal);
     const instances=data.instances; if(data.current) Store.currentName=data.current;
+    Store.multi=!!data.multi; Store.mainPort=data.mainPort||0;
     $('#pt-list').innerHTML='<md-list>'+instances.map(i=>{
       const isSelf=i.name===Store.currentName;
       let acts;
       if(!i.running) acts=`<md-filled-button data-cmd="start" data-name="${escAttr(i.name)}">启动</md-filled-button>`;
-      else if(isSelf) acts=`<md-text-button disabled title="面板运行在此实例上，停止后面板会消失。请用其他实例的面板或终端 agw.sh stop ${escAttr(i.name)}">停止 <span class="msym">lock</span></md-text-button>`;
+      else if(Store.multi&&i.name==='default') acts=`<md-text-button disabled title="单进程模式: default 承载主端口, 不能停止">停止 <span class="msym">lock</span></md-text-button>`;
       else acts=`<md-text-button data-cmd="stop" data-name="${escAttr(i.name)}" style="color:var(--md-sys-color-error)">停止</md-text-button>`;
+      const prefix=Store.multi?(i.name==='default'?'无前缀':('/'+i.name)):null;
       return listItem({
         icon:`<span class="msym ${i.running?'ok':'err'}">circle</span>`,
         headline:esc(i.name)+(isSelf?' <span class="tag default"><span class="msym">home</span>面板</span>':'')+(i.tlsOn?' <span class="tag default">TLS</span>':''),
-        sub:`端口 ${i.port} · ${i.chCount} 渠道 · ${i.running?'运行中':'已停止'}`,
-        endHtml:`<div class="row-acts"><md-outlined-button data-action="openPortDialog" data-name="${escAttr(i.name)}">编辑</md-outlined-button><md-text-button data-cmd="restart" data-name="${escAttr(i.name)}">重启</md-text-button>${acts}</div>`,
+        sub:`端口 ${i.port} · ${i.chCount} 渠道 · ${i.running?'运行中':'已停止'}${prefix?(' · 主端口路径 '+prefix+'/v1'):''}`,
+        endHtml:`<div class="row-acts"><md-outlined-button data-action="openPortDialog" data-name="${escAttr(i.name)}">编辑</md-outlined-button><md-text-button data-cmd="restart" data-name="${escAttr(i.name)}" title="热重载配置">重载</md-text-button>${acts}</div>`,
       });
     }).join('')+'</md-list>';
   }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
+  loadTunnel();
+}
+
+// ---- cloudflared 隧道 ----
+let tnTimer=null;
+async function loadTunnel(){
+  try{
+    const d=await adapter.getTunnel();
+    renderTunnel(d);
+    if(d.running && !d.url){ clearTimeout(tnTimer); tnTimer=setTimeout(loadTunnel,2000); }
+  }catch(e){ $('#tn-status').textContent='查询失败: '+e.message; }
+}
+function renderTunnel(d){
+  $('#tn-toggle').textContent = d.running ? '停止隧道' : '启动隧道';
+  if(d.running && d.url){
+    $('#tn-status').innerHTML='<b style="color:var(--md-sys-color-primary)">运行中</b>';
+    $('#tn-url-row').style.display='flex';
+    $('#tn-url').textContent=d.url;
+  } else if(d.running){
+    $('#tn-status').textContent='启动中, 等待域名分配…';
+    $('#tn-url-row').style.display='none';
+  } else {
+    $('#tn-status').textContent='未启动';
+    $('#tn-url-row').style.display='none';
+  }
+}
+
+// ============ 渲染: 卡密管理 ============
+function fmtTok(n){ n=Number(n)||0; if(n>=1e8)return (n/1e8).toFixed(2)+'亿'; if(n>=1e4)return (n/1e4).toFixed(1)+'万'; return String(n); }
+async function renderCards(){
+  const signal=Store.abort('cards');
+  try{
+    const data=await adapter.getKeys(Store.inst,signal);
+    const keys=data.keys||[];
+    if(!keys.length){ $('#cd-list').innerHTML='<div class="empty" style="padding:32px;text-align:center;color:var(--md-sys-color-on-surface-variant)">暂无卡密 · 点右上角「发卡」给朋友发一个</div>'; return; }
+    $('#cd-list').innerHTML='<md-list>'+keys.map(k=>{
+      const quota=k.quotaTokens||0, used=k.usedTokens||0;
+      const pct=quota>0?Math.min(100,Math.round(used/quota*100)):0;
+      let state,stateColor;
+      if(!k.enable){ state='已禁用'; stateColor='var(--md-sys-color-error)'; }
+      else if(k.expiresAt && new Date(k.expiresAt).getTime()<Date.now()){ state='已过期'; stateColor='var(--md-sys-color-error)'; }
+      else if(quota>0&&used>=quota){ state='已用尽'; stateColor='var(--md-sys-color-error)'; }
+      else { state='启用中'; stateColor='var(--md-sys-color-primary)'; }
+      const limits=[k.models&&k.models.length?`限模型 ${k.models.join('/')}`:null, k.expiresAt?`${String(k.expiresAt).slice(0,10)}到期`:null].filter(Boolean).join(' · ');
+      return listItem({
+        icon:'<span class="msym">confirmation_number</span>',
+        headline:esc(k.name||'(无名卡)')+` <span class="tag" style="color:${stateColor}">${state}</span>`,
+        sub:`${esc(k.key.slice(0,10))}… · 用量 ${fmtTok(used)}${quota>0?' / '+fmtTok(quota)+' ('+pct+'%)':'(不限额)'}${limits?' · '+esc(limits):''}${k.note?' · '+esc(k.note):''}`,
+        endHtml:`<div class="row-acts">
+          <button type="button" class="icon-act" data-action="copyKey" data-key="${escAttr(k.key)}" title="复制完整Key"><span class="msym">content_copy</span></button>
+          <button type="button" class="icon-act" data-action="toggleKey" data-key="${escAttr(k.key)}" data-on="${k.enable?1:0}" title="${k.enable?'禁用':'启用'}"><span class="msym">${k.enable?'pause_circle':'play_circle'}</span></button>
+          <button type="button" class="icon-act" data-action="rechargeKey" data-key="${escAttr(k.key)}" data-name="${escAttr(k.name||'')}" title="充值额度/重置用量"><span class="msym">add_card</span></button>
+          <button type="button" class="icon-act err" data-action="delKey" data-key="${escAttr(k.key)}" data-name="${escAttr(k.name||'')}" title="删除"><span class="msym">delete</span></button>
+        </div>`,
+      });
+    }).join('')+'</md-list>';
+  }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
+}
+// ---- 卡密页 tab 切换(卡密|用户) ----
+let cdTab='keys';
+function cdSwitchTab(t){
+  cdTab=t;
+  $('#cd-pane-keys').style.display = t==='keys'?'':'none';
+  $('#cd-pane-users').style.display = t==='users'?'':'none';
+  $('#cd-new-label').textContent = t==='keys'?'发卡':'新建用户';
+  $('#cd-tab-keys').style.fontWeight = t==='keys'?'600':'400';
+  $('#cd-tab-users').style.fontWeight = t==='users'?'600':'400';
+  if(t==='users') renderUsers(); else renderCards();
+}
+// ---- 用户管理 ----
+async function renderUsers(){
+  const signal=Store.abort('cards');
+  $('#cu-list').innerHTML='<md-linear-progress indeterminate></md-linear-progress>';
+  try{
+    const data=await adapter.getUsers(Store.inst,signal);
+    const users=data.users||[];
+    if(!users.length){ $('#cu-list').innerHTML='<div class="empty" style="padding:32px;text-align:center;color:var(--md-sys-color-on-surface-variant)">暂无用户 · 点右上角「新建用户」创建账密登录账号</div>'; return; }
+    $('#cu-list').innerHTML='<md-list>'+users.map(u=>listItem({
+      icon:'<span class="msym">person</span>',
+      headline:esc(u.name||u.uid)+` <span class="tag">${esc(u.uid)}</span>`,
+      sub:`卡密 ${u.keyCount} 张${u.note?' · '+esc(u.note):''}${u.createdAt?' · '+String(u.createdAt).slice(0,10):''}`,
+      endHtml:`<div class="row-acts">
+        <button type="button" class="icon-act" data-action="editUser" data-uid="${escAttr(u.uid)}" title="编辑"><span class="msym">edit</span></button>
+        <button type="button" class="icon-act" data-action="userResetPw" data-uid="${escAttr(u.uid)}" title="重置密码"><span class="msym">lock_reset</span></button>
+        <button type="button" class="icon-act err" data-action="delUser" data-uid="${escAttr(u.uid)}" data-name="${escAttr(u.name||u.uid)}" title="删除用户"><span class="msym">delete</span></button>
+      </div>`,
+    })).join('')+'</md-list>';
+  }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
+}
+function openUserDialog(){
+  openDialog('新建用户 (实例 '+Store.inst+')', `
+    <div style="display:flex;flex-direction:column;gap:14px;padding-top:8px">
+      <md-outlined-text-field data-f="uid" label="UID(留空自动生成)" helper="3-32位 字母/数字/下划线"></md-outlined-text-field>
+      <md-outlined-text-field data-f="name" label="昵称"></md-outlined-text-field>
+      <md-outlined-text-field data-f="password" label="密码" type="password" required></md-outlined-text-field>
+      <md-outlined-text-field data-f="note" label="备注(可选)"></md-outlined-text-field>
+    </div>`, {onOk:async ()=>{
+      const v=dlgValue();
+      if(!String(v.password||'')){ snack('密码必填',true); return false; }
+      try{
+        const r=await adapter.createUser(Store.inst,{uid:String(v.uid||'').trim(),name:String(v.name||'').trim(),password:String(v.password),note:String(v.note||'').trim()});
+        snack('用户已创建: '+r.uid); renderUsers();
+      }catch(e){ snack(e.message,true); return false; }
+      return true;
+    }});
+}
+async function userAction(action,uid,name){
+  try{
+    if(action==='delUser'){
+      if(!confirm('删除用户「'+name+'」? 其名下卡密不受影响(仍可单独删)。')) return;
+      await adapter.deleteUser(Store.inst,uid); snack('已删除'); renderUsers(); return;
+    }
+    if(action==='editUser'){
+      const u=(await adapter.getUsers(Store.inst)).users.find(x=>x.uid===uid)||{};
+      openDialog('编辑用户 「'+esc(uid)+'」', `
+        <div style="display:flex;flex-direction:column;gap:14px;padding-top:8px">
+          <md-outlined-text-field data-f="name" label="昵称" value="${escAttr(u.name||'')}"></md-outlined-text-field>
+          <md-outlined-text-field data-f="note" label="备注" value="${escAttr(u.note||'')}"></md-outlined-text-field>
+        </div>`, {onOk:async ()=>{
+          const v=dlgValue();
+          try{ await adapter.updateUser(Store.inst,{uid,name:String(v.name||'').trim(),note:String(v.note||'').trim()}); snack('已保存'); renderUsers(); }catch(e){ snack(e.message,true); return false; }
+          return true;
+        }});
+      return;
+    }
+    if(action==='userResetPw'){
+      openDialog('重置密码 「'+esc(name)+'」', `
+        <md-outlined-text-field data-f="password" label="新密码" type="password" required style="width:100%"></md-outlined-text-field>`, {onOk:async ()=>{
+          const v=dlgValue();
+          if(!String(v.password||'')){ snack('密码必填',true); return false; }
+          try{ await adapter.updateUser(Store.inst,{uid,password:String(v.password)}); snack('密码已重置'); }catch(e){ snack(e.message,true); return false; }
+          return true;
+        }});
+      return;
+    }
+  }catch(e){ snack(e.message,true); }
+}
+
+// ---- 发卡弹窗 ----
+async function openCardDialog(){
+  // 先拉用户列表(填"绑定用户"下拉)
+  let users=[];
+  try{ users=(await adapter.getUsers(Store.inst)).users||[]; }catch(_){}
+  openDialog('发新卡 (实例 '+Store.inst+')', `
+    <div style="display:flex;flex-direction:column;gap:14px;padding-top:8px">
+      <md-outlined-text-field data-f="name" label="名称(给谁用的)" required></md-outlined-text-field>
+      <md-outlined-text-field data-f="quotaWan" label="额度(万 tokens)" type="number" value="100" helper="0 或留空=不限量; 100 = 100万tokens"></md-outlined-text-field>
+      <md-outlined-text-field data-f="models" label="限定模型(逗号分隔, 留空=全部可用)" helper="例如 deepseek-chat, gpt-4o-mini"></md-outlined-text-field>
+      <md-outlined-text-field data-f="expiresAt" label="有效期(留空=永久)" placeholder="2026-12-31" helper="到期自动拒绝; 支持 YYYY-MM-DD"></md-outlined-text-field>
+      <md-outlined-select data-f="uid" label="绑定用户(可选, 绑定后该用户账密登录可见此卡)">
+        <md-select-option value="">不绑定</md-select-option>
+      </md-outlined-select>
+      <md-outlined-text-field data-f="note" label="备注(可选)"></md-outlined-text-field>
+    </div>`, {onOk:async ()=>{
+      const v=dlgValue();
+      if(!String(v.name||'').trim()){ snack('名称必填',true); return false; }
+      const quotaWan=Number(v.quotaWan)||0;
+      const body={ name:String(v.name).trim(), quotaTokens:Math.round(quotaWan*10000),
+        models:String(v.models||'').split(',').map(s=>s.trim()).filter(Boolean),
+        expiresAt:String(v.expiresAt||'').trim(), note:String(v.note||'').trim(), uid:String(v.uid||'').trim() };
+      try{
+        const r=await adapter.createKey(Store.inst,body);
+        const k=r.key||{};
+        openDialog('发卡成功', `<div style="display:flex;flex-direction:column;gap:12px;padding-top:8px">
+          <div style="font-size:13px;color:var(--md-sys-color-on-surface-variant)">完整 Key (配置里可查, 也可随时回来复制):</div>
+          <div class="mono" style="word-break:break-all;background:var(--md-sys-color-surface-container);padding:12px;border-radius:12px;user-select:all">${esc(k.key||'')}</div>
+          <div style="font-size:13px">客户端用法: base_url 填 <span class="mono">http://&lt;网关地址&gt;:${Store.mainPort||'主端口'}/${esc(Store.inst==='default'?'':Store.inst+'/')}v1</span>, API Key 填上面的 Key</div>
+          <md-filled-button id="cd-copy-new">复制 Key</md-filled-button>
+        </div>`, {hideCancel:true});
+        setTimeout(()=>{ const b=$('#cd-copy-new'); if(b) b.onclick=()=>{ navigator.clipboard&&navigator.clipboard.writeText(k.key||''); snack('已复制'); }; },50);
+        renderCards();
+      }catch(e){ snack(e.message,true); return false; }
+      return true;
+    }});
+  setTimeout(()=>{ const sel=$('#dlgBody [data-f=uid]'); if(sel&&users.length) users.forEach(u=>{ const o=document.createElement('md-select-option'); o.value=u.uid; o.textContent=(u.name||u.uid)+' ('+u.uid+')'; sel.appendChild(o); }); },80);
+}
+// ---- 卡密操作 ----
+async function cardAction(action,key,name,on){
+  try{
+    if(action==='copyKey'){ await navigator.clipboard.writeText(key); snack('已复制完整 Key'); return; }
+    if(action==='toggleKey'){ await adapter.updateKey(Store.inst,{key,enable:!on}); snack(on?'已禁用':'已启用'); renderCards(); return; }
+    if(action==='delKey'){
+      if(!confirm('删除卡密「'+(name||key.slice(0,10))+'」? 该Key立即失效。')) return;
+      await adapter.deleteKey(Store.inst,key); snack('已删除'); renderCards(); return;
+    }
+    if(action==='rechargeKey'){
+      openDialog('充值/重置 「'+esc(name||'')+'」', `
+        <div style="display:flex;flex-direction:column;gap:14px;padding-top:8px">
+          <md-outlined-text-field data-f="addWan" label="追加额度(万 tokens)" type="number" value="0" helper="在现有额度上追加; 0=不变"></md-outlined-text-field>
+          <label style="display:flex;align-items:center;gap:8px;font-size:14px"><md-checkbox data-f="reset"></md-checkbox>重置已用量为 0</label>
+        </div>`, {onOk:async ()=>{
+          const v=dlgValue();
+          const body={key};
+          const addWan=Number(v.addWan)||0;
+          if(addWan>0) body.addQuota=Math.round(addWan*10000);
+          if(v.reset) body.resetUsage=true;
+          try{ await adapter.updateKey(Store.inst,body); snack('已更新'); renderCards(); }catch(e){ snack(e.message,true); return false; }
+          return true;
+        }});
+      return;
+    }
+  }catch(e){ snack(e.message,true); }
+}
+
+// ---- 渠道余额 ----
+async function chBalanceAction(chName){
+  snack('查询 '+chName+' 余额…');
+  try{
+    const r=await adapter.getBalance(Store.inst,chName);
+    openDialog('渠道余额 · '+esc(chName), `<div style="padding:8px 0;text-align:center">
+      <div style="font-size:32px;font-weight:600;color:var(--md-sys-color-primary)">${esc(String(r.balance))} <span style="font-size:14px">${esc(r.unit||'')}</span></div>
+      <div class="muted small" style="margin-top:6px">${esc(r.url||'')}</div></div>`, {hideCancel:true});
+  }catch(e){ snack(e.message,true); }
 }
 
 // ============ 渲染: 统计 ============
@@ -1508,8 +1859,10 @@ function mmShowModelPicker(list){
   try{ box.scrollIntoView({behavior:'smooth', block:'center'}); }
   catch(_){ try{ $('#dlgBody').scrollTop = box.offsetTop - 8; }catch(_2){} }
 }
+let providerDlgOrigName=''; // 打开渠道弹窗时的原渠道名(用于改名)
 function openProviderDialog(ch){
   const c=ch||{name:'',type:'openai',baseUrl:'',proxy:'-',models:[],apiKey:'',default:false};
+  providerDlgOrigName=ch?ch.name:'';
   mmList=(c.modelMap?Object.entries(c.modelMap):[]);
   const pxs=Object.keys((Store.configs.get(Store.inst)||{}).proxies||{});
   const pOpts=['-'].concat(pxs); if(c.proxy&&!pOpts.includes(c.proxy)) pOpts.push(c.proxy);
@@ -1537,6 +1890,7 @@ function openProviderDialog(ch){
       </div>
       <md-outlined-text-field data-f="apiKey" label="API Key" type="password" value="${escAttr(c.apiKey||'')}" placeholder="${c.hasKey?'(已设, 留空不改)':'API Key'}"></md-outlined-text-field>
       <label style="display:flex;align-items:center;gap:8px;font-size:14px"><md-checkbox data-f="useResponses" ${c.useResponses?'selected':''}></md-checkbox>上游用 Responses API <span class="muted small">(仅 openai 类型; 需在路由策略里开启扩展端点)</span></label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:14px"><md-checkbox data-f="probe" ${c.probe?'selected':''}></md-checkbox>参与成功率探测 <span class="muted small">(需实例开启 probe; 用户端可见成功率)</span></label>
       <label style="display:flex;align-items:center;gap:8px;font-size:14px"><md-checkbox data-f="default" ${c.default?'selected':''}></md-checkbox>设为默认渠道</label>
     </div>`, {onOk:saveProvider});
   const s=$('#dlgBody [data-f=type]');
@@ -1545,6 +1899,7 @@ function openProviderDialog(ch){
   if(sp) sp.updateComplete.then(()=>Promise.all([...sp.querySelectorAll('md-select-option')].map(o=>o.updateComplete||0))).then(()=>sp.value=curP).catch(()=>{});
   const cb=$('#dlgBody [data-f=default]'); if(c.default) cb.selected=true;
   const ur=$('#dlgBody [data-f=useResponses]'); if(c.useResponses) ur.selected=true;
+  const pr=$('#dlgBody [data-f=probe]'); if(c.probe) pr.selected=true;
   const ma=$('#mm-alias');
   if(ma){
     $('#mm-add').addEventListener('click',mmAdd);
@@ -1575,7 +1930,7 @@ function openPortDialog(name){
   const i=Store.instances.find(x=>x.name===name)||{};
   openDialog(name?'编辑实例 '+name:'新建实例', `
     <div style="display:flex;flex-direction:column;gap:14px;padding-top:8px">
-      <md-outlined-text-field data-f="name" label="实例名" value="${escAttr(i.name||'')}" ${name?'disabled':''} required></md-outlined-text-field>
+      <md-outlined-text-field data-f="name" label="实例名" value="${escAttr(i.name||'')}" ${(name==='default')?'disabled':''} required helper="${name?(name==='default'?'主实例不能改名':'改名会同步改配置文件名, 热生效'):'只能含字母/数字/中划线/下划线'}"></md-outlined-text-field>
       <md-outlined-text-field data-f="port" label="HTTP 端口" type="number" value="${i.port||16390}"></md-outlined-text-field>
       <md-outlined-text-field data-f="tlsPort" label="HTTPS 端口" type="number" value="${(i.port||16390)+10}"></md-outlined-text-field>
       <md-outlined-text-field data-f="adminKey" label="管理密码" type="password" value="" helper="留空保存=清除管理密码"></md-outlined-text-field>
@@ -1608,18 +1963,24 @@ async function savePortSettings(editName){
   if(tlsOn&&(!tlsPort||tlsPort<1024||tlsPort>65535)){ snack('HTTPS 端口范围 1024-65535',true); return false; }
   try{
     if(editName){ // ---- 编辑已有实例 ----
-      const cur=await adapter.getConfig(editName);
+      let effName=editName;
+      if(name!==editName){ // ---- 改名: 先调 rename API(热生效), 后续配置保存用新名 ----
+        await adapter.renameInstance(editName,name);
+        effName=name;
+        snack('实例已改名: '+editName+' → '+name);
+      }
+      const cur=await adapter.getConfig(effName);
       const patch={ port, host:(cur&&cur.host)||'0.0.0.0',
         tls:Object.assign({},(cur&&cur.tls)||{},{ enable:tlsOn, port:tlsPort||port+10 }) };
       // 管理密码: 与回填原值不同才提交(含清空=移除密码); 预填失败(unknown)则不动
       if(portDlgOrigKey!==undefined && adminKey!==portDlgOrigKey) patch.adminKey=adminKey;
-      await adapter.saveConfig(editName,patch);
-      snack('已保存实例 '+editName);
+      await adapter.saveConfig(effName,patch);
+      snack('已保存实例 '+effName);
       if(editName===Store.currentName&&cur&&cur.port&&Number(cur.port)!==port)
         snack('面板实例端口已改为 '+port+', 稍后请用新地址访问面板',true);
       let running=false;
-      try{ const d=await adapter.getInstances(); running=!!(d.instances||[]).find(x=>x.name===editName&&x.running); }catch(_){}
-      if(running) doInstanceAction(editName,'restart'); else renderPorts();
+      try{ const d=await adapter.getInstances(); running=!!(d.instances||[]).find(x=>x.name===effName&&x.running); }catch(_){}
+      if(running) doInstanceAction(effName,'restart'); else renderPorts();
     }else{ // ---- 新建实例 ----
       const tls={ enable:tlsOn, port:tlsPort||port+10 };
       if(tlsOn){ // 复用已有实例的证书(证书可跨实例共用); 都没有则降级纯 HTTP
@@ -1712,9 +2073,11 @@ async function saveProvider(){
   const ch={ name:v.name, type:v.type||'openai', baseUrl:v.baseUrl, proxy:v.proxy||'-',
     models:String(v.models||'').split(',').map(s=>s.trim()).filter(Boolean),
     apiKey:v.apiKey||'', default:!!v.default,
-    useResponses:!!($('#dlgBody [data-f=useResponses]')&&$('#dlgBody [data-f=useResponses]').selected) };
+    useResponses:!!($('#dlgBody [data-f=useResponses]')&&$('#dlgBody [data-f=useResponses]').selected),
+    probe:!!($('#dlgBody [data-f=probe]')&&$('#dlgBody [data-f=probe]').selected) };
   const delayMs=Math.max(0,Math.min(120000,+v.delayMs||0));
   if(delayMs) ch.delayMs=delayMs; // 0=不带, 覆盖掉旧值
+  if(providerDlgOrigName && providerDlgOrigName!==ch.name) ch.oldName=providerDlgOrigName; // 改名
   if(Object.keys(modelMap).length) ch.modelMap=modelMap; // 不带箭头的空映射就不发, 避免覆盖成空
   try{ await adapter.saveChannel(Store.inst,ch);
     snack('已保存渠道 '+ch.name+(Object.keys(modelMap).length?' (改名映射重启实例后生效)':''));
@@ -1776,6 +2139,9 @@ document.body.addEventListener('click', e=>{
     else if(a==='deleteProvider'){ if(confirm(`删除渠道 ${n}?`)) adapter.deleteChannel(Store.inst,n).then(renderProviders).catch(x=>snack(x.message,true)); }
     else if(a==='openPortDialog') openPortDialog(n);
     else if(a==='delInstance') delInstance(n);
+    else if(a==='copyKey'||a==='toggleKey'||a==='delKey'||a==='rechargeKey') cardAction(a,act.dataset.key,act.dataset.name,act.dataset.on==='1');
+    else if(a==='userResetPw'||a==='delUser'||a==='editUser') userAction(a,act.dataset.uid,act.dataset.name);
+    else if(a==='chBalance') chBalanceAction(act.dataset.name);
     else if(a==='editProxy') openProxyDialog(n);
     else if(a==='delProxy') delProxy(n);
     else if(a==='viewBody') viewRecordBody(act.dataset.id);
@@ -1810,7 +2176,20 @@ $('#px-add').addEventListener('click',()=>openProxyDialog());
 const rpTestOut=$('#rp-test-out-btn'), rpTestInc=$('#rp-test-inc-btn');
 if(rpTestOut) rpTestOut.addEventListener('click',()=>{ const rules=rpCompileCli(rpLists.out); const r=rpApplyCli($('#rp-test-in')?$('#rp-test-in').value:'',rules); $('#rp-test-result').textContent = r===''?'(空)':r; });
 if(rpTestInc) rpTestInc.addEventListener('click',()=>{ const rules=rpCompileCli(rpLists.inc); const r=rpApplyCli($('#rp-test-in')?$('#rp-test-in').value:'',rules); $('#rp-test-result').textContent = r===''?'(空)':r; });
-$('#pt-new').addEventListener('click',()=>openPortDialog());
+  $('#pt-new').addEventListener('click',()=>openPortDialog());
+  $('#cd-new').addEventListener('click',()=>{ if(cdTab==='users')openUserDialog(); else openCardDialog(); });
+  $('#cd-tab-keys').addEventListener('click',()=>cdSwitchTab('keys'));
+  $('#cd-tab-users').addEventListener('click',()=>cdSwitchTab('users'));
+  // 第二验证
+  $('#ka-save-second').addEventListener('click',async()=>{ try{ await adapter.setAdminAuth(Store.inst,{secondKey:$('#ka-secondKey').value}); snack('第二密码已保存'); loadAdminAuth(Store.inst); }catch(e){ snack(e.message,true); } });
+  $('#ka-totp-enable').addEventListener('click',async()=>{ try{ const r=await adapter.setAdminAuth(Store.inst,{totpAction:'enable'}); if(r.totpSecret){ $('#ka-totp-info').style.display=''; $('#ka-totp-secret').textContent=r.totpSecret; $('#ka-totp-url').textContent=r.otpauthUrl||''; } snack('TOTP 已启用, 请立即扫码保存密钥!'); loadAdminAuth(Store.inst); }catch(e){ snack(e.message,true); } });
+  $('#ka-totp-disable').addEventListener('click',async()=>{ try{ await adapter.setAdminAuth(Store.inst,{totpAction:'disable'}); snack('TOTP 已停用'); loadAdminAuth(Store.inst); }catch(e){ snack(e.message,true); } });
+  // 注册设置
+  $('#rg-save').addEventListener('click',saveRegistration);
+  $('#rg-enable').addEventListener('change',()=>{ $('#rg-more').style.display=$('#rg-enable').selected?'':'none'; });
+  // 隧道
+  $('#tn-toggle').addEventListener('click',async()=>{ try{ const d=await adapter.getTunnel(); await adapter.tunnelAction(d.running?'stop':'start'); snack(d.running?'隧道已停止':'隧道启动中…'); setTimeout(loadTunnel,1500); }catch(e){ snack(e.message,true); } });
+  $('#tn-copy').addEventListener('click',()=>{ const t=$('#tn-url').textContent; if(t){ navigator.clipboard&&navigator.clipboard.writeText(t); snack('已复制'); } });
 $('#rt-save').addEventListener('click',saveRouting);
 $('#rt-reset').addEventListener('click',renderRouting);
 $('#rt-syncNow').addEventListener('click', async ()=>{

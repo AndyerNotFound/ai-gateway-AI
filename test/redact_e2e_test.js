@@ -1,9 +1,9 @@
-/* 隐私过滤 CDC 缓存 — 真实网关 E2E 测试
- * 1. 请求体到达上游前, 密钥(sk-/ghp_/Bearer)被脱敏
- * 2. 第二次相同请求(缓存命中路径)脱敏行为一致
- * 3. 字段级 token/apiKey 字段 → ***
- * 4. data: URL 不被扫描
- */
+
+
+
+
+
+
 'use strict';
 const gw = require('../gateway.js');
 const http = require('http');
@@ -26,7 +26,7 @@ function post(port, bodyObj) {
 }
 
 async function main() {
-  // ---- 假上游: 记录收到的请求体, 返回标准响应 ----
+  
   const received = [];
   const upstream = http.createServer((req, res) => {
     const ch = []; req.on('data', c => ch.push(c));
@@ -47,8 +47,8 @@ async function main() {
   const inst = await gw.startServer(cfg, { port: 0 });
   const port = inst.port || inst.address().port || (inst.server && inst.server.address().port);
 
-  // ---- 用例 ----
-  const longPara = '这是一段很长的历史对话内容，用于验证 CDC 分块缓存。'.repeat(200); // ~10K
+  
+  const longPara = '这是一段很长的历史对话内容，用于验证 CDC 分块缓存。'.repeat(200); 
   const body1 = {
     model: 'm',
     messages: [

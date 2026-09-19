@@ -29,7 +29,7 @@ setTimeout(()=>{
   console.log('navbar 节点:', nav?nav.outerHTML.slice(0,100):'MISSING');
   console.log('compatBar 可见:', !d.getElementById('compatBar').classList.contains('hidden'));
   console.log('console error 数:', cons.length, cons.slice(0,3).join('; '));
-  // 检查所有 md-* 元素的 computed style
+  
   const tags=d.querySelectorAll('[class*=md-]');
   console.log('含 md- 类名的元素:', tags.length);
   process.exit(0);

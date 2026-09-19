@@ -117,7 +117,7 @@ curl http://127.0.0.1:16384/v1/chat/completions \
 
 ## 三、三种客户端姿势（同一网关）
 
-设网关在 `http://<手机局域网IP>:16384`（手机局域网 IP，`ip -4 addr` 或 `ifconfig` 查看）。
+设网关在 `http://192.168.1.100:16384`（手机局域网 IP，`ip -4 addr` 或 `ifconfig` 查看）。
 
 ### 1. OpenAI 格式（适用：ChatGPT 客户端、openai SDK、ChatBox、NextChat 等）
 
@@ -129,7 +129,7 @@ curl http://127.0.0.1:16384/v1/chat/completions \
 
 ```python
 from openai import OpenAI
-client = OpenAI(base_url="http://<手机局域网IP>:16384/v1", api_key="随便填")
+client = OpenAI(base_url="http://192.168.1.100:16384/v1", api_key="随便填")
 r = client.chat.completions.create(model="gemini-2.0-flash",
     messages=[{"role": "user", "content": "你好"}], stream=True)
 for chunk in r:
@@ -139,7 +139,7 @@ for chunk in r:
 ### 2. Claude 格式（适用：Claude Code、anthropic SDK 等）
 
 ```bash
-curl http://<手机局域网IP>:16384/v1/messages \
+curl http://192.168.1.100:16384/v1/messages \
   -H "Content-Type: application/json" \
   -H "x-api-key: 随便填" \
   -H "anthropic-version: 2023-06-01" \
@@ -149,7 +149,7 @@ curl http://<手机局域网IP>:16384/v1/messages \
 ### 3. Gemini 格式（适用：Google AI SDK 等）
 
 ```bash
-curl "http://<手机局域网IP>:16384/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse" \
+curl "http://192.168.1.100:16384/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse" \
   -H "Content-Type: application/json" \
   -H "x-goog-api-key: 随便填" \
   -d '{"contents":[{"role":"user","parts":[{"text":"你好"}]}]}'
@@ -160,20 +160,82 @@ curl "http://<手机局域网IP>:16384/v1beta/models/gemini-2.5-flash:streamGene
 
 ---
 
-## 四、多开（多个实例）
+## 三·五、多用户卡密（发卡给朋友/公开中转）
 
-复制配置改端口即可：
+> v2.0 新增。把网关变成中转站：你的上游 Key 不外泄，给每个下游用户发独立卡密。
+
+### 概念
+
+- **gatewayKey** = 管理员主 Key（不限额，自己用）
+- **apiKeys** = 卡密列表（`sk-xxx`，发卡生成），支持：
+  - **限额**：`quotaTokens` 总 token 额度（0=不限），用尽返回 429
+  - **禁用**：随时停用/启用
+  - **过期**：`expiresAt`（如 `2026-12-31`），到期自动拒绝
+  - **模型白名单**：`models: ["deepseek-chat"]` 只允许指定模型（空=全部）
+  - **用量统计**：按卡记录请求数/token 数，重启不丢（`log/keyusage-<实例>.json` 落盘）
+
+### 管理（面板「卡密」页 或 API）
 
 ```bash
-cp ~/ai-gateway/config.json ~/ai-gateway/config.proxy2.json
-# 编辑 config.proxy2.json: 改 port 为 16385, 改渠道/代理
-~/ai-gateway/agw.sh start proxy2
-~/ai-gateway/agw.sh status        # 两个实例同时运行
+# 发卡
+curl -X POST http://127.0.0.1:16384/admin/api/keys/default \
+  -H 'x-admin-key: <管理密码>' \
+  -d '{"name":"张三","quotaTokens":1000000,"models":["deepseek-chat"],"expiresAt":"2026-12-31"}'
+# → {"ok":true,"key":{"key":"sk-xxx",...}}
+
+# 列表(含实时用量)
+curl http://127.0.0.1:16384/admin/api/keys/default -H 'x-admin-key: <管理密码>'
+
+# 充值100万token / 重置用量 / 禁用
+curl -X POST http://127.0.0.1:16384/admin/api/keys-update/default \
+  -H 'x-admin-key: <管理密码>' \
+  -d '{"key":"sk-xxx","addQuota":1000000}'       # 或 {"key":"sk-xxx","resetUsage":true} / {"key":"sk-xxx","enable":false}
+
+# 删除
+curl -X DELETE 'http://127.0.0.1:16384/admin/api/keys/default/sk-xxx' -H 'x-admin-key: <管理密码>'
 ```
 
-- 实例名 `default` 用 `config.json`，其他名字用 `config.<实例名>.json`
-- `agw.sh start`（不带名字）= 启动全部实例
-- 停止某实例：`agw.sh stop proxy2`
+### 下游用户用法
+
+```
+base_url: http://<你的网关地址>:16384/v1   (多实例: http://<地址>:16384/<实例名>/v1)
+api_key:  sk-xxx  (你发的卡密)
+```
+
+> ⚠️ 公网部署务必：设 gatewayKey（管理主 key）+ adminKey（面板密码），HTTPS 用 `gen-cert.sh` 签证书。
+
+---
+
+## 四、多开（多个实例）——单进程托管
+
+**v2.0 起改为单进程多实例模式**：一个 node 进程托管目录下全部 `config*.json`，
+不再需要每个实例一个进程（19 个实例从 ~1GB 内存降到 1 个进程）。
+
+### 访问方式
+
+- **主端口路径前缀**：`http://127.0.0.1:16384/<实例名>/v1/chat/completions`
+  （主端口 = default 实例的 `listen.port`；无前缀路径 = default 实例）
+- **兼容端口**：各实例原有 `listen.port` 继续监听，旧客户端无需改地址
+
+### 管理
+
+```bash
+~/ai-gateway/agw.sh start     # 启动网关(主进程)
+~/ai-gateway/agw.sh stop      # 停止
+~/ai-gateway/agw.sh restart   # 重启进程
+~/ai-gateway/agw.sh status    # 状态 + 实例清单
+~/ai-gateway/agw.sh logs      # 日志(单进程统一 log/gateway.log)
+```
+
+实例的**新建/删除/启停/改名/改端口/渠道管理全部在面板内热生效**（`/admin/m3` → 端口页），
+不需要重启进程：
+
+- 实例改名：端口页 → 编辑实例 → 直接改名字（同步改配置文件名，旧访问路径立即失效）
+- 渠道改名：提供商页 → 编辑渠道 → 直接改名字（apiKey 自动保留）
+- 停止实例 = 从池中摘除（配置保留，随时可启动恢复）；`default` 是主实例不能停
+- 实例名是 URL 路径第一段，以下保留字不能用：`v1` `v1beta` `v1alpha` `admin` `health` `status`
+
+> 旧的单实例模式仍可用：`AGW_SINGLE=1 node gateway.js`（测试逃生舱）。
 
 ---
 
@@ -202,13 +264,14 @@ cp ~/ai-gateway/config.json ~/ai-gateway/config.proxy2.json
 ~/ai-gateway/
 ├── gateway.js     # 网关本体（单文件, 零依赖）
 ├── config.json    # 默认实例配置
-├── agw.sh         # 管理脚本
-├── log/           # 运行日志（每实例一个）
+├── agw.sh         # 管理脚本(单进程)
+├── log/           # 运行日志(单进程统一 gateway.log)
 └── .run/          # pid 文件
 ```
 
-沙箱测试套件 215 项全过：转换器单元测试、9 种组合互转 E2E（流式+非流式）、
-SOCKS5/HTTP 代理隧道（含认证、HTTPS 自签）、网关鉴权、渠道路由、多实例、
+沙箱测试套件全过：转换器单元测试、9 种组合互转 E2E（流式+非流式）、
+SOCKS5/HTTP 代理隧道（含认证、HTTPS 自签）、网关鉴权、渠道路由、单进程多实例
+（路径路由/兼容端口/热加载/实例与渠道改名/启停/TLS 双开/加密配置, 55 项）、
 轮询（严格交替）、故障切换（429/连接失败/不可重试400/全失败）。
 
 ## OpenAI 扩展端点 (Responses / Images / Embeddings / Audio / Completions)
@@ -233,7 +296,7 @@ SOCKS5/HTTP 代理隧道（含认证、HTTPS 自签）、网关鉴权、渠道�
 ```
 
 - 渠道 `useResponses` 未设置时跟随全局 `upstreamResponses`; 仅 openai 类型渠道有效; 仅在 `enable=true` 时生效。
-- 保存后需重启实例: `bash agw.sh restart <实例名>` (m3 面板保存后会自动重启)。
+- 单进程模式下保存在面板内热生效, 无需重启进程。
 
 ### 网关对外新增端点 (enable=true 时)
 

@@ -1,0 +1,17 @@
+# 可选, 非必需(根 Dockerfile 单容器即可跑)
+services:
+  ai-gateway:
+    build: .
+    ports:
+      - "16384:16384"
+    volumes:
+      - ai-gateway-data:/app/data
+    restart: unless-stopped
+    # 公网部署建议:
+    #  1. 进容器改配置: docker exec -it <容器> sh, 编辑 /app/data/config.json
+    #     至少设置 gatewayKey(客户端密码) 和 adminKey(管理面板密码)
+    #  2. 面板: http://<服务器>:16384/admin/m3
+    #  3. HTTPS: 终止于前置反代(Caddy/Nginx), 或容器内 gen-cert
+
+volumes:
+  ai-gateway-data:

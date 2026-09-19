@@ -1,24 +1,44 @@
 'use strict';
-/**
- * ai-gateway Web 管理面板 (Material Design 3 风格)
- * 被 gateway.js 引用, 在每个实例的 /admin 路径提供管理界面
- * 管理 API 需 adminKey 鉴权, 可跨实例管理所有 config.*.json
- */
+
+
+
+
+
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { exec, execFile } = require('child_process');
 const http = require('http');
 const zlib = require('zlib');
+const crypto2 = require('crypto');
+const https2 = require('https');
 
-// DIR 优先用当前实例配置文件所在目录, 回落到 ~/ai-gateway
+
+let tunnelProc = null, tunnelUrl = '', tunnelLog = [];
+
+
 let crypt = null; try { crypt = require('./crypt.js'); } catch (_) {}
 let DIR = path.join(os.homedir(), 'ai-gateway');
 function setDir(dir) { DIR = dir; }
 let upstreamModelsFn = null;
-function setUpstreamModels(fn) { upstreamModelsFn = fn; } // 由 gateway 注入: ch -> Promise<模型id数组>
+function setUpstreamModels(fn) { upstreamModelsFn = fn; } 
 let syncFn = null;
-function setSyncFn(fn) { syncFn = fn; } // 由 gateway 注入: () -> Promise<同步摘要>
+function setSyncFn(fn) { syncFn = fn; } 
+
+let POOL = null;
+function setPool(p) { POOL = p; }
+
+let PLUGINS = null;
+function setPlugins(p) { PLUGINS = p; }
+
+const INST_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
+const RESERVED_PATHS = new Set(['v1', 'v1beta', 'v1alpha', 'admin', 'health', 'status', 'favicon.ico', 'robots.txt']);
+
+function hotReload(name) {
+  if (!POOL) return false;
+  POOL.reload(name);
+  return true;
+}
 function cfgFile(name) {
   return name === 'default' ? path.join(DIR, 'config.json') : path.join(DIR, `config.${name}.json`);
 }
@@ -33,24 +53,62 @@ function listInstances() {
   } catch (_) {}
   return out;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+const _keyCache = new Map();
+function cfgCacheClear() { _keyCache.clear(); }
+function _passSig(pass) {
+  return crypto2.createHash('sha256').update(String(pass)).digest('hex').slice(0, 16);
+}
 function loadCfg(name) {
   const f = cfgFile(name);
   if (!fs.existsSync(f)) return null;
-  let raw = fs.readFileSync(f, 'utf8');
+  const raw = fs.readFileSync(f, 'utf8');
+  let plain = raw;
   if (crypt && crypt.isEncText(raw)) {
     const pass = crypt.loadPass();
     if (!pass) throw new Error('配置已加密但找不到密钥(.agwkey/AGW_CRYPT_PASS), 可用 node crypt.js test 检查');
-    raw = crypt.decryptText(raw, pass);
+    const b = Buffer.from(raw.slice(crypt.MAGIC.length), 'base64');
+    const salt = b.subarray(0, 16);
+    const sig = _passSig(pass) + ':' + Buffer.from(salt).toString('hex');
+    let e = _keyCache.get(f);
+    if (!e || e.sig !== sig) {
+      e = { sig, key: crypt.deriveKey(pass, salt) };
+      _keyCache.set(f, e);
+    }
+    
+    const iv = b.subarray(16, 28), tag = b.subarray(28, 44), ct = b.subarray(44);
+    const d = crypto2.createDecipheriv('aes-256-gcm', e.key, iv);
+    d.setAuthTag(tag);
+    plain = Buffer.concat([d.update(ct), d.final()]).toString('utf8');
   }
-  return JSON.parse(raw);
+  const c = JSON.parse(plain);
+  c._configFile = f;
+  c._name = name;
+  return c;
 }
 function saveCfg(name, cfg) {
-  let text = JSON.stringify(cfg, null, 2) + '\n';
-  if (crypt) { const pass = crypt.loadPass(); if (pass) text = crypt.encryptText(text, pass); } // 有密钥=落盘即加密
-  fs.writeFileSync(cfgFile(name), text);
+  const f = cfgFile(name);
+  const plain = JSON.stringify(cfg, null, 2) + '\n';
+  let text = plain;
+  if (crypt) { const pass = crypt.loadPass(); if (pass) text = crypt.encryptText(plain, pass); } 
+  fs.writeFileSync(f, text);
+  _keyCache.delete(f); 
 }
 function readLog(name, lines) {
-  const f = path.join(DIR, 'log', `${name}.log`);
+  
+  const f = path.join(DIR, 'log', POOL ? 'gateway.log' : `${name}.log`);
   if (!fs.existsSync(f)) return '(无日志)';
   const txt = fs.readFileSync(f, 'utf8');
   const arr = txt.split('\n');
@@ -70,7 +128,7 @@ function getInstanceStatus(name) {
   return { name, pid, running };
 }
 
-// 执行 agw.sh 命令(非阻塞, 返回 promise)
+
 function runAgw(args) {
   return new Promise(resolve => {
     execFile('bash', [path.join(DIR, 'agw.sh'), ...args], { timeout: 15000 }, (err, stdout, stderr) => {
@@ -79,7 +137,7 @@ function runAgw(args) {
   });
 }
 
-// 保存配置后自动重启实例(300ms 后执行, 先让响应发出去; 自我重启用 setsid 临时脚本脱离进程组)
+
 function scheduleRestart(cfg, name) {
   setTimeout(() => {
     if (name === currentName(cfg)) {
@@ -97,19 +155,67 @@ function scheduleRestart(cfg, name) {
   }, 300);
 }
 
-// 管理鉴权
+
+
+function base32Decode(s) {
+  const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  s = String(s || '').toUpperCase().replace(/=+$/, '').replace(/[^A-Z2-7]/g, '');
+  let bits = 0, val = 0; const out = [];
+  for (const ch of s) {
+    val = (val << 5) | A.indexOf(ch); bits += 5;
+    if (bits >= 8) { out.push((val >> (bits - 8)) & 0xff); bits -= 8; }
+  }
+  return Buffer.from(out);
+}
+function base32Encode(buf) {
+  const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = 0, val = 0, out = '';
+  for (const b of buf) {
+    val = (val << 8) | b; bits += 8;
+    while (bits >= 5) { out += A[(val >> (bits - 5)) & 31]; bits -= 5; }
+  }
+  if (bits > 0) out += A[(val << (5 - bits)) & 31];
+  return out;
+}
+function totpCode(secretB32, offsetStep = 0) {
+  try {
+    const key = base32Decode(secretB32);
+    if (!key.length) return null;
+    const counter = Math.floor(Date.now() / 1000 / 30) + offsetStep;
+    const buf = Buffer.alloc(8);
+    buf.writeBigUInt64BE(BigInt(counter));
+    const h = crypto2.createHmac('sha1', key).update(buf).digest();
+    const o = h[h.length - 1] & 0xf;
+    const code = ((h[o] & 0x7f) << 24 | (h[o + 1] & 0xff) << 16 | (h[o + 2] & 0xff) << 8 | (h[o + 3] & 0xff)) % 1000000;
+    return String(code).padStart(6, '0');
+  } catch (_) { return null; }
+}
+function totpVerify(secretB32, code) {
+  const c = String(code || '').trim();
+  if (!/^\d{6}$/.test(c)) return false;
+  for (const off of [-1, 0, 1]) if (totpCode(secretB32, off) === c) return true;
+  return false;
+}
+
+
 function checkAdminAuth(cfg, req, query) {
   const key = cfg.adminKey;
-  if (!key) return true; // 没设 adminKey = 免密管理(局域网自用); 要安全请给实例设置 adminKey
   const h = req.headers;
   const auth = h.authorization || '';
   const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
-  if (bearer === key) return true;
-  if (h['x-admin-key'] === key) return true;
-  if (query && query.get('adminKey') === key) return true;
-  // cookie
-  const cookie = h.cookie || '';
-  if (cookie.includes(`adminKey=${key}`)) return true;
+  let mainOk;
+  if (!key) mainOk = true; 
+  else {
+    mainOk = (bearer === key) || (h['x-admin-key'] === key) || (query && query.get('adminKey') === key)
+      || (h.cookie || '').includes(`adminKey=${key}`);
+  }
+  if (!mainOk) return false;
+  
+  const aa = cfg.adminAuth || {};
+  const needSecond = !!(aa.secondKey || aa.totpSecret);
+  if (!needSecond) return true;
+  if (aa.secondKey && (h['x-admin-key2'] === aa.secondKey || (query && query.get('adminKey2') === aa.secondKey))) return true;
+  if (aa.totpSecret && totpVerify(aa.totpSecret, h['x-totp'] || (query && query.get('totp')))) return true;
   return false;
 }
 
@@ -123,19 +229,19 @@ function textRes(res, status, text, ct) {
   res.end(text);
 }
 
-// 从配置中提取打码的渠道信息(key 不外泄)
+
 function maskedChannels(cfg, reveal) {
   return (cfg.channels || []).map(c => ({
     name: c.name, type: c.type, baseUrl: c.baseUrl,
     proxy: c.proxy || null, models: c.models, modelMap: c.modelMap,
     default: c.default, hasKey: !!(c.apiKey && c.apiKey.length),
-    useResponses: !!c.useResponses, delayMs: c.delayMs || 0,
+    useResponses: !!c.useResponses, delayMs: c.delayMs || 0, probe: !!c.probe,
     keyPrefix: c.apiKey ? c.apiKey.slice(0, 4) + '***' : '',
     apiKey: reveal ? (c.apiKey || '') : undefined,
   }));
 }
 
-// 当前实例名 (config.json → 'default', config.xxx.json → 'xxx')
+
 function currentName(cfg) {
   if (!cfg._configFile) return 'default';
   const base = path.basename(cfg._configFile, '.json');
@@ -143,8 +249,8 @@ function currentName(cfg) {
   return base.replace(/^config\./, '');
 }
 
-// 本机回环代理到目标实例获取 JSON (跨实例统计/请求)
-// 优先走 /admin/api/<path>(带目标 adminKey); 目标没设 adminKey 则回退 /status(仅需 gatewayKey)
+
+
 function proxyInstance(targetName, adminPath) {
   return new Promise(resolve => {
     const tc = loadCfg(targetName);
@@ -182,15 +288,15 @@ function proxyInstance(targetName, adminPath) {
   });
 }
 
-/* ====================== 处理管理请求 ====================== */
-// cfg=当前实例配置, req, res, u=URL对象, p=pathname, bodyStr=请求体
+
+
 async function handleAdmin(cfg, req, res, u, p, bodyStr) {
-  // /admin 页面(内置HTML)
+  
   if (req.method === 'GET' && (p === '/admin' || p === '/admin/')) {
     return textRes(res, 200, adminHTML(cfg), 'text/html; charset=utf-8');
   }
 
-  // /admin/m3/ 静态文件(独立 M3 面板, 不鉴权, 密码在页面内输)
+  
   if (req.method === 'GET' && (p === '/admin/m3' || p === '/admin/m3/')) {
     const f = path.join(DIR, 'm3', 'index.html');
     if (!fs.existsSync(f)) return textRes(res, 404, 'M3 面板未找到, 请把 index.html 放到 ' + path.join(DIR, 'm3'));
@@ -204,7 +310,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return res.end(fs.readFileSync(f, 'utf8'));
   }
 
-  // /admin/m3/v2 — Material Web 版面板(与手写版并存, 便于对比回退)
+  
   if (req.method === 'GET' && (p === '/admin/m3/v2' || p === '/admin/m3/v2/')) {
     const f = path.join(DIR, 'm3', 'v2', 'index.html');
     if (!fs.existsSync(f)) return textRes(res, 404, 'M3 v2 面板未找到: ' + f);
@@ -212,8 +318,8 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return res.end(fs.readFileSync(f, 'utf8'));
   }
 
-  // /admin/m3/<静态资源> — vendor JS / 字体等
-  // 安全: 必须落在 m3 目录内(禁 .. 穿越), 且必须是文件
+  
+  
   if (req.method === 'GET' && p.startsWith('/admin/m3/')) {
     let rel;
     try { rel = decodeURIComponent(p.slice('/admin/m3/'.length)); } catch (e) { rel = ''; }
@@ -229,11 +335,11 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       let buf = fs.readFileSync(f);
       const hdr = {
         'Content-Type': MIME[ext] || 'application/octet-stream',
-        // 面板本体不缓存; vendor 资源可缓存一天(体积大且按内容变更命名)
+        
         'Cache-Control': ext === '.html' ? 'no-store, no-cache, must-revalidate' : 'public, max-age=86400',
         'Access-Control-Allow-Origin': '*', 'Vary': 'Accept-Encoding',
       };
-      // 文本类资源 >1KB 且客户端支持 → gzip(288KB 的组件包压到 ~56KB)
+      
       if (buf.length > 1024 && ['.js', '.mjs', '.css', '.json', '.map'].includes(ext)
           && /\bgzip\b/.test(req.headers['accept-encoding'] || '')) {
         buf = zlib.gzipSync(buf, { level: 9 });
@@ -245,8 +351,8 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     }
   }
 
-  // 以下都是 /admin/api/* → 需要 adminKey 鉴权
-  if (!p.startsWith('/admin/api/')) return null; // 不是管理路由, 交给后续
+  
+  if (!p.startsWith('/admin/api/')) return null; 
 
   if (!checkAdminAuth(cfg, req, u.searchParams)) {
     return jsonRes(res, 401, { error: '需要管理密码 (adminKey)' });
@@ -254,18 +360,147 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
 
   const api = p.slice('/admin/api/'.length);
 
-  // GET /admin/api/instances — 所有实例状态
+  
   if (req.method === 'GET' && api === 'instances') {
     const insts = listInstances().map(name => {
-      const st = getInstanceStatus(name);
-      let port = 0, tlsOn = false, chCount = 0;
-      try { const c = loadCfg(name); port = (c.listen || {}).port || 16384; tlsOn = !!(c.tls && c.tls.enable); chCount = (c.channels || []).length; } catch (_) {}
-      return { ...st, port, tlsOn, chCount };
+      let port = 0, tlsOn = false, chCount = 0, running = false, disabled = false, loadError = false, pid = 0;
+      
+      
+      const inst = POOL ? POOL.instances.get(name) : null;
+      if (inst) {
+        running = !inst._disabled;
+        pid = process.pid;
+        port = inst.listen.port; tlsOn = !!(inst.tls && inst.tls.enable);
+        chCount = inst.channels.length; disabled = !!inst._disabled;
+      } else if (POOL) {
+        
+        loadError = true; pid = process.pid;
+        try { const c = loadCfg(name); port = (c.listen || {}).port || 16384; tlsOn = !!(c.tls && c.tls.enable); chCount = (c.channels || []).length; disabled = !!c.disabled; } catch (_) {}
+      } else {
+        try { const c = loadCfg(name); port = (c.listen || {}).port || 16384; tlsOn = !!(c.tls && c.tls.enable); chCount = (c.channels || []).length; disabled = !!c.disabled; } catch (_) { loadError = true; }
+        const st = getInstanceStatus(name);
+        running = st.running; pid = st.pid;
+      }
+      return { name, pid, running, disabled, loadError, port, tlsOn, chCount,
+        pathPrefix: name === 'default' ? '' : ('/' + name) };
     });
-    return jsonRes(res, 200, { instances: insts, current: currentName(cfg) });
+    const out = { instances: insts, current: currentName(cfg) };
+    if (POOL) { out.multi = true; out.mainPort = POOL.mainPort; }
+    return jsonRes(res, 200, out);
   }
 
-  // GET /admin/api/config/:name — 读取某实例配置(?reveal=1 时密钥明文回显, 供面板编辑)
+  
+  
+  if (req.method === 'GET' && /^plugins\/[^/]+$/.test(api)) {
+    const name = decodeURIComponent(api.slice('plugins/'.length));
+    if (!PLUGINS) return jsonRes(res, 500, { error: '插件系统未初始化' });
+    const c = loadCfg(name);
+    if (!c) return jsonRes(res, 404, { error: '实例不存在' });
+    return jsonRes(res, 200, { plugins: PLUGINS.listForInstance(name, c), requiredPlugins: c.requiredPlugins || [] });
+  }
+
+  
+  if (req.method === 'POST' && api.startsWith('plugins-install/')) {
+    const name = decodeURIComponent(api.slice('plugins-install/'.length));
+    if (!PLUGINS) return jsonRes(res, 500, { error: '插件系统未初始化' });
+    const c = loadCfg(name);
+    if (!c) return jsonRes(res, 404, { error: '实例不存在' });
+    let data; try { data = JSON.parse(bodyStr || '{}'); } catch { return jsonRes(res, 400, { error: 'JSON 无效' }); }
+    try {
+      let result;
+      if (data.localPath) result = PLUGINS.installPackage(fs.readFileSync(data.localPath), data.sha256);
+      else if (data.url) result = await PLUGINS.installFromUrl(data.url, data.sha256);
+      else return jsonRes(res, 400, { error: '需要 url 或 localPath（.tar.gz 插件包）' });
+      c.plugins = Array.isArray(c.plugins) ? c.plugins : [];
+      if (!c.plugins.find(p => p.id === result.id)) c.plugins.push({ id: result.id, enable: true, version: result.manifest.version || '?', config: {} });
+      saveCfg(name, c); hotReload(name);
+      return jsonRes(res, 200, { ok: true, id: result.id, name: result.manifest.name, version: result.manifest.version, sha256: result.sha256 });
+    } catch (e) { return jsonRes(res, 400, { error: e.message }); }
+  }
+
+  
+  if (req.method === 'POST' && api.startsWith('plugins-remove/')) {
+    const name = decodeURIComponent(api.slice('plugins-remove/'.length));
+    if (!PLUGINS) return jsonRes(res, 500, { error: '插件系统未初始化' });
+    const c = loadCfg(name);
+    if (!c) return jsonRes(res, 404, { error: '实例不存在' });
+    let data; try { data = JSON.parse(bodyStr || '{}'); } catch { return jsonRes(res, 400, { error: 'JSON 无效' }); }
+    if (!data.id) return jsonRes(res, 400, { error: '缺少插件 id' });
+    PLUGINS.removePlugin(data.id, !!data.keepData);
+    c.plugins = (c.plugins || []).filter(p => p.id !== data.id);
+    saveCfg(name, c); hotReload(name);
+    return jsonRes(res, 200, { ok: true });
+  }
+
+  
+  if (req.method === 'POST' && api.startsWith('plugins-enable/')) {
+    const name = decodeURIComponent(api.slice('plugins-enable/'.length));
+    const c = loadCfg(name);
+    if (!c) return jsonRes(res, 404, { error: '实例不存在' });
+    let data; try { data = JSON.parse(bodyStr || '{}'); } catch { return jsonRes(res, 400, { error: 'JSON 无效' }); }
+    let pc = (c.plugins || []).find(p => p.id === data.id);
+    if (!pc) {
+      
+      if (!PLUGINS || !PLUGINS.installed.has(data.id)) return jsonRes(res, 404, { error: '插件未安装: ' + data.id });
+      c.plugins = Array.isArray(c.plugins) ? c.plugins : [];
+      pc = { id: data.id, enable: false, version: (PLUGINS.installed.get(data.id).manifest.version || '?'), config: {} };
+      c.plugins.push(pc);
+    }
+    pc.enable = !!data.enable;
+    saveCfg(name, c); hotReload(name);
+    return jsonRes(res, 200, { ok: true, enable: pc.enable });
+  }
+
+  
+  if (api.startsWith('plugins-config/')) {
+    const rest = api.slice('plugins-config/'.length);
+    const slash = rest.indexOf('/');
+    if (slash < 0) return jsonRes(res, 400, { error: '路径应为 plugins-config/:inst/:id' });
+    const name = decodeURIComponent(rest.slice(0, slash));
+    const pid = decodeURIComponent(rest.slice(slash + 1));
+    if (!PLUGINS) return jsonRes(res, 500, { error: '插件系统未初始化' });
+    const c = loadCfg(name);
+    if (!c) return jsonRes(res, 404, { error: '实例不存在' });
+    if (req.method === 'GET') {
+      const sc = PLUGINS.configSchema(name, pid, c);
+      if (!sc) return jsonRes(res, 404, { error: '插件未安装: ' + pid });
+      return jsonRes(res, 200, { id: pid, schema: sc.schema, config: sc.config });
+    }
+    if (req.method === 'POST') {
+      let data; try { data = JSON.parse(bodyStr || '{}'); } catch { return jsonRes(res, 400, { error: 'JSON 无效' }); }
+      const pc = (c.plugins || []).find(p => p.id === pid);
+      if (!pc) return jsonRes(res, 404, { error: '插件未安装: ' + pid });
+      pc.config = (data && typeof data.config === 'object' && data.config) ? data.config : {};
+      saveCfg(name, c); hotReload(name);
+      return jsonRes(res, 200, { ok: true });
+    }
+    return jsonRes(res, 405, { error: 'Method Not Allowed' });
+  }
+
+  
+  if (req.method === 'POST' && api.startsWith('plugins-required/')) {
+    const name = decodeURIComponent(api.slice('plugins-required/'.length));
+    const c = loadCfg(name);
+    if (!c) return jsonRes(res, 404, { error: '实例不存在' });
+    let data; try { data = JSON.parse(bodyStr || '{}'); } catch { return jsonRes(res, 400, { error: 'JSON 无效' }); }
+    c.requiredPlugins = Array.isArray(data.requiredPlugins) ? data.requiredPlugins : [];
+    saveCfg(name, c); hotReload(name);
+    return jsonRes(res, 200, { ok: true, requiredPlugins: c.requiredPlugins });
+  }
+
+  
+  if (req.method === 'GET' && api === 'plugins-index') {
+    const indexUrl = u.searchParams && u.searchParams.get('url');
+    if (!indexUrl) return jsonRes(res, 400, { error: '缺少 url 参数' });
+    try {
+      const { downloadBuf } = require('./plugins.js');
+      const buf = await downloadBuf(indexUrl, 2 * 1024 * 1024);
+      const idx = JSON.parse(buf.toString('utf8'));
+      return jsonRes(res, 200, { name: idx.name || '', plugins: idx.plugins || [] });
+    } catch (e) { return jsonRes(res, 400, { error: '索引拉取失败: ' + e.message }); }
+  }
+
+  
   if (req.method === 'GET' && api.startsWith('config/')) {
     const name = decodeURIComponent(api.slice('config/'.length));
     const reveal = !!(u.searchParams && u.searchParams.get('reveal') === '1');
@@ -281,20 +516,23 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       record: c.record || { enable: false, server: '' },
       thinkingSummary: c.thinkingSummary || { enable: false, mode: 'truncate', maxCharsPerSegment: 80, summarizeBaseUrl: '', summarizeApiKey: '', summarizeModel: '', summarizePrompt: '用一句话中文概括以下思考片段:', maxSegments: 12 },
       openaiExtras: c.openaiExtras || { enable: false, upstreamResponses: false },
+      probe: c.probe || { enable: false, intervalMin: 10, mode: 'models' },
+      keyLength: c.keyLength || 24,
+      registration: c.registration || { enable: false },
       modelSync: c.modelSync || { enable: true, intervalHours: 24 },
       proxies: c.proxies || {},
       channels: maskedChannels(c, reveal),
     });
   }
 
-  // POST /admin/api/config/:name — 保存配置(整体替换 channels/port 等)
+  
   if (req.method === 'POST' && api.startsWith('config/')) {
     const name = decodeURIComponent(api.slice('config/'.length));
     const c = loadCfg(name);
     if (!c) return jsonRes(res, 404, { error: '实例不存在' });
     let data;
     try { data = JSON.parse(bodyStr || '{}'); } catch (e) { return jsonRes(res, 400, { error: 'JSON 无效' }); }
-    // 只允许修改部分字段, apiKey 保留原值(前端只发 keyPrefix, 不发明文)
+    
     if (data.port != null) { c.listen = c.listen || {}; c.listen.port = Number(data.port); }
     if (data.host != null) { c.listen = c.listen || {}; c.listen.host = data.host; }
     if (data.gatewayKey !== undefined) c.gatewayKey = data.gatewayKey;
@@ -314,14 +552,37 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
         intervalHours: Math.max(1, Number(data.modelSync.intervalHours) || 24),
       };
     }
-    // OpenAI 扩展端点: enable=对外开 /v1/responses 与 images/embeddings/audio/completions 等; upstreamResponses=全局默认上游用 Responses API
+    
+    if (data.keyLength !== undefined) c.keyLength = Math.min(128, Math.max(8, Number(data.keyLength) || 24));
+    
+    if (data.registration !== undefined && data.registration && typeof data.registration === 'object') {
+      const r = data.registration;
+      c.registration = {
+        enable: !!r.enable,
+        defaultQuota: Math.max(0, Number(r.defaultQuota) || 0),
+        minPasswordLen: Math.min(64, Math.max(4, Number(r.minPasswordLen) || 8)),
+        captchaProvider: r.captchaProvider === 'turnstile' ? 'turnstile' : 'none',
+        captchaSecret: String(r.captchaSecret || ''),
+        captchaSiteKey: String(r.captchaSiteKey || ''),
+        emailVerify: { enable: !!(r.emailVerify && r.emailVerify.enable) },
+      };
+    }
+    
+    if (data.probe !== undefined && data.probe && typeof data.probe === 'object') {
+      c.probe = {
+        enable: !!data.probe.enable,
+        intervalMin: Math.max(1, Number(data.probe.intervalMin) || 10),
+        mode: data.probe.mode === 'chat' ? 'chat' : 'models',
+      };
+    }
+    
     if (data.openaiExtras !== undefined && data.openaiExtras && typeof data.openaiExtras === 'object') {
       c.openaiExtras = {
         enable: !!data.openaiExtras.enable,
         upstreamResponses: !!data.openaiExtras.upstreamResponses,
       };
     }
-    // 请求记录: enable 开关 + server 收集地址(留空=本机 JSONL 文件)
+    
     if (data.record !== undefined && data.record && typeof data.record === 'object') {
       c.record = {
         enable: !!data.record.enable,
@@ -329,7 +590,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
         maxChars: Number(data.record.maxChars) > 0 ? Number(data.record.maxChars) : 200000,
       };
     }
-    // 思考链精简: 拦截推理模型 reasoning, 精简后发给客户端
+    
     if (data.thinkingSummary !== undefined && data.thinkingSummary && typeof data.thinkingSummary === 'object') {
       const ts = data.thinkingSummary;
       c.thinkingSummary = {
@@ -345,7 +606,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     }
     if (data.proxies !== undefined) c.proxies = data.proxies;
     if (Array.isArray(data.channels)) {
-      // 保留 apiKey: 前端传的 channel 如果 hasKey 但没 apiKey, 从旧配置取
+      
       const oldMap = {};
       for (const ch of (c.channels || [])) oldMap[ch.name] = ch.apiKey;
       c.channels = data.channels.map(ch => {
@@ -356,15 +617,20 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       });
     }
     try { saveCfg(name, c); } catch (e) { return jsonRes(res, 500, { error: '保存失败: ' + e.message }); }
+    if (POOL) {
+      try { hotReload(name); return jsonRes(res, 200, { ok: true, hotReload: true }); }
+      catch (e) { return jsonRes(res, 200, { ok: true, hotReload: false, warn: '配置已保存但热重载失败: ' + e.message }); }
+    }
     jsonRes(res, 200, { ok: true, restarting: true });
     scheduleRestart(cfg, name);
     return;
   }
 
-  // POST /admin/api/instance-create/:name — 新建实例(写 config.<name>.json, 仅当不存在时; 启动由前端调 action/start)
+  
   if (req.method === 'POST' && api.startsWith('instance-create/')) {
     const name = decodeURIComponent(api.slice('instance-create/'.length));
-    if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) return jsonRes(res, 400, { error: '实例名只能含字母/数字/中划线/下划线, 最长32字符' });
+    if (!INST_NAME_RE.test(name)) return jsonRes(res, 400, { error: '实例名只能含字母/数字/中划线/下划线, 最长32字符' });
+    if (RESERVED_PATHS.has(name)) return jsonRes(res, 400, { error: '实例名 ' + name + ' 是保留字(与 API 路径冲突), 请换一个' });
     if (name === 'default') return jsonRes(res, 400, { error: 'default 是主实例, 请直接编辑' });
     if (fs.existsSync(cfgFile(name))) return jsonRes(res, 409, { error: '实例 ' + name + ' 已存在' });
     let data;
@@ -382,14 +648,18 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       tls,
       adminKey: typeof data.adminKey === 'string' ? data.adminKey : '',
       gatewayKey: '',
-      channels: [], proxies: {}, modelMap: {}, models: [],
+      channels: Array.isArray(data.channels) ? data.channels : [], proxies: {}, modelMap: {}, models: [],
       routing: { maxRetry: 2, timeoutSec: 120, cooldownSec: 30 },
     };
     try { saveCfg(name, cfg); } catch (e) { return jsonRes(res, 500, { error: '创建失败: ' + e.message }); }
+    if (POOL) {
+      try { hotReload(name); } catch (e) { return jsonRes(res, 500, { error: '实例已创建但加载失败: ' + e.message }); }
+      return jsonRes(res, 200, { ok: true, hotReload: true, url: '/' + name + '/v1' });
+    }
     return jsonRes(res, 200, { ok: true });
   }
 
-  // POST /admin/api/channel/:name — 添加/修改单个渠道
+  
   if (req.method === 'POST' && api.startsWith('channel/')) {
     const name = decodeURIComponent(api.slice('channel/'.length));
     const c = loadCfg(name);
@@ -397,20 +667,37 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     let ch;
     try { ch = JSON.parse(bodyStr || '{}'); } catch (e) { return jsonRes(res, 400, { error: 'JSON 无效' }); }
     if (!ch.name) return jsonRes(res, 400, { error: '需要渠道名' });
-    // 如果是修改(同名存在) 且 没传 apiKey, 保留旧的
-    const existing = (c.channels || []).find(x => x.name === ch.name);
-    if (existing && (!ch.apiKey || ch.apiKey.includes('***'))) ch.apiKey = existing.apiKey;
-    if (ch.default) { for (const x of (c.channels || [])) x.default = false; }
-    c.channels = (c.channels || []).filter(x => x.name !== ch.name);
-    if (!ch.apiKey) ch.apiKey = '';
-    c.channels.push(ch);
+    
+    const oldName = ch.oldName ? String(ch.oldName) : '';
+    delete ch.oldName;
+    if (oldName && oldName !== ch.name) {
+      if ((c.channels || []).some(x => x.name === ch.name)) return jsonRes(res, 409, { error: '渠道名 ' + ch.name + ' 已被占用' });
+      const target = (c.channels || []).find(x => x.name === oldName);
+      if (!target) return jsonRes(res, 404, { error: '原渠道不存在: ' + oldName });
+      if (!ch.apiKey || ch.apiKey.includes('***')) ch.apiKey = target.apiKey || '';
+      if (ch.default) { for (const x of c.channels) x.default = false; }
+      c.channels = (c.channels || []).filter(x => x.name !== oldName);
+      c.channels.push(ch);
+    } else {
+      
+      const existing = (c.channels || []).find(x => x.name === ch.name);
+      if (existing && (!ch.apiKey || ch.apiKey.includes('***'))) ch.apiKey = existing.apiKey;
+      if (ch.default) { for (const x of (c.channels || [])) x.default = false; }
+      c.channels = (c.channels || []).filter(x => x.name !== ch.name);
+      if (!ch.apiKey) ch.apiKey = '';
+      c.channels.push(ch);
+    }
     try { saveCfg(name, c); } catch (e) { return jsonRes(res, 500, { error: '保存失败: ' + e.message }); }
+    if (POOL) {
+      try { hotReload(name); return jsonRes(res, 200, { ok: true, hotReload: true }); }
+      catch (e) { return jsonRes(res, 200, { ok: true, hotReload: false, warn: '已保存但热重载失败: ' + e.message }); }
+    }
     jsonRes(res, 200, { ok: true, restarting: true });
     scheduleRestart(cfg, name);
     return;
   }
 
-  // DELETE /admin/api/channel/:name/:chname — 删除渠道
+  
   if (req.method === 'DELETE' && api.startsWith('channel/')) {
     const parts = api.slice('channel/'.length).split('/');
     const name = decodeURIComponent(parts[0]);
@@ -421,6 +708,10 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     c.channels = (c.channels || []).filter(x => x.name !== chname);
     if (c.channels.length < before) {
       saveCfg(name, c);
+      if (POOL) {
+        try { hotReload(name); return jsonRes(res, 200, { ok: true, hotReload: true }); }
+        catch (e) { return jsonRes(res, 200, { ok: true, hotReload: false, warn: '已保存但热重载失败: ' + e.message }); }
+      }
       jsonRes(res, 200, { ok: true, restarting: true });
       scheduleRestart(cfg, name);
       return;
@@ -428,30 +719,379 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 404, { error: '渠道不存在' });
   }
 
-  // DELETE /admin/api/instance/:name — 删除实例(先停止进程, 再删配置/日志/pid; default 与面板宿主不可删)
+  
   if (req.method === 'DELETE' && api.startsWith('instance/')) {
     const name = decodeURIComponent(api.slice('instance/'.length));
     if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) return jsonRes(res, 400, { error: '实例名非法' });
     if (name === 'default') return jsonRes(res, 400, { error: 'default 是主实例, 不能删除' });
     if (name === currentName(cfg)) return jsonRes(res, 400, { error: '不能删除承载面板的实例' });
     if (!fs.existsSync(cfgFile(name))) return jsonRes(res, 404, { error: '实例不存在' });
-    await runAgw(['stop', name]); // 运行中先停止(未运行时 agw.sh stop 无害)
+    if (POOL) { try { POOL.removeInst(name); } catch (_) {} }
+    else { await runAgw(['stop', name]); } 
     try { fs.unlinkSync(cfgFile(name)); } catch (e) { return jsonRes(res, 500, { error: '删除配置失败: ' + e.message }); }
+    cfgCacheClear(); 
     try { fs.unlinkSync(path.join(DIR, 'log', name + '.log')); } catch (e) {}
     try { fs.unlinkSync(path.join(DIR, '.run', name + '.pid')); } catch (e) {}
     return jsonRes(res, 200, { ok: true });
   }
 
-  // POST /admin/api/sync-models — 立即同步本实例(承载实例)的渠道模型列表
+  
+  
+  if (req.method === 'GET' && api.startsWith('admin-auth/')) {
+    const name = decodeURIComponent(api.slice('admin-auth/'.length));
+    const c = loadCfg(name);
+    if (!c) return jsonRes(res, 404, { error: '实例不存在' });
+    const aa = c.adminAuth || {};
+    return jsonRes(res, 200, {
+      hasAdminKey: !!c.adminKey,
+      secondKeySet: !!aa.secondKey,
+      totpEnabled: !!aa.totpSecret,
+      totpSecret: aa.totpSecret || null, 
+    });
+  }
+
+  
+  if (req.method === 'POST' && api.startsWith('admin-auth/')) {
+    const name = decodeURIComponent(api.slice('admin-auth/'.length));
+    const c = loadCfg(name);
+    if (!c) return jsonRes(res, 404, { error: '实例不存在' });
+    let data; try { data = JSON.parse(bodyStr || '{}'); } catch (e) { return jsonRes(res, 400, { error: 'JSON 无效' }); }
+    c.adminAuth = c.adminAuth && typeof c.adminAuth === 'object' ? c.adminAuth : {};
+    if (data.secondKey !== undefined) c.adminAuth.secondKey = String(data.secondKey || '');
+    let newTotp = null;
+    if (data.totpAction === 'enable') {
+      newTotp = base32Encode(crypto2.randomBytes(20));
+      c.adminAuth.totpSecret = newTotp;
+    } else if (data.totpAction === 'disable') {
+      delete c.adminAuth.totpSecret;
+    }
+    if (!c.adminAuth.secondKey && !c.adminAuth.totpSecret) delete c.adminAuth;
+    try { saveCfg(name, c); } catch (e) { return jsonRes(res, 500, { error: '保存失败: ' + e.message }); }
+    if (POOL) { try { hotReload(name); } catch (_) {} }
+    const out = { ok: true, secondKeySet: !!((c.adminAuth || {}).secondKey), totpEnabled: !!((c.adminAuth || {}).totpSecret) };
+    if (newTotp) {
+      out.totpSecret = newTotp;
+      out.otpauthUrl = 'otpauth://totp/ai-gateway-' + encodeURIComponent(name) + '?secret=' + newTotp + '&issuer=ai-gateway';
+    }
+    return jsonRes(res, 200, out);
+  }
+
+  
+  
+  if (req.method === 'GET' && api.startsWith('users/')) {
+    const name = decodeURIComponent(api.slice('users/'.length));
+    const c = loadCfg(name);
+    if (!c) return jsonRes(res, 404, { error: '实例不存在' });
+    const users = (c.users || []).map(u2 => ({
+      uid: u2.uid, name: u2.name || '', note: u2.note || '', createdAt: u2.createdAt || '',
+      keyCount: (c.apiKeys || []).filter(k => k.uid === u2.uid).length,
+      hasPassword: !!u2.passwordHash,
+    }));
+    return jsonRes(res, 200, { users });
+  }
+
+  
+  if (req.method === 'POST' && /^users\/[^/]+$/.test(api)) {
+    const name = decodeURIComponent(api.slice('users/'.length));
+    const c = loadCfg(name);
+    if (!c) return jsonRes(res, 404, { error: '实例不存在' });
+    let data; try { data = JSON.parse(bodyStr || '{}'); } catch (e) { return jsonRes(res, 400, { error: 'JSON 无效' }); }
+    if (!data.password) return jsonRes(res, 400, { error: '密码必填' });
+    const uid = String(data.uid || '').trim() || ('u' + crypto2.randomBytes(4).toString('hex'));
+    c.users = Array.isArray(c.users) ? c.users : [];
+    if (c.users.some(x => x.uid === uid)) return jsonRes(res, 400, { error: 'UID 已存在: ' + uid });
+    const salt = crypto2.randomBytes(16).toString('base64url');
+    const h = crypto2.scryptSync(String(data.password), salt, 32);
+    c.users.push({
+      uid, name: String(data.name || '').trim().slice(0, 64),
+      passwordHash: 'scrypt:' + salt + ':' + h.toString('base64url'),
+      note: String(data.note || '').trim().slice(0, 200),
+      createdAt: new Date().toISOString(),
+    });
+    try { saveCfg(name, c); } catch (e) { return jsonRes(res, 500, { error: '保存失败: ' + e.message }); }
+    if (POOL) { try { hotReload(name); } catch (_) {} }
+    return jsonRes(res, 200, { ok: true, uid });
+  }
+
+  
+  if (req.method === 'POST' && api.startsWith('users-update/')) {
+    const name = decodeURIComponent(api.slice('users-update/'.length));
+    const c = loadCfg(name);
+    if (!c) return jsonRes(res, 404, { error: '实例不存在' });
+    let data; try { data = JSON.parse(bodyStr || '{}'); } catch (e) { return jsonRes(res, 400, { error: 'JSON 无效' }); }
+    const u2 = (c.users || []).find(x => x.uid === data.uid);
+    if (!u2) return jsonRes(res, 404, { error: '用户不存在' });
+    if (data.name !== undefined) u2.name = String(data.name).trim().slice(0, 64);
+    if (data.note !== undefined) u2.note = String(data.note).trim().slice(0, 200);
+    if (data.password) {
+      const salt = crypto2.randomBytes(16).toString('base64url');
+      const h = crypto2.scryptSync(String(data.password), salt, 32);
+      u2.passwordHash = 'scrypt:' + salt + ':' + h.toString('base64url');
+    }
+    try { saveCfg(name, c); } catch (e) { return jsonRes(res, 500, { error: '保存失败: ' + e.message }); }
+    if (POOL) { try { hotReload(name); } catch (_) {} }
+    return jsonRes(res, 200, { ok: true });
+  }
+
+  
+  if (req.method === 'DELETE' && api.startsWith('users/')) {
+    const rest = api.slice('users/'.length);
+    const idx = rest.indexOf('/');
+    if (idx > 0) {
+      const name = decodeURIComponent(rest.slice(0, idx));
+      const uid = decodeURIComponent(rest.slice(idx + 1));
+      const c = loadCfg(name);
+      if (!c) return jsonRes(res, 404, { error: '实例不存在' });
+      const before = (c.users || []).length;
+      c.users = (c.users || []).filter(x => x.uid !== uid);
+      if (c.users.length < before) {
+        try { saveCfg(name, c); } catch (e) { return jsonRes(res, 500, { error: '保存失败: ' + e.message }); }
+        if (POOL) { try { hotReload(name); } catch (_) {} }
+        return jsonRes(res, 200, { ok: true });
+      }
+      return jsonRes(res, 404, { error: '用户不存在' });
+    }
+  }
+
+  
+  
+  if (req.method === 'GET' && api.startsWith('keys/')) {
+    const name = decodeURIComponent(api.slice('keys/'.length));
+    const c = loadCfg(name);
+    if (!c) return jsonRes(res, 404, { error: '实例不存在' });
+    
+    const live = POOL && POOL.instances.get(name);
+    const liveMap = {};
+    if (live && Array.isArray(live.apiKeys)) for (const k of live.apiKeys) liveMap[k.key] = k.usedTokens || 0;
+    const keys = (c.apiKeys || []).map(k => ({
+      key: k.key, name: k.name || '', enable: k.enable !== false,
+      quotaTokens: Number(k.quotaTokens) || 0,
+      usedTokens: liveMap[k.key] !== undefined ? liveMap[k.key] : (Number(k.usedTokens) || 0),
+      models: k.models || [], channels: k.channels || [], uid: k.uid || '', branches: k.branches || [],
+      redact: k.redact == null ? null : !!k.redact,
+      expiresAt: k.expiresAt || '', note: k.note || '', createdAt: k.createdAt || '',
+    }));
+    return jsonRes(res, 200, { keys, gatewayKeySet: !!c.gatewayKey });
+  }
+
+  
+  if (req.method === 'POST' && /^keys\/[^/]+$/.test(api)) {
+    const name = decodeURIComponent(api.slice('keys/'.length));
+    const c = loadCfg(name);
+    if (!c) return jsonRes(res, 404, { error: '实例不存在' });
+    let data; try { data = JSON.parse(bodyStr || '{}'); } catch (e) { return jsonRes(res, 400, { error: 'JSON 无效' }); }
+    const klen = Math.min(128, Math.max(8, Number(c.keyLength) || 24));
+    const key = 'sk-' + crypto2.randomBytes(Math.ceil(klen * 3 / 4) + 2).toString('base64url').slice(0, klen);
+    c.apiKeys = Array.isArray(c.apiKeys) ? c.apiKeys : [];
+    const nk = {
+      key,
+      name: String(data.name || '').trim().slice(0, 64),
+      enable: true,
+      quotaTokens: Math.max(0, Number(data.quotaTokens) || 0),
+      usedTokens: 0,
+      models: Array.isArray(data.models) ? data.models.map(s => String(s).trim()).filter(Boolean) : [],
+      channels: Array.isArray(data.channels) ? data.channels.map(s => String(s).trim()).filter(Boolean) : [],
+      branches: Array.isArray(data.branches) ? data.branches.map(s => String(s).trim()).filter(Boolean) : [],
+      expiresAt: String(data.expiresAt || '').trim(),
+      note: String(data.note || '').trim().slice(0, 200),
+      uid: String(data.uid || '').trim(),
+      createdAt: new Date().toISOString(),
+    };
+    c.apiKeys.push(nk);
+    try { saveCfg(name, c); } catch (e) { return jsonRes(res, 500, { error: '保存失败: ' + e.message }); }
+    if (POOL) { try { hotReload(name); } catch (_) {} }
+    return jsonRes(res, 200, { ok: true, key: nk });
+  }
+
+  
+  if (req.method === 'POST' && api.startsWith('keys-update/')) {
+    const name = decodeURIComponent(api.slice('keys-update/'.length));
+    const c = loadCfg(name);
+    if (!c) return jsonRes(res, 404, { error: '实例不存在' });
+    let data; try { data = JSON.parse(bodyStr || '{}'); } catch (e) { return jsonRes(res, 400, { error: 'JSON 无效' }); }
+    const k = (c.apiKeys || []).find(x => x.key === data.key);
+    if (!k) return jsonRes(res, 404, { error: '卡密不存在' });
+    if (data.enable !== undefined) k.enable = !!data.enable;
+    if (data.quotaTokens !== undefined) k.quotaTokens = Math.max(0, Number(data.quotaTokens) || 0);
+    if (data.name !== undefined) k.name = String(data.name).trim().slice(0, 64);
+    if (data.models !== undefined) k.models = Array.isArray(data.models) ? data.models.map(s => String(s).trim()).filter(Boolean) : [];
+    if (data.channels !== undefined) k.channels = Array.isArray(data.channels) ? data.channels.map(s => String(s).trim()).filter(Boolean) : [];
+    if (data.branches !== undefined) k.branches = Array.isArray(data.branches) ? data.branches.map(s => String(s).trim()).filter(Boolean) : [];
+    if (data.redact !== undefined) k.redact = (data.redact == null) ? null : !!data.redact;
+    if (data.expiresAt !== undefined) k.expiresAt = String(data.expiresAt || '').trim();
+    if (data.note !== undefined) k.note = String(data.note).trim().slice(0, 200);
+    
+    const live = POOL && POOL.instances.get(name);
+    const lk = live && (live.apiKeys || []).find(x => x.key === data.key);
+    if (data.resetUsage) { k.usedTokens = 0; if (lk) lk.usedTokens = 0; }
+    if (data.addQuota) { k.quotaTokens = (Number(k.quotaTokens) || 0) + Math.max(0, Number(data.addQuota) || 0); }
+    try { saveCfg(name, c); } catch (e) { return jsonRes(res, 500, { error: '保存失败: ' + e.message }); }
+    if (POOL) { try { hotReload(name); } catch (_) {} }
+    return jsonRes(res, 200, { ok: true, hotReload: !!POOL });
+  }
+
+  
+  if (req.method === 'DELETE' && api.startsWith('keys/')) {
+    const rest = api.slice('keys/'.length);
+    const idx = rest.indexOf('/');
+    if (idx > 0) {
+      const name = decodeURIComponent(rest.slice(0, idx));
+      const key = decodeURIComponent(rest.slice(idx + 1));
+      const c = loadCfg(name);
+      if (!c) return jsonRes(res, 404, { error: '实例不存在' });
+      const before = (c.apiKeys || []).length;
+      c.apiKeys = (c.apiKeys || []).filter(x => x.key !== key);
+      if (c.apiKeys.length < before) {
+        try { saveCfg(name, c); } catch (e) { return jsonRes(res, 500, { error: '保存失败: ' + e.message }); }
+        if (POOL) { try { hotReload(name); } catch (_) {} }
+        return jsonRes(res, 200, { ok: true });
+      }
+      return jsonRes(res, 404, { error: '卡密不存在' });
+    }
+  }
+
+  
+  
+  const BALANCE_PRESETS = [
+    ['api.deepseek.com', { url: 'https://api.deepseek.com/user/balance', path: 'balance_infos.0.total_balance', unit: 'CNY' }],
+    ['api.siliconflow.cn', { url: 'https://api.siliconflow.cn/v1/user/info', path: 'data.balance', unit: 'CNY' }],
+    ['api.siliconflow.com', { url: 'https://api.siliconflow.com/v1/user/info', path: 'data.balance', unit: 'USD' }],
+    ['api.openai.com', { url: 'https://api.openai.com/v1/dashboard/billing/credit_grants', path: 'total_available', unit: 'USD' }],
+    ['open.bigmodel.cn', { url: 'https://open.bigmodel.cn/api/paas/v4/user/info', path: 'data.balance', unit: 'CNY' }],
+  ];
+  
+  if (req.method === 'GET' && api.startsWith('balance/')) {
+    const rest = api.slice('balance/'.length);
+    const idx = rest.indexOf('/');
+    if (idx < 0) return jsonRes(res, 400, { error: '路径应为 balance/<实例>/<渠道>' });
+    const name = decodeURIComponent(rest.slice(0, idx));
+    const chName = decodeURIComponent(rest.slice(idx + 1));
+    const c = loadCfg(name);
+    if (!c) return jsonRes(res, 404, { error: '实例不存在' });
+    const ch = (c.channels || []).find(x => x.name === chName);
+    if (!ch) return jsonRes(res, 404, { error: '渠道不存在' });
+    const preset = BALANCE_PRESETS.find(([k]) => (ch.baseUrl || '').includes(k));
+    const url = ch.balanceUrl || (preset && preset[1].url);
+    const jpath = ch.balancePath || (preset && preset[1].path);
+    const unit = ch.balanceUnit || (preset && preset[1].unit) || '';
+    if (!url || !jpath) return jsonRes(res, 400, { error: '该渠道无余额接口预设, 请在渠道配置填 balanceUrl + balancePath(点路径)' });
+    
+    const u2 = new URL(url);
+    const isHttps = u2.protocol === 'https:';
+    const mod = isHttps ? https2 : http;
+    const rq = mod.request({
+      protocol: u2.protocol, hostname: u2.hostname, port: u2.port || (isHttps ? 443 : 80),
+      path: u2.pathname + u2.search, method: 'GET', timeout: 15000,
+      headers: { 'Authorization': 'Bearer ' + (ch.apiKey || ''), 'User-Agent': 'ai-gateway-balance' },
+    }, (upRes) => {
+      let d = '';
+      upRes.on('data', c2 => d += c2.toString('utf8'));
+      upRes.on('end', () => {
+        try {
+          const j = JSON.parse(d);
+          let val = j;
+          for (const k of jpath.split('.')) val = (val == null) ? undefined : val[isNaN(+k) ? k : +k];
+          if (val === undefined) return jsonRes(res, 502, { error: '余额路径 ' + jpath + ' 在上游响应中不存在', raw: d.slice(0, 300) });
+          jsonRes(res, 200, { ok: true, channel: ch.name, balance: val, unit, url });
+        } catch (e) { jsonRes(res, 502, { error: '上游响应非 JSON', raw: d.slice(0, 300) }); }
+      });
+    });
+    rq.on('timeout', () => { rq.destroy(); jsonRes(res, 504, { error: '余额查询超时' }); });
+    rq.on('error', (e) => jsonRes(res, 502, { error: '余额查询失败: ' + e.message }));
+    rq.end();
+    return;
+  }
+
+  
+  if (api === 'tunnel' || api.startsWith('tunnel?')) {
+    if (req.method === 'GET') {
+      return jsonRes(res, 200, { running: !!tunnelProc, url: tunnelUrl, log: tunnelLog.slice(-12) });
+    }
+    if (req.method === 'POST') {
+      let data; try { data = JSON.parse(bodyStr || '{}'); } catch (e) { return jsonRes(res, 400, { error: 'JSON 无效' }); }
+      if (data.action === 'start') {
+        if (tunnelProc) return jsonRes(res, 200, { ok: true, url: tunnelUrl, running: true, already: true });
+        const mainPort = (POOL && POOL.mainPort) || (cfg.listen && cfg.listen.port) || 16384;
+        tunnelUrl = ''; tunnelLog = [];
+        try {
+          const { spawn } = require('child_process');
+          tunnelProc = spawn('cloudflared', ['tunnel', '--url', 'http://127.0.0.1:' + mainPort, '--no-autoupdate'], { stdio: ['ignore', 'pipe', 'pipe'] });
+        } catch (e) { tunnelProc = null; return jsonRes(res, 500, { error: 'cloudflared 启动失败(未安装?): ' + e.message }); }
+        const onData = (buf) => {
+          const line = buf.toString('utf8');
+          tunnelLog.push(line.trim().slice(0, 300)); if (tunnelLog.length > 60) tunnelLog.shift();
+          const m = line.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+          if (m && !tunnelUrl) tunnelUrl = m[0];
+        };
+        tunnelProc.stdout.on('data', onData);
+        tunnelProc.stderr.on('data', onData);
+        tunnelProc.on('exit', () => { tunnelProc = null; tunnelUrl = ''; });
+        tunnelProc.on('error', (e) => { tunnelLog.push('spawn error: ' + e.message); tunnelProc = null; });
+        return jsonRes(res, 200, { ok: true, starting: true });
+      }
+      if (data.action === 'stop') {
+        if (tunnelProc) { try { tunnelProc.kill('SIGTERM'); } catch (_) {} tunnelProc = null; }
+        tunnelUrl = '';
+        return jsonRes(res, 200, { ok: true });
+      }
+      return jsonRes(res, 400, { error: 'action 应为 start/stop' });
+    }
+  }
+
+  
+  if (req.method === 'POST' && /^probe\/[^/]+$/.test(api)) {
+    const name = decodeURIComponent(api.slice('probe/'.length));
+    const tc = POOL && POOL.instances.get(name);
+    if (!tc) return jsonRes(res, 404, { error: '实例未在运行: ' + name });
+    if (!tc.probe || !tc.probe.enable) return jsonRes(res, 400, { error: '该实例未开启探测 (配置 probe.enable)' });
+    const gw = require('./gateway.js');
+    if (gw.probeRound) gw.probeRound(tc);
+    return jsonRes(res, 200, { ok: true, probe: tc._stats.probe || {}, debug: (tc.channels || []).map(c => ({ name: c.name, probe: !!c.probe })) });
+  }
+
+  
+  if (req.method === 'POST' && api.startsWith('instance-rename/')) {
+    const name = decodeURIComponent(api.slice('instance-rename/'.length));
+    let data; try { data = JSON.parse(bodyStr || '{}'); } catch (e) { return jsonRes(res, 400, { error: 'JSON 无效' }); }
+    const newName = String(data.newName || '').trim();
+    if (name === 'default') return jsonRes(res, 400, { error: 'default 是主实例, 不能改名' });
+    if (!INST_NAME_RE.test(newName)) return jsonRes(res, 400, { error: '新实例名只能含字母/数字/中划线/下划线, 最长32字符' });
+    if (RESERVED_PATHS.has(newName)) return jsonRes(res, 400, { error: '「' + newName + '」是保留名(与 API 路径冲突), 不能用作实例名' });
+    if (newName === name) return jsonRes(res, 400, { error: '新旧名称相同' });
+    if (!fs.existsSync(cfgFile(name))) return jsonRes(res, 404, { error: '实例不存在: ' + name });
+    if (fs.existsSync(cfgFile(newName))) return jsonRes(res, 409, { error: '实例名已存在: ' + newName });
+    
+    try { fs.renameSync(cfgFile(name), cfgFile(newName)); }
+    catch (e) { return jsonRes(res, 500, { error: '重命名配置文件失败: ' + e.message }); }
+    cfgCacheClear(); 
+    
+    try { fs.renameSync(path.join(DIR, 'log', name + '.log'), path.join(DIR, 'log', newName + '.log')); } catch (_) {}
+    try { fs.renameSync(path.join(DIR, '.run', name + '.pid'), path.join(DIR, '.run', newName + '.pid')); } catch (_) {}
+    try { fs.renameSync(path.join(DIR, 'log', 'keyusage-' + name + '.json'), path.join(DIR, 'log', 'keyusage-' + newName + '.json')); } catch (_) {}
+    
+    if (POOL) {
+      try { POOL.renameInst(name, newName); }
+      catch (e) {  try { POOL.reload(newName); } catch (_) {} }
+      return jsonRes(res, 200, { ok: true, hotReload: true, name: newName, url: '/' + newName + '/v1' });
+    }
+    jsonRes(res, 200, { ok: true, name: newName, restarting: true });
+    scheduleRestart(cfg, newName);
+    return;
+  }
+
+  
   if (req.method === 'POST' && api === 'sync-models') {
     if (!syncFn) return jsonRes(res, 501, { error: '网关未提供同步能力' });
+    let inst = (u.searchParams && u.searchParams.get('instance')) || '';
+    if (!inst && bodyStr) { try { const bj = JSON.parse(bodyStr); inst = bj.instance || ''; } catch (_) {} }
+    if (inst && POOL && !POOL.instances.has(inst)) return jsonRes(res, 404, { error: '实例不存在: ' + inst });
     try {
-      const r = await syncFn();
+      const r = await syncFn(inst || undefined);
       return jsonRes(res, 200, Object.assign({ ok: true }, r));
     } catch (e) { return jsonRes(res, 502, { error: e.message }); }
   }
 
-  // POST /admin/api/channel-models/:inst — 拉取渠道上游模型列表(服务端代 fetch: 避免浏览器CORS, 用真实apiKey与渠道代理)
+  
   if (req.method === 'POST' && api.startsWith('channel-models/')) {
     const inst = decodeURIComponent(api.slice('channel-models/'.length));
     const c = loadCfg(inst);
@@ -471,17 +1111,30 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return;
   }
 
-  // POST /admin/api/action/:name/:action — start/stop/restart
+  
   if (req.method === 'POST' && api.startsWith('action/')) {
     const parts = api.slice('action/'.length).split('/');
     const name = decodeURIComponent(parts[0]);
     const action = parts[1];
     if (!['start', 'stop', 'restart'].includes(action)) return jsonRes(res, 400, { error: '未知操作' });
-    // 操作目标是当前实例自己: stop/restart 会导致进程自杀, 响应中断 + start 可能执行不到
-    // → 先回复客户端, 再用 setsid 启动完全独立的子进程执行 stop/start (脱离父进程组, 父死不影响)
+    
+    if (POOL) {
+      if (action === 'stop' && name === 'default') return jsonRes(res, 400, { error: 'default 是主实例(主端口所在), 不能停止; 要全停用 shutdown-all' });
+      if (action === 'stop') {
+        if (!POOL.instances.has(name)) return jsonRes(res, 404, { error: '实例未在运行: ' + name });
+        POOL.removeInst(name);
+        return jsonRes(res, 200, { ok: true, hot: true, output: '实例 ' + name + ' 已从池中摘除(配置保留, start 可恢复)' });
+      }
+      
+      const c = POOL.reload(name);
+      if (!c) return jsonRes(res, 404, { error: '实例配置不存在: ' + name });
+      return jsonRes(res, 200, { ok: true, hot: true, output: (action === 'start' ? '已加载' : '已热重载') + '实例 ' + name + ' (' + c.channels.length + ' 渠道)' });
+    }
+    
+    
     if (name === currentName(cfg) && (action === 'stop' || action === 'restart')) {
       jsonRes(res, 200, { ok: true, output: action + ' ' + name + ' (自我' + (action==='restart'?'重启':'停止') + ', 稍候生效, 请刷新页面)', self: true });
-      // 写临时脚本: setsid + nohup 确保脱离进程组, 父进程死亡后仍能执行完
+      
       const tmpScript = path.join(os.tmpdir() || DIR, '.agw-self-' + action + '.sh');
       const agwPath = path.join(DIR, 'agw.sh');
       if (action === 'restart') {
@@ -490,7 +1143,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
         fs.writeFileSync(tmpScript, '#!/bin/bash\nsleep 1\nbash "' + agwPath + '" stop ' + name + ' 2>/dev/null\nrm -f "' + tmpScript + '"\n');
       }
       fs.chmodSync(tmpScript, 0o755);
-      // setsid 开新会话, stdio ignore, unref — 父进程被杀后这个脚本继续跑
+      
       const cp = exec('setsid bash "' + tmpScript + '" </dev/null >/dev/null 2>&1 &', { stdio: 'ignore' }, () => {});
       try { cp.unref(); } catch (e) {}
       return;
@@ -499,27 +1152,33 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, { ok: r.ok, output: (r.stdout + r.stderr).trim() });
   }
 
-  // POST /admin/api/shutdown-all — 关闭所有实例(含自己, 面板随之失效)
-  // 直接 process.kill 各实例 pid(先杀别人, 最后杀自己), 不依赖 bash 子进程(避免父进程死亡导致子进程中断)
+  
+  
   if (req.method === 'POST' && api === 'shutdown-all') {
+    
+    if (POOL) {
+      jsonRes(res, 200, { ok: true, message: '单进程模式: 正在关闭网关进程(所有实例随之停止)...' });
+      setTimeout(() => { try { process.kill(process.pid, 'SIGTERM'); } catch (e) {} }, 500);
+      return;
+    }
     jsonRes(res, 200, { ok: true, message: '正在关闭所有实例...' });
     const myPid = process.pid;
     setTimeout(() => {
       for (const name of listInstances()) {
-        if (name === currentName(cfg)) continue; // 自己最后杀
+        if (name === currentName(cfg)) continue; 
         try {
           const pid = parseInt(fs.readFileSync(path.join(DIR, '.run', name + '.pid'), 'utf8').trim(), 10);
           if (pid && pid !== myPid) { try { process.kill(pid, 'SIGTERM'); } catch (e) {} }
         } catch (e) {}
       }
-      // 1秒后杀自己(给其他实例留时间优雅退出)
+      
       setTimeout(() => { try { process.kill(myPid, 'SIGTERM'); } catch (e) {} }, 1000);
     }, 500);
     return;
   }
 
-  // POST /admin/api/chat — 聊天测试(代理到目标实例 /v1/chat/completions, 自动注入 gatewayKey, 透传流式)
-  // body 里可带 instance 指定目标实例(面板顶栏选中的实例), 缺省=本实例
+  
+  
   if (req.method === 'POST' && api === 'chat') {
     let target = cfg, bodyOut = bodyStr || '{}';
     try {
@@ -533,9 +1192,16 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
         target = tc;
       }
     } catch (e) { return jsonRes(res, 500, { error: '读取目标实例配置失败: ' + e.message }); }
-    const port = (target.listen || {}).port || 16384;
+    let port = (target.listen || {}).port || 16384;
+    let apiPath = '/v1/chat/completions';
     const gwKey = target.gatewayKey || '';
-    const opts = { host: '127.0.0.1', port, path: '/v1/chat/completions', method: 'POST', headers: { 'Content-Type': 'application/json' } };
+    
+    if (POOL) {
+      port = POOL.mainPort;
+      const tname = target._name || currentName(target);
+      if (tname && tname !== 'default') apiPath = '/' + tname + '/v1/chat/completions';
+    }
+    const opts = { host: '127.0.0.1', port, path: apiPath, method: 'POST', headers: { 'Content-Type': 'application/json' } };
     if (gwKey) opts.headers['authorization'] = 'Bearer ' + gwKey;
     const up = http.request(opts, upRes => {
       res.writeHead(upRes.statusCode, { 'Content-Type': upRes.headers['content-type'] || 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS' });
@@ -547,22 +1213,28 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return;
   }
 
-  // GET /admin/api/logs/:name — 读日志
+  
   if (req.method === 'GET' && api.startsWith('logs/')) {
     const name = decodeURIComponent(api.slice('logs/'.length));
     const lines = parseInt(u.searchParams.get('lines') || '50', 10) || 50;
     return textRes(res, 200, readLog(name, lines), 'text/plain; charset=utf-8');
   }
 
-  // GET /admin/api/stats?instance=X — 实例实时统计(支持跨实例本机代理)
+  
   if (req.method === 'GET' && api === 'stats') {
     const inst = u.searchParams.get('instance') || currentName(cfg);
     if (inst === currentName(cfg)) {
       return jsonRes(res, 200, {
         requests: cfg._stats.requests, errors: cfg._stats.errors,
-        byChannel: cfg._stats.byChannel, startedAt: cfg._stats.startedAt,
+        byChannel: cfg._stats.byChannel, byKey: cfg._stats.byKey || {}, startedAt: cfg._stats.startedAt,
         uptime: Math.round(process.uptime()),
       });
+    }
+    
+    if (POOL) {
+      const tc = POOL.instances.get(inst);
+      if (!tc) return jsonRes(res, 404, { error: '实例未在运行: ' + inst });
+      return jsonRes(res, 200, { requests: tc._stats.requests, errors: tc._stats.errors, byChannel: tc._stats.byChannel, byKey: tc._stats.byKey || {}, startedAt: tc._stats.startedAt, uptime: Math.round(process.uptime()) });
     }
     const j = await proxyInstance(inst, 'stats');
     if (!j) return jsonRes(res, 404, { error: '无法获取实例 ' + inst + ' 的统计(可能未运行或无adminKey)' });
@@ -570,18 +1242,24 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, { requests: st.requests || 0, errors: st.errors || 0, byChannel: st.byChannel || {}, startedAt: j.startedAt, uptime: j.uptime || 0 });
   }
 
-  // GET /admin/api/requests/:name — 请求记录(环形缓冲, 支持跨实例代理)
+  
   if (req.method === 'GET' && api.startsWith('requests/')) {
     const inst = decodeURIComponent(api.slice('requests/'.length));
     if (inst === currentName(cfg)) {
       return jsonRes(res, 200, cfg._stats.recent || []);
+    }
+    
+    if (POOL) {
+      const tc = POOL.instances.get(inst);
+      if (!tc) return jsonRes(res, 200, []);
+      return jsonRes(res, 200, tc._stats.recent || []);
     }
     const j = await proxyInstance(inst, 'requests/' + inst);
     if (!j) return jsonRes(res, 200, []);
     return jsonRes(res, 200, Array.isArray(j) ? j : (j.recent || []));
   }
 
-  // GET /admin/api/record-body/:name?id=req_xxx — 从本机 JSONL 记录文件里按 id 查请求/响应正文
+  
   if (req.method === 'GET' && api.startsWith('record-body/')) {
     const name = decodeURIComponent(api.slice('record-body/'.length));
     const id = (u.searchParams && u.searchParams.get('id')) || '';
@@ -603,7 +1281,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
   return jsonRes(res, 404, { error: '未知 API: ' + api });
 }
 
-/* ====================== MD3 风格 HTML ====================== */
+
 function adminHTML(cfg) {
   const instName = cfg._configFile ? path.basename(cfg._configFile, '.json').replace(/^config\./, '') : 'default';
   return `<!DOCTYPE html>
@@ -891,4 +1569,4 @@ if(adminKey){
 </html>`;
 }
 
-module.exports = { handleAdmin, checkAdminAuth, setDir, setUpstreamModels, setSyncFn, saveCfg };
+module.exports = { handleAdmin, checkAdminAuth, setDir, setUpstreamModels, setSyncFn, setPool, setPlugins, saveCfg, totpCode, totpVerify, base32Encode };

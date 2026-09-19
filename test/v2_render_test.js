@@ -1,7 +1,7 @@
 'use strict';
-/* v2 面板真实渲染测试: jsdom + 真实 Material Web bundle 驱动整个页面初始化 */
+
 const fs=require('fs'), path=require('path');
-// jsdom 内部会抛若干未实现相关的 rejection, 不应终止测试
+
 process.on('unhandledRejection', r=>{ const m=String(r&&r.message||r); if(!/Not implemented|not implemented|DOMException/i.test(m)) console.error('  ⚠ 未预期 rejection:', m.slice(0,90)); });
 const {JSDOM}=require('/workspace/tmp/npmtest/node_modules/jsdom');
 const HTML=path.join(__dirname,'../m3/v2/index.html');
@@ -12,14 +12,14 @@ function eq(a,b,m){ ok(a===b, m+` (got=${JSON.stringify(b===undefined?a:a)}, wan
 
 const html=fs.readFileSync(HTML,'utf8');
 const mw=fs.readFileSync(MW,'utf8');
-// 抽出模块脚本, 把 CDN/路径 import 换成已注入的 bundle, 顶层 await 包进 async IIFE
+
 let src=html.match(/<script type="module">([\s\S]*?)<\/script>/)[1];
 src=src.replace(/const MW_OK = await import\([^)]*\)[\s\S]*?\n\}\);/, "const MW_OK = true;");
 ok(!/\bimport\s*\(/.test(src), '模块脚本已剥离动态 import(改由宿主注入 bundle)');
 
 const dom=new JSDOM(html,{runScripts:'outside-only',pretendToBeVisual:true,url:'http://127.0.0.1:16384/admin/m3/v2'});
 const w=dom.window, d=w.document;
-// ---- jsdom 缺失但真实浏览器都有的 API ----
+
 class Obs{constructor(){}observe(){}unobserve(){}disconnect(){}takeRecords(){return[]}}
 w.matchMedia=q=>({matches:false,media:q,addEventListener(){},removeEventListener(){},addListener(){},removeListener(){}});
 w.IntersectionObserver=Obs; w.ResizeObserver=Obs;
@@ -34,7 +34,7 @@ if(w.ElementInternals){ Object.defineProperty(w.ElementInternals.prototype,'role
   Object.defineProperty(w.ElementInternals.prototype,'form',{get(){return this.__f||null},set(v){this.__f=v},configurable:true});
   for(const p of ['ariaLabel','ariaDescription','ariaValueText','ariaRequired','ariaChecked','ariaExpanded','ariaSelected','ariaDisabled','ariaErrorMessage','ariaHasPopup','ariaControls','ariaOrientation','ariaMultiline','ariaAutoComplete','ariaInvalid','ariaBusy','ariaLive','ariaAtomic','ariaValueNow','ariaValueMin','ariaValueMax'])
     if(!(p in w.ElementInternals.prototype)) Object.defineProperty(w.ElementInternals.prototype,p,{get(){return this['__'+p]||''},set(v){this['__'+p]=v},configurable:true}); }
-// jsdom 无 PointerEvent(真实浏览器均有), ripple 的 handleEvent 会引用它
+
 if(!w.PointerEvent) w.PointerEvent = class PointerEvent extends w.MouseEvent { constructor(t,o={}){ super(t,o); this.pointerId=o?.pointerId??1; this.pointerType=o?.pointerType??'mouse'; this.isPrimary=o?.isPrimary??true; this.buttons=o?.buttons??0; } };
 if(w.HTMLDialogElement){ const DP=w.HTMLDialogElement.prototype;
   DP.showModal=function(){this.open=true}; DP.show=function(){this.open=true}; DP.close=function(){this.open=false}; }
@@ -51,11 +51,11 @@ w.console.error=(...a)=>{ cons.push(a.join(' ')); };
   try{ w.eval('(async()=>{'+src+'\n})()\n//# sourceURL=panel.js'); }catch(e){ errs.push('script: '+e.message); }
   await new Promise(r=>setTimeout(r,1500));
 
-  /* ---- 1. 初始化 ---- */
+  
   ok(errs.length===0, '页面初始化无异常'+(errs.length?': '+errs.slice(0,3).join(' | '):''));
   ok(!d.getElementById('compatBar').classList.contains('show'), '兼容性横幅未触发(能力齐备)');
 
-  /* ---- 2. 导航 ---- */
+  
   const rail=d.querySelectorAll('#railList md-list-item');
   eq(rail.length,9,'桌面侧栏 9 个导航项');
   const firstHeadline=rail[0]?.querySelector('[slot=headline]')?.textContent;
@@ -65,7 +65,7 @@ w.console.error=(...a)=>{ cons.push(a.join(' ')); };
   eq(tabs.length,5,'移动底部导航 5 个 tab');
   ok(d.querySelector('#navbar md-navigation-tab md-icon'),'tab 内含 md-icon');
 
-  /* ---- 3. 总览页渲染 ---- */
+  
   eq(d.getElementById('ov-instances').textContent,'3','统计卡: 实例数=3(Mock)');
   eq(d.getElementById('ov-running').textContent,'2','统计卡: 运行中=2');
   const ovList=d.querySelectorAll('#ov-inst-list md-list-item');
@@ -78,12 +78,12 @@ w.console.error=(...a)=>{ cons.push(a.join(' ')); };
   ok(urlCell && !/^https?:\/\//.test(urlCell.textContent),'Base URL 已略写(无协议头)');
   ok(urlCell && urlCell.getAttribute('title')?.startsWith('http'),'完整 URL 保留在 title');
 
-  /* ---- 4. 实例下拉 ---- */
+  
   const topSel=d.getElementById('topInst');
   eq(topSel.querySelectorAll('md-select-option').length,3,'顶栏实例下拉 3 个选项');
   eq(topSel.value,'default','实例下拉 value 正确赋值(先挂选项后赋值的时序有效)');
 
-  /* ---- 5. 切页 ---- */
+  
   const before=d.getElementById('page-overview').hidden;
   d.querySelectorAll('#railList md-list-item')[1].dispatchEvent(new w.MouseEvent('click',{bubbles:true}));
   await new Promise(r=>setTimeout(r,600));
@@ -95,7 +95,7 @@ w.console.error=(...a)=>{ cons.push(a.join(' ')); };
   const acts=pvRows[0]?.querySelector('.row-acts');
   ok(acts && acts.querySelector('md-outlined-button'),'操作列使用 md-outlined-button');
 
-  /* ---- 6. 对话框 ---- */
+  
   d.getElementById('pv-add').dispatchEvent(new w.MouseEvent('click',{bubbles:true}));
   await new Promise(r=>setTimeout(r,400));
   const dlg=d.getElementById('dlgOverlay');
@@ -106,7 +106,7 @@ w.console.error=(...a)=>{ cons.push(a.join(' ')); };
   eq(typeSel?.tagName?.toLowerCase(),'md-outlined-select','对话框内找到类型下拉');
   eq(typeSel?.value,'openai','对话框内 select 默认值正确');
 
-  /* ---- 7. 聊天页 ---- */
+  
   d.querySelectorAll('#railList md-list-item')[8].dispatchEvent(new w.MouseEvent('click',{bubbles:true}));
   await new Promise(r=>setTimeout(r,700));
   const modelSel=d.getElementById('ch-model');
@@ -121,7 +121,7 @@ w.console.error=(...a)=>{ cons.push(a.join(' ')); };
   ok(d.querySelector('#ch-messages .chat-msg.user .chat-ava'),'用户消息有头像节点');
   ok(d.querySelector('#ch-messages .chat-copy'),'气泡含复制按钮');
 
-  /* ---- 8. 无泄漏/无异常 ---- */
+  
   ok(cons.filter(x=>!/Error: Not implemented|jsdom/i.test(x)).length===0,'console 无真实报错'+(cons.length?' (忽略 '+cons.length+' 条 jsdom 未实现提示)':''));
   console.log(`\nv2 面板渲染测试: ${pass} 通过 / ${fail} 失败`);
   if(cons.length) console.log('  jsdom 未实现提示: '+[...new Set(cons.map(c=>c.slice(0,60)))].slice(0,3).join(' | '));

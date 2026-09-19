@@ -2,7 +2,12 @@ const fs = require("fs");
 const f = process.argv[2];
 if (!f || !fs.existsSync(f)) { console.error("文件不存在: " + f); process.exit(1); }
 let cfg;
-try { cfg = JSON.parse(fs.readFileSync(f, "utf8")); }
+let raw = fs.readFileSync(f, "utf8");
+try {
+  const crypt = require("./crypt.js");
+  if (crypt.isEncText(raw)) raw = crypt.decryptText(raw, crypt.loadPass());
+} catch (_) {}
+try { cfg = JSON.parse(raw); }
 catch (e) { console.log("  (配置解析失败: " + e.message.split("\n")[0] + ")"); process.exit(0); }
 const port = (cfg.listen && cfg.listen.port) || 16384;
 const gw = cfg.gatewayKey ? "已设" : "无";

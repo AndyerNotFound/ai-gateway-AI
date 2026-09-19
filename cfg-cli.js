@@ -1,18 +1,18 @@
-#!/usr/bin/env node
+
 'use strict';
-/**
- * ai-gateway 配置工具 — 交互式 + 参数式
- * 用法:
- *   agw.sh config                           交互式: 选实例 → 主菜单
- *   agw.sh config [实例名]                  直接进某实例的主菜单
- *   agw.sh config [实例名] add              交互式添加渠道
- *   agw.sh config [实例名] list             列出渠道
- *   agw.sh config [实例名] remove [渠道名]  删除渠道
- *   agw.sh config [实例名] add --name X --type openai --baseUrl URL --apiKey K --models a,b,c
- *   agw.sh config [实例名] set-port 16390
- *   agw.sh config [实例名] set-key "密码"
- *   agw.sh config [实例名] add-proxy myproxy --type socks5 --host 127.0.0.1 --port 7890
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -48,7 +48,7 @@ function saveCfg(name, cfg) {
   console.log(`✓ 已保存到 ${cfgFile(name)}`);
 }
 
-// ---- readline helpers ----
+
 function ask(rl, q, def) {
   return new Promise(r => {
     const p = def != null ? `${q} [${def}]: ` : `${q}: `;
@@ -74,7 +74,7 @@ function askYesNo(rl, q, defY) {
   });
 }
 
-// ---- 渠道显示 ----
+
 function showChannels(cfg) {
   if (!cfg.channels || !cfg.channels.length) { console.log('  (无渠道)'); return; }
   const dup = {};
@@ -93,7 +93,7 @@ function showChannels(cfg) {
   if (rr.length) console.log('  (⚡=多渠道轮询)');
 }
 
-// ---- 交互式添加渠道 ----
+
 async function interactiveAdd(rl, cfg) {
   const name = await ask(rl, '渠道名 (如 my-free-key)');
   if (!name) { console.log('✗ 渠道名不能为空'); return null; }
@@ -105,11 +105,11 @@ async function interactiveAdd(rl, cfg) {
 
   const type = await askChoice(rl, '上游格式', TYPES);
   let baseUrl = await ask(rl, 'baseUrl (如 https://api.deepseek.com)');
-  // 自动补全常见 baseUrl
+  
   if (baseUrl && !baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
   const apiKey = await ask(rl, 'apiKey (粘贴密钥, 直接回车=稍后填)');
 
-  // 代理选择
+  
   const proxyNames = Object.keys(cfg.proxies || {});
   const proxyOpts = ['直连 (不走代理)', ...proxyNames.map(p => `${p} (${cfg.proxies[p].type}://${cfg.proxies[p].host}:${cfg.proxies[p].port})`), '+ 新建代理...'];
   let proxy = null;
@@ -131,7 +131,7 @@ async function interactiveAdd(rl, cfg) {
     proxy = proxyNames[proxyOpts.indexOf(proxyChoice) - 1];
   }
 
-  // 模型配置
+  
   console.log('\n模型配置 (两种方式选一):');
   console.log('  A) models 列表: 直接列出上游模型名, 客户端发啥就用啥');
   console.log('  B) modelMap 改名: 把不同上游的模型名统一成一个对外名 (推荐多源轮询时用)');
@@ -156,7 +156,7 @@ async function interactiveAdd(rl, cfg) {
 
   const isDefault = await askYesNo(rl, '设为 default (兜底) 渠道?', !cfg.channels.length);
   if (isDefault) {
-    // 取消其他渠道的 default
+    
     for (const c of cfg.channels) c.default = false;
     channel.default = true;
   }
@@ -165,7 +165,7 @@ async function interactiveAdd(rl, cfg) {
   return cfg;
 }
 
-// ---- 交互式主菜单 ----
+
 async function mainMenu(rl, name, cfg) {
   while (true) {
     console.log(`\n━━━ 实例 [${name}] 端口=${(cfg.listen||{}).port} 密码=${cfg.gatewayKey ? '已设' : '无'} 渠道=${(cfg.channels||[]).length} ━━━`);
@@ -233,7 +233,7 @@ async function mainMenu(rl, name, cfg) {
         const toDel = await askChoice(rl, '选择要删除的代理', [...pnames, '取消']);
         if (toDel !== '取消') {
           delete cfg.proxies[toDel];
-          // 清理引用该代理的渠道
+          
           for (const c of cfg.channels) if (c.proxy === toDel) { c.proxy = null; console.log(`  ⚠ 渠道 "${c.name}" 的代理被清空`); }
           console.log(`✓ 已删除代理 "${toDel}" (记得保存)`);
         }
@@ -250,7 +250,7 @@ async function mainMenu(rl, name, cfg) {
   }
 }
 
-// ---- 参数模式 ----
+
 function parseArgs(argv) {
   const opts = {};
   for (let i = 0; i < argv.length; i++) {
@@ -274,7 +274,7 @@ function paramAdd(name, opts) {
   const type = opts.type || 'openai';
   if (!TYPES.includes(type)) { console.log(`✗ --type 必须是 ${TYPES.join('/')}`); process.exit(1); }
   if (!opts.baseUrl) { console.log('✗ 需要 --baseUrl'); process.exit(1); }
-  // 移除同名旧渠道
+  
   cfg.channels = (cfg.channels || []).filter(c => c.name !== opts.name);
   const ch = { name: opts.name, type, baseUrl: opts.baseUrl, apiKey: opts.apiKey || '', proxy: opts.proxy || null };
   if (opts.models) ch.models = opts.models.split(',').map(s => s.trim()).filter(Boolean);
@@ -287,7 +287,7 @@ function main() {
   const args = process.argv.slice(2);
   const instances = listInstances();
 
-  // 无参数 → 交互式选实例
+  
   if (!args.length) {
     if (!instances.length) { console.log('✗ 没有任何配置文件, 先手动创建一个 config.json'); process.exit(1); }
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -301,15 +301,15 @@ function main() {
     return;
   }
 
-  // 第一个参数 = 实例名
+  
   let name = args[0];
   const cmd = args[1] || '';
   const rest = args.slice(2);
 
-  // 如果第一个参数是命令(不是实例名), 则先选实例
+  
   if (['add', 'list', 'remove', 'set-port', 'set-key', 'add-proxy'].includes(name)) {
-    const cmd2 = name; name = ''; // 后面处理
-    // 交互式选实例
+    const cmd2 = name; name = ''; 
+    
     if (!instances.length) { console.log('✗ 没有配置文件'); process.exit(1); }
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     (async () => {
@@ -327,13 +327,13 @@ function main() {
     return;
   }
 
-  // 正常: name = 实例名, cmd = 命令
+  
   if (cmd === 'add') {
     if (rest.length && rest[0].startsWith('--')) {
-      // 参数模式
+      
       paramAdd(name, parseArgs(rest));
     } else {
-      // 交互式
+      
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
       let cfg = loadCfg(name);
       if (!cfg) { console.log(`✗ 实例 [${name}] 配置不存在`); rl.close(); process.exit(1); }
@@ -394,7 +394,7 @@ function main() {
     saveCfg(name, cfg);
     console.log(`✓ TLS 已关闭, 重启: agw.sh restart ${name}`);
   } else if (!cmd) {
-    // 只有实例名 → 进主菜单
+    
     let cfg = loadCfg(name);
     if (!cfg) { console.log(`✗ 实例 [${name}] 配置不存在`); process.exit(1); }
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });

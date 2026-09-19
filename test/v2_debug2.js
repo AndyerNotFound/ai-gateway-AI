@@ -1,7 +1,7 @@
 const fs=require('fs'); const {JSDOM}=require('/workspace/tmp/npmtest/node_modules/jsdom');
 const HTML=fs.readFileSync('/workspace/ai-gateway/m3/v2/index.html','utf8');
 const MW=fs.readFileSync('/workspace/tmp/npmtest/mw-v2.js','utf8');
-// 先替换脚本里的 import 再 eval
+
 const script=HTML.match(/<script type="module">([\s\S]*?)<\/script>/)[1];
 const fixedScript=script.replace("await import('/admin/m3/vendor/mw-v2.js')","Promise.resolve(); await true");
 const dom=new JSDOM('<!doctype html><body></body>',{runScripts:'outside-only',pretendToBeVisual:true});
@@ -28,7 +28,7 @@ setTimeout(()=>{
   console.log('navbar 存在:', !!d.getElementById('navbar'));
   console.log('console errors:', cons.length, cons.slice(0,2).join(' | '));
   console.log('已知 MD 注册:', Object.keys(w.customElements._definitions||{}).filter(k=>k.startsWith('md-')).length);
-  // 检查 bottom nav 是否有子元素
+  
   const nav=d.getElementById('navbar');
   if(nav) console.log('navbar inner:', nav.innerHTML.slice(0,200));
   process.exit(0);

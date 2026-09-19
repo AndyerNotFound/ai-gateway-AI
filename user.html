@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#141218">
+<meta http-equiv="Cache-Control" content="no-cache,no-store,must-revalidate">
+<title>AI Gateway · 用户中心</title>
+<style>
+/* ===== Material Design 3 深色配色令牌(与 m3 管理面板一致) ===== */
+:root{
+  --primary:#D0BCFF; --on-primary:#381E72; --primary-container:#4F378B; --on-primary-container:#EADDFF;
+  --secondary:#CCC2DC; --secondary-container:#4A4458; --on-secondary-container:#E8DEF8;
+  --tertiary:#EFB8C8; --tertiary-container:#633B48;
+  --error:#F2B8B5; --error-container:#8B1A1A; --on-error-container:#F9DEDC;
+  --bg:#141218; --on-bg:#E6E1E5; --surface:#141218; --on-surface:#E6E1E5;
+  --surface-variant:#49454F; --on-surface-variant:#CAC4D0;
+  --sc-lowest:#0F0D13; --sc-low:#1D1B20; --sc:#211F26; --sc-high:#2B2930; --sc-highest:#36343B;
+  --outline:#938F99; --outline-variant:#49454F;
+  --success:#B5F0BA; --success-container:#1E4A23;
+  --font:system-ui,-apple-system,'Segoe UI',Roboto,'Noto Sans SC',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:var(--font);background:var(--bg);color:var(--on-bg);-webkit-font-smoothing:antialiased;overflow:hidden}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+a{color:var(--primary);text-decoration:none}
+input,select,textarea{font-family:inherit;font-size:15px}
+
+/* ===== 登录页 ===== */
+#login{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100dvh;padding:24px}
+.login-card{width:100%;max-width:400px;background:var(--sc);border-radius:28px;padding:32px 28px;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+.login-logo{text-align:center;margin-bottom:8px}
+.login-logo .ic{font-size:44px;filter:drop-shadow(0 0 12px rgba(208,188,255,.4))}
+.login-title{text-align:center;font-size:24px;font-weight:500;margin-bottom:4px}
+.login-sub{text-align:center;font-size:13px;color:var(--on-surface-variant);margin-bottom:24px}
+.tabs{display:flex;gap:4px;background:var(--sc-low);border-radius:999px;padding:4px;margin-bottom:20px}
+.tabs button{flex:1;padding:10px;border-radius:999px;font-size:13px;font-weight:500;color:var(--on-surface-variant)}
+.tabs button.active{background:var(--primary-container);color:var(--on-primary-container)}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:12px;color:var(--on-surface-variant);margin-bottom:6px;font-weight:500}
+.field input{width:100%;background:var(--sc-low);border:1px solid var(--outline-variant);border-radius:12px;padding:14px 16px;color:var(--on-surface);outline:none;transition:border .2s}
+.field input:focus{border-color:var(--primary)}
+.btn{width:100%;padding:14px;border-radius:999px;font-size:15px;font-weight:500;transition:all .2s}
+.btn-primary{background:var(--primary);color:var(--on-primary)}
+.btn-primary:hover{filter:brightness(1.1)}
+.btn:disabled{opacity:.5}
+.login-err{color:var(--error);font-size:13px;text-align:center;margin-top:12px;min-height:18px}
+
+/* ===== 主界面 ===== */
+#app{display:none;flex-direction:column;height:100dvh}
+.topbar{display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--surface);border-bottom:1px solid var(--outline-variant);flex-shrink:0}
+.topbar .title{flex:1;font-size:18px;font-weight:500}
+.topbar .branch-pick{background:var(--sc);border:1px solid var(--outline-variant);border-radius:999px;padding:6px 14px;font-size:13px;color:var(--on-surface-variant)}
+.topbar .btn-out{font-size:13px;color:var(--error);padding:6px 10px}
+.main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.page{display:none;padding:16px;max-width:860px;margin:0 auto}
+.page.active{display:block;animation:fade .25s ease}
+@keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* 卡片 */
+.card{background:var(--sc);border-radius:20px;padding:18px;margin-bottom:14px}
+.card-title{font-size:15px;font-weight:500;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.card .row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;font-size:14px}
+.card .row .k{color:var(--on-surface-variant)}
+.card .row .v{font-weight:500}
+.mono{font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:13px}
+.hint{font-size:12px;color:var(--on-surface-variant);margin-top:6px;line-height:1.5}
+.warn{background:var(--error-container);color:var(--on-error-container);padding:12px;border-radius:12px;font-size:12px;line-height:1.5;margin-bottom:14px}
+.ok-tag{display:inline-block;background:var(--success-container);color:var(--success);padding:2px 10px;border-radius:999px;font-size:11px;font-weight:500}
+
+/* 额度进度条 */
+.quota-bar{height:8px;background:var(--sc-low);border-radius:999px;overflow:hidden;margin:10px 0}
+.quota-bar .fill{height:100%;background:var(--primary);border-radius:999px;transition:width .5s}
+.big-num{font-size:32px;font-weight:700;color:var(--primary);margin:4px 0}
+
+/* 模型/插件 列表项 */
+.list-item{background:var(--sc);border-radius:14px;padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:background .15s}
+.list-item:hover{background:var(--sc-high)}
+.list-item .ic{font-size:22px}
+.list-item .info{flex:1;min-width:0}
+.list-item .name{font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.list-item .desc{font-size:12px;color:var(--on-surface-variant);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.group-head{font-size:12px;font-weight:500;color:var(--on-surface-variant);margin:16px 0 8px;text-transform:uppercase;letter-spacing:.5px}
+.empty{text-align:center;color:var(--on-surface-variant);padding:40px 20px;font-size:14px}
+
+/* 个人页卡密项 */
+.key-item{background:var(--sc);border-radius:14px;padding:14px 16px;margin-bottom:10px}
+.key-item .kt{display:flex;justify-content:space-between;align-items:center}
+.key-item .kk{font-family:ui-monospace,monospace;font-size:13px;color:var(--primary);word-break:break-all}
+.key-item .ka{font-size:11px;color:var(--on-surface-variant);margin-top:4px}
+.chip{display:inline-block;background:var(--sc-high);padding:2px 8px;border-radius:999px;font-size:10px;margin:2px}
+.chip.on{background:var(--success-container);color:var(--success)}
+.chip.off{background:var(--error-container);color:var(--error)}
+
+/* 底栏 */
+.bottomnav{display:flex;background:var(--sc-low);border-top:1px solid var(--outline-variant);flex-shrink:0;padding-bottom:env(safe-area-inset-bottom)}
+.bottomnav button{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 0 8px;font-size:11px;color:var(--on-surface-variant);transition:color .15s}
+.bottomnav button.active{color:var(--primary)}
+.bottomnav button .ic{font-size:22px}
+
+/* 弹窗 */
+.toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--sc-highest);color:var(--on-surface);padding:12px 24px;border-radius:999px;font-size:13px;z-index:999;box-shadow:0 4px 16px rgba(0,0,0,.4);display:none}
+.toast.show{display:block;animation:fade .2s}
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;display:none}
+.scrim.show{display:flex;align-items:center;justify-content:center;padding:24px}
+.modal{background:var(--sc);border-radius:28px;padding:24px;max-width:360px;width:100%;max-height:80vh;overflow-y:auto}
+.modal h3{font-size:18px;margin-bottom:16px}
+.modal .btns{display:flex;gap:10px;margin-top:18px}
+.modal .btns .btn{flex:1}
+.btn-text{padding:12px;border-radius:999px;font-size:14px;font-weight:500}
+.btn-tonal{background:var(--sc-high);color:var(--on-surface)}
+</style>
+</head>
+<body>
+
+
+<div id="login">
+  <div class="login-card">
+    <div class="login-logo"><div class="ic">⚡</div></div>
+    <div class="login-title">AI Gateway</div>
+    <div class="login-sub">用户中心</div>
+    <div class="tabs" id="loginTabs">
+      <button class="active" data-m="key">卡密登录</button>
+      <button data-m="account">账密登录</button>
+    </div>
+    <div id="pane-key" class="login-pane">
+      <div class="field"><label>服务器地址</label><input id="srv" placeholder="http://192.168.1.100:16384" autocomplete="url"></div>
+      <div class="field"><label>卡密 (API Key)</label><input id="apikey" type="password" placeholder="sk-..." autocomplete="current-password"></div>
+    </div>
+    <div id="pane-account" class="login-pane" style="display:none">
+      <div class="field"><label>服务器地址</label><input id="srv2" placeholder="http://192.168.1.100:16384" autocomplete="url"></div>
+      <div class="field"><label>用户 UID</label><input id="uid" placeholder="u..." autocomplete="username"></div>
+      <div class="field"><label>密码</label><input id="pwd" type="password" autocomplete="current-password"></div>
+    </div>
+    <button class="btn btn-primary" id="loginBtn" onclick="doLogin()">登 录</button>
+    <div class="login-err" id="loginErr"></div>
+  </div>
+</div>
+
+
+<div id="app">
+  <div class="topbar">
+    <div class="title" id="topTitle">首页</div>
+    <select class="branch-pick" id="branchSel" onchange="switchBranch(this.value)" style="display:none"></select>
+    <button class="btn-out" onclick="logout()">退出</button>
+  </div>
+  <div class="main">
+
+    
+    <section id="page-home" class="page active">
+      <div class="warn" id="disclaimer">⚠️ 本服务为第三方搭建的 API 中转站。请勿在官方客户端直接登录官方账号，使用即代表知悉风险。</div>
+      <div class="card">
+        <div class="card-title">📡 服务状态</div>
+        <div class="row"><span class="k">服务器</span><span class="v mono" id="hmServer">-</span></div>
+        <div class="row"><span class="k">版本</span><span class="v" id="hmVer">-</span></div>
+        <div class="row"><span class="k">已运行</span><span class="v" id="hmUp">-</span></div>
+        <div class="row"><span class="k">我的卡密</span><span class="v mono" id="hmKey">-</span></div>
+      </div>
+      <div class="card" id="probeCard" style="display:none">
+        <div class="card-title">📊 渠道成功率</div>
+        <div id="probeList"></div>
+        <div class="hint" id="probeHint"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">🌿 分支切换</div>
+        <div class="hint">同一卡密可通过不同分支访问不同模型分组(实例)。在右上角下拉切换。</div>
+        <div id="branchList" style="margin-top:8px"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">🧩 插件</div>
+        <div id="pluginList"></div>
+      </div>
+    </section>
+
+    
+    <section id="page-models" class="page">
+      <div class="card" style="padding:10px 14px">
+        <input id="modelSearch" placeholder="搜索模型..." oninput="filterModels()" style="width:100%;background:transparent;border:none;color:var(--on-surface);outline:none;font-size:14px">
+      </div>
+      <div id="modelList"></div>
+    </section>
+
+    
+    <section id="page-credits" class="page">
+      <div class="card" style="text-align:center">
+        <div class="card-title">💰 我的额度</div>
+        <div class="hint" id="crName" style="margin-bottom:4px"></div>
+        <div class="big-num" id="crRemain">-</div>
+        <div class="hint">剩余 Token</div>
+        <div class="quota-bar"><div class="fill" id="crBar" style="width:0%"></div></div>
+        <div class="row"><span class="k">总额度</span><span class="v" id="crTotal">-</span></div>
+        <div class="row"><span class="k">已用</span><span class="v" id="crUsed">-</span></div>
+        <div class="row"><span class="k">到期时间</span><span class="v" id="crExp">永久</span></div>
+      </div>
+      <div class="card">
+        <div class="card-title">🎫 允许的模型</div>
+        <div id="crModels"></div>
+      </div>
+    </section>
+
+    
+    <section id="page-profile" class="page">
+      <div class="card">
+        <div class="card-title">👤 账号信息</div>
+        <div class="row"><span class="k">UID</span><span class="v mono" id="pfUid">-</span></div>
+        <div class="row"><span class="k">昵称</span><span class="v" id="pfName">-</span></div>
+        <div class="field" style="margin-top:12px"><label>修改昵称</label><input id="pfNewName" placeholder="输入新昵称"></div>
+        <button class="btn btn-tonal" style="width:100%;margin-top:4px" onclick="saveProfile()">保存</button>
+      </div>
+      <div class="card">
+        <div class="card-title">🎫 我的卡密</div>
+        <div class="hint" id="pfKeyHint" style="margin-bottom:10px"></div>
+        <button class="btn btn-tonal" style="width:100%;margin-bottom:10px" id="mkBtn" onclick="showMakeKey()" style="display:none">+ 发新卡密</button>
+        <div id="keyList"></div>
+      </div>
+      <div class="warn">⚠️ 你正在使用第三方中转服务。卡密即额度，请妥善保管，勿向他人泄露。</div>
+    </section>
+
+  </div>
+  <nav class="bottomnav">
+    <button class="active" onclick="go('home')"><span class="ic">🏠</span>首页</button>
+    <button onclick="go('models')"><span class="ic">🤖</span>模型</button>
+    <button onclick="go('credits')"><span class="ic">💰</span>额度</button>
+    <button onclick="go('profile')"><span class="ic">👤</span>个人</button>
+  </nav>
+</div>
+
+
+<div class="toast" id="toast"></div>
+<div class="scrim" id="scrim"><div class="modal" id="modal"></div></div>
+
+<script>
+/* ===== 全局状态 ===== */
+let S = { srv:'', token:'', branch:'', me:null, models:[], plugins:[] };
+
+/* ===== 工具 ===== */
+function $(id){return document.getElementById(id)}
+function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'),2500) }
+function fmtNum(n){ if(n==null) return '-'; n=Number(n); if(n>=1e8) return (n/1e8).toFixed(2)+'亿'; if(n>=1e4) return (n/1e4).toFixed(1)+'万'; return n.toLocaleString() }
+function fmtUp(s){ if(!s) return '-'; s=Number(s); const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=Math.floor(s%60); return (h?h+'时':'')+m+'分'+x+'秒' }
+function apiBase(){ return S.srv + (S.branch? '/'+S.branch : '') }
+function hdr(){ return { 'Authorization':'Bearer '+S.token, 'Content-Type':'application/json' } }
+async function api(path, opt={}){
+  const r = await fetch(path, { headers: hdr(), ...opt });
+  const t = await r.text();
+  let j; try{ j=JSON.parse(t) }catch{ throw new Error(r.status+' '+t.slice(0,80)) }
+  if(!r.ok){ const e=j.error||j.message||t.slice(0,80); throw new Error(e) }
+  return j;
+}
+
+/* ===== 登录 ===== */
+document.querySelectorAll('#loginTabs button').forEach(b=>{
+  b.onclick=()=>{
+    document.querySelectorAll('#loginTabs button').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    const m=b.dataset.m;
+    $('pane-key').style.display = m==='key'?'block':'none';
+    $('pane-account').style.display = m==='account'?'block':'none';
+  };
+});
+// 回车登录
+['srv','apikey','srv2','uid','pwd'].forEach(id=>{ const e=$(id); if(e) e.addEventListener('keydown',ev=>{ if(ev.key==='Enter') doLogin() }) });
+
+async function doLogin(){
+  $('loginErr').textContent='';
+  const active=document.querySelector('#loginTabs button.active').dataset.m;
+  let srv, token;
+  try{
+    if(active==='key'){
+      srv = $('srv').value.trim().replace(/\/+$/,'');
+      token = $('apikey').value.trim();
+      if(!srv||!token) throw new Error('请填写地址和卡密');
+      S.srv=srv; S.token=token;
+      // 用 /auth/me 验证卡密
+      try{ S.me = await api(srv+'/auth/me'); }
+      catch(e){ // /auth/me 失败可能是纯卡密无用户，尝试 /credits
+        try{ const c=await api(srv+'/credits'); S.me={key:c}; }
+        catch(e2){ throw new Error('卡密验证失败: '+e2.message) }
+      }
+    } else {
+      srv = $('srv2').value.trim().replace(/\/+$/,'');
+      const uid=$('uid').value.trim(), pwd=$('pwd').value;
+      if(!srv||!uid||!pwd) throw new Error('请填写完整');
+      const r = await fetch(srv+'/auth/login', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({uid,password:pwd})});
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.error||'登录失败');
+      // j 应返回该用户卡密列表
+      S.srv=srv;
+      if(j.keys && j.keys.length){ S.token=j.keys[0].key; S.me={user:j.user,key:j.keys[0],keys:j.keys}; }
+      else throw new Error('该账号没有可用卡密，请联系管理员');
+    }
+    localStorage.setItem('agw-user', JSON.stringify({srv:S.srv,token:S.token}));
+    enterApp();
+  }catch(e){ $('loginErr').textContent=e.message }
+}
+
+async function enterApp(){
+  $('login').style.display='none';
+  $('app').style.display='flex';
+  loadHome();
+}
+function logout(){ localStorage.removeItem('agw-user'); location.reload() }
+
+/* ===== 导航 ===== */
+const TITLES={home:'首页',models:'模型广场',credits:'我的额度',profile:'个人中心'};
+function go(p){
+  document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
+  $('page-'+p).classList.add('active');
+  document.querySelectorAll('.bottomnav button').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.bottomnav button')[{home:0,models:1,credits:2,profile:3}[p]].classList.add('active');
+  $('topTitle').textContent=TITLES[p];
+  if(p==='home') loadHome();
+  if(p==='models') loadModels();
+  if(p==='credits') loadCredits();
+  if(p==='profile') loadProfile();
+}
+
+/* ===== 首页 ===== */
+async function loadHome(){
+  $('hmServer').textContent = S.srv.replace(/^https?:\/\//,'');
+  // 并行: status + plugins + me
+  const tasks=[];
+  tasks.push(api(S.srv+'/status').then(j=>{ $('hmVer').textContent=j.version||'-'; $('hmUp').textContent=fmtUp(j.uptime); renderProbe(j) }).catch(e=>{ $('hmVer').textContent='离线'; }));
+  if(S.me && S.me.key){ $('hmKey').textContent=(S.me.key.name||'卡密')+': '+S.token.slice(0,8)+'...'; }
+  else $('hmKey').textContent=S.token.slice(0,12)+'...';
+  tasks.push(api(S.srv+'/plugins').then(j=>renderPlugins(j.plugins||[])).catch(e=>$('pluginList').innerHTML='<div class="hint">插件加载失败</div>'));
+  tasks.push(loadBranches());
+  try{ await Promise.allSettled(tasks) }catch(e){}
+}
+function renderProbe(j){
+  const pr=j.probe; if(!pr || !Object.keys(pr).length){ $('probeCard').style.display='none'; return }
+  $('probeCard').style.display='block';
+  let h='';
+  for(const[ch,st] of Object.entries(pr)){
+    const rate = st.total? Math.round(st.ok/st.total*100)+'%':'-';
+    h+=`<div class="row"><span class="k mono">${ch}</span><span class="v">${rate} <span style="color:var(--on-surface-variant);font-size:11px">(${st.total}次)</span></span></div>`;
+  }
+  $('probeList').innerHTML=h;
+}
+function renderPlugins(arr){
+  if(!arr.length){ $('pluginList').innerHTML='<div class="empty">该站点暂无可用插件</div>'; return }
+  $('pluginList').innerHTML=arr.map(p=>`
+    <div class="list-item" onclick="openPlugin('${p.id}','${p.userPage||'pages/user.html'}','${p.name}')">
+      <span class="ic">🧩</span>
+      <div class="info"><div class="name">${p.name}</div><div class="desc">${p.description||''}</div></div>
+      <span style="color:var(--on-surface-variant)">›</span>
+    </div>`).join('');
+}
+function openPlugin(id,page,name){
+  const url=apiBase()+'/plugins/'+id+'/'+page+'?token='+encodeURIComponent(S.token);
+  window.open(url,'_blank');
+}
+
+/* ===== 分支 ===== */
+async function loadBranches(){
+  try{
+    const b=await api(S.srv+'/v1/branches');
+    const arr=b.branches||b||[];
+    if(arr.length){
+      const sel=$('branchSel'); sel.style.display='block'; sel.innerHTML='';
+      arr.forEach(x=>{
+        const opt=document.createElement('option'); opt.value=x; opt.textContent=x||'default'; sel.appendChild(opt);
+      });
+      sel.value=S.branch||'';
+      $('branchList').innerHTML=arr.map(x=>`<span class="chip ${x===S.branch?'on':''}">${x||'default'}</span>`).join(' ');
+    }
+  }catch(e){ /* 无分支接口，忽略 */ }
+}
+function switchBranch(v){ S.branch=v; localStorage.setItem('agw-user',JSON.stringify({srv:S.srv,token:S.token,branch:v})); toast('已切换到分支: '+(v||'default')); if($('page-models').classList.contains('active')) loadModels(); }
+
+/* ===== 模型广场 ===== */
+async function loadModels(){
+  if(!S.models.length){
+    try{ const r=await api(apiBase()+'/v1/models'); S.models=r.data||r.models||[]; }
+    catch(e){ $('modelList').innerHTML='<div class="empty">加载失败: '+e.message+'</div>'; return }
+  }
+  filterModels();
+}
+function filterModels(){
+  const q=($('modelSearch').value||'').toLowerCase();
+  const f=S.models.filter(m=>{ const id=typeof m==='string'?m:(m.id||''); return id.toLowerCase().includes(q) });
+  if(!f.length){ $('modelList').innerHTML='<div class="empty">无匹配模型</div>'; return }
+  $('modelList').innerHTML=f.map(m=>{ const id=typeof m==='string'?m:(m.id||'?'); return `<div class="list-item" onclick="copyText('${id}')"><span class="ic">🤖</span><div class="info"><div class="name mono">${id}</div></div><span style="color:var(--on-surface-variant)">复制</span></div>` }).join('');
+}
+
+/* ===== 额度 ===== */
+async function loadCredits(){
+  try{
+    const c=await api(S.srv+'/credits');
+    $('crName').textContent=c.name||'';
+    const remain=c.remainingTokens;
+    if(c.unlimited || c.quotaTokens===0){ $('crRemain').textContent='∞'; $('crBar').style.width='100%'; }
+    else{ $('crRemain').textContent=fmtNum(remain); const pct=c.quotaTokens?Math.max(0,Math.min(100,remain/c.quotaTokens*100)):0; $('crBar').style.width=pct+'%'; }
+    $('crTotal').textContent=c.unlimited?'无限':fmtNum(c.quotaTokens);
+    $('crUsed').textContent=fmtNum(c.usedTokens);
+    $('crExp').textContent=c.expiresAt?new Date(c.expiresAt).toLocaleString():'永久';
+    const models=c.models||[];
+    $('crModels').innerHTML=models.length?models.map(m=>`<span class="chip on">${m}</span>`).join(' '):'<div class="hint">全部模型可用</div>';
+  }catch(e){ $('crRemain').textContent='获取失败'; $('crRemain').style.fontSize='18px' }
+}
+
+/* ===== 个人 ===== */
+async function loadProfile(){
+  try{
+    const me=await api(S.srv+'/auth/me');
+    S.me=me;
+    $('pfUid').textContent=me.user?.uid||'-';
+    $('pfName').textContent=me.user?.name||'-';
+    $('pfNewName').value=me.user?.name||'';
+    // 卡密列表(仅主卡可管理)
+    if(me.keys){
+      $('pfKeyHint').textContent='你是主卡用户，可管理子卡密';
+      $('mkBtn').style.display='block';
+      renderKeys(me.keys);
+    } else if(me.key){
+      $('pfKeyHint').textContent='当前卡密: '+(me.key.name||'');
+      $('mkBtn').style.display='none';
+      $('keyList').innerHTML=`<div class="key-item"><div class="kt"><span class="kk">${S.token}</span></div><div class="aa">名称: ${me.key.name||'-'} · 用量: ${fmtNum(me.key.usedTokens)}</div></div>`;
+    }
+  }catch(e){ $('pfUid').textContent='加载失败' }
+}
+function renderKeys(keys){
+  $('keyList').innerHTML=keys.map(k=>`
+    <div class="key-item">
+      <div class="kt"><span class="kk">${k.key}</span><button class="btn-text" onclick="delKey('${k.key}')">删除</button></div>
+      <div class="aa">名称: ${k.name||'-'} | 用量: ${fmtNum(k.usedTokens)} | ${k.enable?'<span class="chip on">启用</span>':'<span class="chip off">禁用</span>'}</div>
+    </div>`).join('');
+}
+async function saveProfile(){
+  const name=$('pfNewName').value.trim();
+  if(!name) return toast('请输入昵称');
+  try{ await api(S.srv+'/auth/profile',{method:'POST',body:JSON.stringify({nickname:name})}); toast('已保存'); $('pfName').textContent=name; }
+  catch(e){ toast('失败: '+e.message) }
+}
+function showMakeKey(){
+  showModal(`<h3>发新卡密</h3>
+    <div class="field"><label>名称(可选)</label><input id="mkName" placeholder="给朋友用"></div>
+    <div class="field"><label>额度上限(留空=继承父卡剩余)</label><input id="mkQuota" type="number" placeholder="如 100000"></div>
+    <div class="field"><label>允许的模型(逗号分隔,留空=继承)</label><input id="mkModels" placeholder="deepseek-chat,..."></div>
+    <div class="hint">子卡额度不能超过父卡剩余，模型不能超出父卡范围。</div>
+    <div class="btns"><button class="btn btn-tonal" onclick="hideModal()">取消</button><button class="btn btn-primary" onclick="makeKey()">创建</button></div>`);
+}
+async function makeKey(){
+  const body={};
+  const n=$('mkName').value.trim(); if(n) body.name=n;
+  const q=$('mkQuota').value.trim(); if(q) body.quotaTokens=Number(q);
+  const m=$('mkModels').value.trim(); if(m) body.models=m.split(',').map(x=>x.trim()).filter(Boolean);
+  try{ const r=await api(S.srv+'/auth/mykeys',{method:'POST',body:JSON.stringify(body)}); hideModal(); toast('已创建: '+(r.key||r.keys?.[0]?.key||'')); loadProfile(); }
+  catch(e){ toast('失败: '+e.message) }
+}
+async function delKey(k){
+  if(!confirm('删除此卡密？不可恢复')) return;
+  try{ await api(S.srv+'/auth/mykeys-delete',{method:'POST',body:JSON.stringify({key:k})}); toast('已删除'); loadProfile(); }
+  catch(e){ toast('失败: '+e.message) }
+}
+
+/* ===== 弹窗 ===== */
+function showModal(html){ $('modal').innerHTML=html; $('scrim').classList.add('show') }
+function hideModal(){ $('scrim').classList.remove('show') }
+$('scrim').addEventListener('click',e=>{ if(e.target===$('scrim')) hideModal() });
+function copyText(t){ navigator.clipboard.writeText(t).then(()=>toast('已复制')).catch(()=>{ const e=document.createElement('textarea');e.value=t;document.body.appendChild(e);e.select();document.execCommand('copy');e.remove();toast('已复制') }) }
+
+/* ===== 启动: 自动登录 ===== */
+(function(){
+  const s=localStorage.getItem('agw-user');
+  if(s){ try{ const o=JSON.parse(s); S.srv=o.srv; S.token=o.token; S.branch=o.branch||''; enterApp(); return }catch(e){} }
+})();
+</script>
+</body>
+</html>

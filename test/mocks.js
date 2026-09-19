@@ -1,11 +1,11 @@
 'use strict';
-/* 测试用 mock: 三种格式上游 + SOCKS5 代理 + HTTP CONNECT 代理 */
+
 const http = require('http');
 const https = require('https');
 const net = require('net');
 const fs = require('fs');
 
-/* ---------- OpenAI 格式上游 ---------- */
+
 function makeOpenAIMock(opts = {}) {
   const state = { lastReq: null };
   const handler = (req, res) => {
@@ -43,7 +43,7 @@ function makeOpenAIMock(opts = {}) {
   return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, state, proto: opts.tls ? 'https' : 'http' })));
 }
 
-/* ---------- Claude 格式上游 ---------- */
+
 function makeClaudeMock(opts = {}) {
   const state = { lastReq: null };
   const server = http.createServer((req, res) => {
@@ -78,7 +78,7 @@ function makeClaudeMock(opts = {}) {
   return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, state })));
 }
 
-/* ---------- Gemini 格式上游 ---------- */
+
 function makeGeminiMock(opts = {}) {
   const state = { lastReq: null };
   const server = http.createServer((req, res) => {
@@ -101,7 +101,7 @@ function makeGeminiMock(opts = {}) {
           for (const c of chunks) res.write('data: ' + JSON.stringify(c) + '\n\n');
           res.end();
         } else {
-          // JSON 数组分块流
+          
           res.write('[');
           chunks.forEach((c, i) => res.write((i ? ',' : '') + JSON.stringify(c)));
           res.write(']');
@@ -119,7 +119,7 @@ function makeGeminiMock(opts = {}) {
   return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, state })));
 }
 
-/* ---------- SOCKS5 代理 mock ---------- */
+
 function makeSocks5Mock(opts = {}) {
   const state = { conns: 0 };
   const server = net.createServer(sock => {
@@ -128,7 +128,7 @@ function makeSocks5Mock(opts = {}) {
     let buf = Buffer.alloc(0);
     let up = null;
     function pump() {
-      if (up) { // 隧道已建立: 残留数据转发给目标, 之后由 pipe 接管
+      if (up) { 
         if (buf.length) { up.write(buf); buf = Buffer.alloc(0); }
         return;
       }
@@ -151,7 +151,7 @@ function makeSocks5Mock(opts = {}) {
         }
       }
       if (stage === 1 && buf.length >= 2) {
-        // RFC 1929: [VER=1, ULEN, USER, PLEN, PASS]
+        
         const ulen = buf[1];
         if (buf.length < 2 + ulen + 1) return;
         const plen = buf[2 + ulen];
@@ -177,8 +177,8 @@ function makeSocks5Mock(opts = {}) {
         up = net.connect(port, host, () => {
           state.conns++;
           sock.write(Buffer.from([5, 0, 0, 1, 127, 0, 0, 1, 0, 0]));
-          sock.removeListener('data', onData); // 停止 pump, 交给 pipe
-          if (buf.length) { up.write(buf); buf = Buffer.alloc(0); } // CONNECT 与后续请求合并到达的残留
+          sock.removeListener('data', onData); 
+          if (buf.length) { up.write(buf); buf = Buffer.alloc(0); } 
           up.pipe(sock);
           sock.pipe(up);
         });
@@ -197,7 +197,7 @@ function makeSocks5Mock(opts = {}) {
   return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, state })));
 }
 
-/* ---------- HTTP CONNECT 代理 mock ---------- */
+
 function makeHttpConnectMock() {
   const state = { conns: 0, sawAuth: null };
   const server = http.createServer((req, res) => { res.writeHead(405); res.end('use CONNECT'); });
@@ -221,7 +221,7 @@ function makeHttpConnectMock() {
   return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, state })));
 }
 
-/* ---------- 自签证书 ---------- */
+
 function ensureCerts(dir) {
   const cert = dir + '/cert.pem', key = dir + '/key.pem';
   if (fs.existsSync(cert) && fs.existsSync(key)) return { cert: fs.readFileSync(cert), key: fs.readFileSync(key) };

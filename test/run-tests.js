@@ -1,5 +1,5 @@
 'use strict';
-/* ai-gateway 测试: 单元(转换器) + E2E(9组合互转) + 代理隧道 + 鉴权 + 路由 + 多实例 */
+
 const http = require('http');
 const G = require('../gateway.js');
 const M = require('./mocks.js');
@@ -96,10 +96,10 @@ function respText(client, raw) {
 }
 
 async function main() {
-  /* ============ Part 1: 单元测试 — 转换器 ============ */
+  
   console.log('── Part 1: 转换器单元测试 ──');
   {
-    // canonical → Claude body
+    
     const c = {
       model: 'claude-3', stream: false,
       messages: [
@@ -124,7 +124,7 @@ async function main() {
     eq(b.tools[0].input_schema.type, 'object', 'claude body: input_schema');
     eq(b.max_tokens, 100, 'claude body: max_tokens');
 
-    // canonical → Gemini body
+    
     const gb = G.canonicalToGeminiBody(c);
     eq(gb.systemInstruction.parts[0].text, 'sys', 'gemini body: systemInstruction');
     eq(gb.contents.length, 3, 'gemini body: 3 contents');
@@ -136,7 +136,7 @@ async function main() {
     eq(gb.tools[0].functionDeclarations[0].name, 'get_weather', 'gemini body: functionDeclarations');
     eq(gb.generationConfig.maxOutputTokens, 100, 'gemini body: maxOutputTokens');
 
-    // Claude 入 → canonical
+    
     const claudeBody = {
       model: 'x', max_tokens: 50, system: 'sys',
       messages: [
@@ -156,7 +156,7 @@ async function main() {
     eq(can.tools[0].function.name, 'f', 'claude入: tools → OpenAI 形');
     eq(can.max_tokens, 50, 'claude入: max_tokens');
 
-    // Claude 入含图片(base64)
+    
     const canImg = G.claudeToCanonical({
       model: 'x', max_tokens: 10,
       messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAA' } }, { type: 'text', text: '这是什么' }] }],
@@ -164,7 +164,7 @@ async function main() {
     eq(canImg.messages[0].content[0].type, 'image_url', 'claude入: base64图 → image_url');
     ok(canImg.messages[0].content[0].image_url.url.startsWith('data:image/png;base64,AAA'), 'claude入: data URI 正确');
 
-    // Gemini 入 → canonical
+    
     const gmBody = {
       systemInstruction: { parts: [{ text: 'sys' }] },
       contents: [
@@ -185,7 +185,7 @@ async function main() {
     eq(can2.tools[0].function.name, 'f', 'gemini入: functionDeclarations → tools');
     eq(can2.max_tokens, 77, 'gemini入: maxOutputTokens');
 
-    // 响应: claude resp → canonical → openai/gemini resp
+    
     const cr = G.claudeRespToCanonical({ content: [{ type: 'text', text: 'hello' }], stop_reason: 'end_turn', usage: { input_tokens: 3, output_tokens: 4 } });
     eq(cr.text, 'hello', 'claude resp: text');
     eq(cr.usage.input, 3, 'claude resp: input_tokens');
@@ -197,7 +197,7 @@ async function main() {
     eq(gr.candidates[0].content.parts[0].text, 'hello', 'gemini resp: parts text');
     eq(gr.usageMetadata.promptTokenCount, 3, 'gemini resp: usage 映射');
 
-    // 响应: gemini resp → canonical (含 tool)
+    
     const gResp = {
       candidates: [{ content: { parts: [{ functionCall: { name: 'fn1', args: { x: 2 } } }] }, finishReason: 'STOP' }],
       usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 2 },
@@ -212,7 +212,7 @@ async function main() {
     eq(cl2.stop_reason, 'tool_use', 'claude resp: tool_use stop_reason');
     eq(cl2.content[0].type, 'tool_use', 'claude resp: tool_use block');
 
-    // 流式: openai 上游 chunks → 事件
+    
     const evs = [];
     const p = new G.UpstreamStreamParser('openai', e => evs.push(e));
     p.handle({ choices: [{ delta: { role: 'assistant', content: '' } }] });
@@ -226,7 +226,7 @@ async function main() {
     eq(evs[evs.length - 1].usage.input, 5, 'openai流: usage');
     eq(evs[evs.length - 1].finish_reason, 'stop', 'openai流: finish_reason');
 
-    // 流式: claude 上游事件 → 事件
+    
     const evs2 = [];
     const p2 = new G.UpstreamStreamParser('claude', e => evs2.push(e));
     p2.handle({ type: 'message_start', message: { usage: { input_tokens: 8 } } });
@@ -239,7 +239,7 @@ async function main() {
     eq(end2.usage.output, 3, 'claude流: output usage');
     eq(end2.finish_reason, 'stop', 'claude流: finish');
 
-    // 流式: claude 上游工具调用 → openai writer
+    
     const res4 = fakeRes();
     const w4 = G.makeWriter('openai', res4, 'm');
     const p4 = new G.UpstreamStreamParser('claude', e => w4.onEvent(e));
@@ -256,7 +256,7 @@ async function main() {
     eq(s4.toolArgs['0'].args, '{"q":"x"}', 'claude上游→openai流: tool args 增量拼接');
     eq(s4.finish, 'tool_calls', 'claude上游→openai流: finish_reason');
 
-    // writer: claude 出口
+    
     const res1 = fakeRes();
     const w1 = G.makeWriter('claude', res1, 'm');
     w1.onEvent({ type: 'text', t: 'he' });
@@ -267,7 +267,7 @@ async function main() {
     ok(s1.includes('"type":"text_delta","text":"he"'), 'claude writer: text_delta');
     ok(s1.includes('event: message_stop'), 'claude writer: message_stop');
 
-    // writer: openai 出口
+    
     const res2 = fakeRes();
     const w2 = G.makeWriter('openai', res2, 'm');
     w2.onEvent({ type: 'text', t: 'a' });
@@ -276,7 +276,7 @@ async function main() {
     ok(s2.includes('"content":"a"'), 'openai writer: content chunk');
     ok(s2.trimEnd().endsWith('data: [DONE]') && res2.ended, 'openai writer: [DONE] 结束');
 
-    // writer: gemini 数组流出口
+    
     const res3 = fakeRes();
     const w3 = G.makeWriter('gemini', res3, 'm', { geminiArray: true });
     w3.onEvent({ type: 'text', t: 'z' });
@@ -287,7 +287,7 @@ async function main() {
     const arr = JSON.parse(s3);
     eq(arr[0].candidates[0].content.parts[0].text, 'z', 'gemini数组流: 可解析');
 
-    // writer: gemini 工具调用(SSE)
+    
     const res5 = fakeRes();
     const w5 = G.makeWriter('gemini', res5, 'm');
     w5.onEvent({ type: 'tool_start', i: 0, id: 'c1', name: 'search' });
@@ -300,7 +300,7 @@ async function main() {
     ok(callChunk && callChunk.candidates[0].content.parts[0].functionCall.args.k === 1, 'gemini writer: functionCall args 增量拼接');
   }
 
-  /* ============ Part 2: E2E — 9 组合互转 ============ */
+  
   console.log('── Part 2: E2E 9组合互转(非流式+流式) ──');
   const openaiMock = await M.makeOpenAIMock();
   const claudeMock = await M.makeClaudeMock();
@@ -339,16 +339,16 @@ async function main() {
   };
 
   for (const cs of cases) {
-    // 非流式
+    
     const r = await post(gw.port, reqPath(cs.client, cs.model, false), reqBody(cs.client, cs.model, false));
     eq(r.status, 200, `E2E ${cs.client}>${cs.mt} 非流式: status`);
     eq(respText(cs.client, r.raw), '你好，世界', `E2E ${cs.client}>${cs.mt} 非流式: 文本`);
     const lr = cs.mock.state.lastReq;
-    // 上游鉴权头
+    
     if (cs.mt === 'openai') eq(lr.headers.authorization, 'Bearer sk-test', `E2E ${cs.client}>${cs.mt}: 上游 key`);
     if (cs.mt === 'claude') eq(lr.headers['x-api-key'], 'ak-test', `E2E ${cs.client}>${cs.mt}: 上游 key`);
     if (cs.mt === 'gemini') eq(lr.headers['x-goog-api-key'], 'gm-test', `E2E ${cs.client}>${cs.mt}: 上游 key`);
-    // 上游收到格式正确
+    
     const ub = lr.body;
     if (cs.mt === 'openai') { eq(ub.messages[1].content, 'U1', `E2E ${cs.client}>openai: user 文本`); ok(ub.messages.some(m => m.role === 'system' && m.content === 'S1'), `E2E ${cs.client}>openai: system`); }
     if (cs.mt === 'claude') { eq(ub.system, 'S1', `E2E ${cs.client}>claude: system`); const u0 = Array.isArray(ub.messages[0].content) ? ub.messages[0].content[0].text : ub.messages[0].content; eq(u0, 'U1', `E2E ${cs.client}>claude: user`); eq(ub.max_tokens, 100, `E2E ${cs.client}>claude: max_tokens`); }
@@ -377,7 +377,7 @@ async function main() {
       eq(st.finish, 'STOP', `E2E ${cs.client}>${cs.mt} 流式: finishReason`);
     }
   }
-  // gemini→gemini 直通: 无 alt=sse 的 JSON 数组流
+  
   {
     const r = await post(gw.port, '/v1beta/models/m-gemini:streamGenerateContent', reqBody('gemini', 'm-gemini', true));
     eq(r.status, 200, 'E2E gemini直通数组流: status');
@@ -386,7 +386,7 @@ async function main() {
     const text = arr.map(c => (c.candidates[0].content.parts || []).map(p => p.text || '').join('')).join('');
     eq(text, '你好，世界', 'E2E gemini直通数组流: 文本');
   }
-  // 直通无损: openai→openai body 原样
+  
   {
     await post(gw.port, '/v1/chat/completions', { model: 'm-openai', messages: [{ role: 'user', content: 'X' }], response_format: { type: 'json_object' }, custom_field: 123 });
     const lb = openaiMock.state.lastReq.body;
@@ -394,7 +394,7 @@ async function main() {
     eq(lb.response_format.type, 'json_object', '直通: response_format 保留');
   }
 
-  /* ============ Part 3: 代理隧道 ============ */
+  
   console.log('── Part 3: SOCKS5 / HTTP 代理 ──');
   const socksA = await M.makeSocks5Mock({});
   {
@@ -465,7 +465,7 @@ async function main() {
     }
   }
 
-  /* ============ Part 4: 网关鉴权 ============ */
+  
   console.log('── Part 4: 网关鉴权 ──');
   {
     const cfgK = {
@@ -486,7 +486,7 @@ async function main() {
     eq(r5.status, 401, '鉴权: models 列表也要 key');
   }
 
-  /* ============ Part 5: 渠道路由 ============ */
+  
   console.log('── Part 5: 渠道路由 ──');
   {
     const cfgR = {
@@ -504,7 +504,7 @@ async function main() {
     eq(claudeMock.state.lastReq.body.model, 'my', '路由: models 列表命中');
     await post(gr.port, '/v1/chat/completions', { model: 'zzz-unknown', messages: [{ role: 'user', content: 'c' }] });
     ok(geminiMock.state.lastReq.path.includes('zzz-unknown'), '路由: 未知名落 default 渠道');
-    // models 列表
+    
     const m1 = await get(gr.port, '/v1/models');
     const j1 = JSON.parse(m1.raw);
     ok(j1.data.some(x => x.id === 'mx') && j1.data.some(x => x.id === 'my'), 'models: /v1/models 聚合');
@@ -513,7 +513,7 @@ async function main() {
     ok(j2.models.some(x => x.name === 'models/mx'), 'models: /v1beta/models 聚合');
   }
 
-  /* ============ Part 6: 多实例 ============ */
+  
   console.log('── Part 6: 多实例 ──');
   {
     const cfgA = { listen: { host: '127.0.0.1', port: 0 }, channels: [{ name: 'a', type: 'openai', baseUrl: `http://127.0.0.1:${openaiMock.port}`, apiKey: 'k', default: true }] };
@@ -530,10 +530,10 @@ async function main() {
     eq(claudeMock.state.lastReq.body.messages[0].content, 'multi', '多实例: B 转到 claude 上游');
   }
 
-  /* ============ Part 7: 轮询 (Round-Robin) ============ */
+  
   console.log('── Part 7: 轮询 ──');
   {
-    // 两个 openai mock, 同一模型, 网关应轮流分发
+    
     const oa1 = await M.makeOpenAIMock();
     const oa2 = await M.makeOpenAIMock();
     const cfgRR = {
@@ -548,28 +548,28 @@ async function main() {
     for (let i = 0; i < 6; i++) {
       const r = await post(gw.port, '/v1/chat/completions', { model: 'm-rr', messages: [{ role: 'user', content: String(i) }] });
       eq(r.status, 200, `轮询 #${i}: status`);
-      // 哪个 mock 收到了? 用 lastReq 的 apiKey 区分
+      
       const a1 = oa1.state.lastReq, a2 = oa2.state.lastReq;
-      // 比较最近一次请求的内容来判断
+      
       hits.push(a1 && a1.body.messages[0].content === String(i) ? 'A' : (a2 && a2.body.messages[0].content === String(i) ? 'B' : '?'));
     }
-    // 6 次请求应交替 A B A B A B (round-robin)
+    
     const aCount = hits.filter(h => h === 'A').length;
     const bCount = hits.filter(h => h === 'B').length;
     eq(aCount, 3, '轮询: A 收到 3 次');
     eq(bCount, 3, '轮询: B 收到 3 次');
-    // 验证严格交替(不相邻重复)
+    
     ok(hits[0] !== hits[1] && hits[1] !== hits[2], '轮询: 严格交替不相邻重复');
     console.log('  轮询分布:', hits.join(' '));
   }
 
-  /* ============ Part 8: 故障切换 (Failover) ============ */
+  
   console.log('── Part 8: 故障切换 ──');
   {
-    // 渠道1 返回 429(限流), 渠道2 正常 → 应自动切到渠道2
-    // 注意: 轮询会旋转起始位置, 所以多发几次确保至少有一次从坏渠道开始
+    
+    
     const badMock = await M.makeOpenAIMock();
-    // 把 badMock 改成总是返回 429
+    
     badMock.server.removeAllListeners('request');
     badMock.server.on('request', (req, res) => {
       let b = ''; req.on('data', c => b += c); req.on('end', () => {
@@ -587,7 +587,7 @@ async function main() {
       ],
     };
     const gw = await G.startServer(cfgFO, { port: 0 });
-    // 发多次(轮询旋转), 每次都应成功(不管从哪个开始, 429的那次会切到好的)
+    
     let allOk = true, badTried = false;
     for (let i = 0; i < 4; i++) {
       const r = await post(gw.port, '/v1/chat/completions', { model: 'm-fo', messages: [{ role: 'user', content: 'fo-' + i }] });
@@ -597,12 +597,12 @@ async function main() {
     ok(allOk, '故障切换: 429 后总是能切到好渠道, 全部返回 200');
     ok(badTried, '故障切换: 坏渠道至少被尝试过一次');
 
-    // 单次验证内容正确
+    
     const r = await post(gw.port, '/v1/chat/completions', { model: 'm-fo', messages: [{ role: 'user', content: 'failover-check' }] });
     eq(r.status, 200, '故障切换: 返回 200');
     eq(respText('openai', r.raw), '你好，世界', '故障切换: 切换后内容正确');
 
-    // 流式故障切换: 坏渠道 429 → 切好渠道流式
+    
     const r2 = await post(gw.port, '/v1/chat/completions', { model: 'm-fo', stream: true, messages: [{ role: 'user', content: 'fo-stream' }] });
     eq(r2.status, 200, '故障切换(流式): 429 后切换, 返回 200');
     const st2 = parseOpenAIStream(r2.raw);
@@ -610,7 +610,7 @@ async function main() {
     ok(r2.raw.includes('[DONE]'), '故障切换(流式): [DONE] 正常结束');
   }
   {
-    // 连接错误故障切换: 渠道1 指向不存在的端口 → 渠道2 正常
+    
     const goodMock2 = await M.makeOpenAIMock();
     const cfgFO2 = {
       listen: { host: '127.0.0.1', port: 0 },
@@ -625,7 +625,7 @@ async function main() {
     eq(goodMock2.state.lastReq.body.messages[0].content, 'conn-fail', '故障切换(连接失败): 好渠道收到');
   }
   {
-    // 不可重试错误(400): 不切换, 直接透传
+    
     const bad400 = await M.makeOpenAIMock();
     bad400.server.removeAllListeners('request');
     bad400.server.on('request', (req, res) => {
@@ -643,8 +643,8 @@ async function main() {
       ],
     };
     const gw = await G.startServer(cfgFO3, { port: 0 });
-    // 轮询旋转: 发4次, 当坏渠道排在第一位时会直接返回400(不切换)
-    // 当好渠道排第一时会返回200. 我们验证: 至少有一次拿到400且不切换
+    
+    
     let got400 = false, goodUntouchedWhen400 = true;
     for (let i = 0; i < 4; i++) {
       const before = goodMock3.state.lastReq ? goodMock3.state.lastReq.body.messages[0].content : null;
@@ -652,7 +652,7 @@ async function main() {
       if (r.status === 400) {
         got400 = true;
         const after = goodMock3.state.lastReq ? goodMock3.state.lastReq.body.messages[0].content : null;
-        if (after === 'nr400-' + i) goodUntouchedWhen400 = false; // 好渠道不该收到400那次
+        if (after === 'nr400-' + i) goodUntouchedWhen400 = false; 
         ok(r.raw.includes('bad request'), '不可重试(400): 错误体透传');
       }
     }
@@ -660,7 +660,7 @@ async function main() {
     ok(goodUntouchedWhen400, '不可重试(400): 400时不切换到其他渠道');
   }
   {
-    // 全部渠道都失败 → 返回 502
+    
     const badA = await M.makeOpenAIMock();
     const badB = await M.makeOpenAIMock();
     for (const bm of [badA, badB]) {
@@ -680,7 +680,7 @@ async function main() {
     ok(r.raw.includes('error') || r.raw.includes('failed'), '全部失败: 错误信息含详情');
   }
 
-  /* ============ 汇总 ============ */
+  
   console.log('──────────────────────────────');
   console.log(`通过 ${pass} 项, 失败 ${fail} 项`);
   if (fail) { console.log('失败明细:'); for (const f of failures) console.log('  - ' + f); }

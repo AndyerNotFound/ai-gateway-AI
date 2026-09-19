@@ -1,10 +1,10 @@
-/* 思考链精简(thinkingSummary)功能测试
- * A. truncateReasoning 纯函数
- * B. wrapThinkingSummary truncate 流式(mock writer)
- * C. summarizeReasoningText 降级(无模型→截断)
- * D. 端到端 truncate(mock上游→gateway→验证reasoning被截断)
- * E. 端到端 summarize(mock主上游+mock总结上游→gateway→验证reasoning是总结版)
- */
+
+
+
+
+
+
+
 const gw = require('../gateway.js');
 const http = require('http');
 const assert = require('assert');
@@ -15,7 +15,7 @@ async function okAsync(name, fn) { try { await fn(); console.log('  \x1b[32m✓\
 
 function mockWriter() { const ev = []; return { events: ev, onEvent(e) { ev.push(e); } }; }
 
-// 读流式 SSE 响应, 收集 reasoning_content 与 content
+
 function readStream(body) {
   let reasoning = '', content = '';
   for (const line of body.split('\n')) {
@@ -65,7 +65,7 @@ async function main() {
   ok('truncate 实时截断 + text 透传 + 段间双换行', () => {
     const w = mockWriter();
     const wrap = gw.wrapThinkingSummary(w, { enable: true, mode: 'truncate', maxCharsPerSegment: 5 }, {}, {});
-    // 真实思考链按行分段(带换行)
+    
     wrap.onEvent({ type: 'reasoning', t: '第一段思考\n' });
     wrap.onEvent({ type: 'reasoning', t: '第二段思考\n' });
     wrap.onEvent({ type: 'reasoning', t: '第三段尾巴' });
@@ -168,13 +168,13 @@ async function main() {
 
   console.log('\n=== F. summarize 顺序保证: reasoning 全部在正文前 ===');
   await okAsync('正文等在飞总结完成后发出, 顺序不乱', async () => {
-    // summer 故意慢 1.5s, 验证: 迟到的总结不会排到正文后面(用户报告的"思考里有正文"根因)
+    
     const upstream = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       const send = o => res.write('data: ' + JSON.stringify(o) + '\n\n');
-      // 一段足够长的思考(>200字触发分段总结)
+      
       send({ choices: [{ delta: { reasoning_content: 'A'.repeat(250) } }] });
-      // 紧接着正文(此时第一段总结还在进行中)
+      
       send({ choices: [{ delta: { content: '正文立刻就来' } }] });
       send({ choices: [{ delta: {}, finish_reason: 'stop' }] });
       res.write('data: [DONE]\n\n'); res.end();
@@ -201,7 +201,7 @@ async function main() {
       assert.strictEqual(content, '正文立刻就来', '正文完整');
       assert.strictEqual(resp.status, 200);
       assert.ok(reasoning.includes('总结回来了'), '总结结果应已 flush (end 等待 pending)');
-      // ★核心断言: SSE 流里总结(reasoning)必须出现在正文(content)之前
+      
       const iReason = resp.body.indexOf('总结回来了');
       const iContent = resp.body.indexOf('正文立刻就来');
       assert.ok(iReason !== -1 && iContent !== -1, '两段内容都应在流里');
@@ -212,14 +212,14 @@ async function main() {
 
   console.log('\n=== G. summarize 防护: text 打断后后续 reasoning 不进总结 ===');
   await okAsync('text 后的 reasoning 当正文透传, 不被总结', async () => {
-    // summer 记录收到的内容, 验证"正文内容"没被发去总结
+    
     let summerGot = [];
     const upstream = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       const send = o => res.write('data: ' + JSON.stringify(o) + '\n\n');
-      send({ choices: [{ delta: { reasoning_content: '这是一段很长的思考内容需要被总结掉'.repeat(10) } }] }); // >200字触发总结
-      send({ choices: [{ delta: { content: '这是真正的正文' } }] }); // text 打断思考
-      // 之后又来 reasoning(异常模型/或思考尾巴) — 不应进总结
+      send({ choices: [{ delta: { reasoning_content: '这是一段很长的思考内容需要被总结掉'.repeat(10) } }] }); 
+      send({ choices: [{ delta: { content: '这是真正的正文' } }] }); 
+      
       send({ choices: [{ delta: { reasoning_content: '这段不该被总结, 应当正文透传' } }] });
       send({ choices: [{ delta: {}, finish_reason: 'stop' }] });
       res.write('data: [DONE]\n\n'); res.end();
@@ -242,11 +242,11 @@ async function main() {
       const resp = await postStream(inst.port, { model: 'm', stream: true, messages: [{ role: 'user', content: 'hi' }] });
       assert.strictEqual(resp.status, 200);
       const { reasoning, content } = readStream(resp.body);
-      // 正文应完整透传
+      
       assert.ok(content.includes('这是真正的正文'), '正文应透传: ' + content);
-      // text 后的 reasoning "这段不该被总结" 应出现在输出里(当正文透传), 不在总结里
+      
       assert.ok(resp.body.includes('这段不该被总结') || reasoning.includes('这段不该被总结'), '后续 reasoning 应透传');
-      // summer 收到的内容里不应包含 "这段不该被总结"
+      
       const allSummer = summerGot.join('');
       assert.ok(!allSummer.includes('这段不该被总结'), '正文段不应被发去总结! summer got: ' + allSummer.slice(0, 80));
     } finally { inst.server.close(); upstream.close(); summer.close(); }
@@ -257,14 +257,14 @@ async function main() {
     const upstream = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       const send = o => res.write('data: ' + JSON.stringify(o) + '\n\n');
-      send({ choices: [{ delta: { reasoning_content: 'A'.repeat(250) } }] }); // >200 触发总结
+      send({ choices: [{ delta: { reasoning_content: 'A'.repeat(250) } }] }); 
       send({ choices: [{ delta: { content: '正文' } }] });
       send({ choices: [{ delta: {}, finish_reason: 'stop' }] });
       res.write('data: [DONE]\n\n'); res.end();
     });
     await new Promise(r => upstream.listen(0, '127.0.0.1', r));
     const upP = upstream.address().port;
-    // summer 故意返回空 content(模拟总结模型失败)
+    
     const summer = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ choices: [{ message: { content: '' } }] })); });
     await new Promise(r => summer.listen(0, '127.0.0.1', r));
     const sumP = summer.address().port;
@@ -280,7 +280,7 @@ async function main() {
       assert.strictEqual(resp.status, 200);
       const { reasoning, content } = readStream(resp.body);
       assert.strictEqual(content, '正文', '正文完整');
-      // 总结模型返回空 → 应回退截断, reasoning 不为空(不吞思考)
+      
       assert.ok(reasoning.length > 0, '总结失败应回退截断, 不应吞掉思考! got reasoning 为空');
       assert.ok(reasoning.includes('A') || reasoning.includes('•'), '回退截断应含原文片段, got: ' + reasoning.slice(0, 40));
     } finally { inst.server.close(); upstream.close(); summer.close(); }

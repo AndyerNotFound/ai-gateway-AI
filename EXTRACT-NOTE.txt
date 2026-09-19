@@ -1,0 +1,33 @@
+ai-gateway 源码提取包 (2026-09-19)
+==================================
+说明: 单文件 Node.js 网关 (零依赖), 含卡密 / 用户体系 / 多实例 / TOTP 二次验证 / 思考链精简。
+来源: 手机运行版 + 沙箱开发版逐文件核对 (代码 1:1 一致; README 与设计文档取最新版)
+
+【内容】
+ai-gateway/
+  gateway.js / admin.js / plugins.js / crypt.js / cfg-cli.js /
+  redact-cache.js / show-cfg.js     核心源码
+  user.html                          用户端网页
+  m3/                                管理面板 (Material Web, 含离线图标字体)
+  plugins/                           内置示例插件 hello / signin
+  docs/                              设计文档 CORE-DESIGN.md / PLUGIN-DESIGN.md
+  test/  tests/                      测试套件
+  gen-cert.js / gen-cert.sh          自签证书工具
+  install.sh / agw.sh / Dockerfile / docker-compose.yml /
+  docker-entrypoint.sh / .dockerignore
+  README.md
+
+【处理】
+- 去注释: js/html 注释移除 (字符串 / 模板字面量 / 正则字面量完整保留)
+- 脱敏: 真实局域网 IP 替换为示例 192.168.1.100;
+  面板与测试中的 sk-mock-xxxx / '演示卡' / demo-abc-xyz.trycloudflare.com 等均为演示数据
+- 已排除: config*.json (含真实渠道密钥) / .agwkey / *.pem 证书 / 日志 / 数据目录 / .bak 备份
+
+【验证 (全部真跑)】
+- node --check: 29/29 个 JS 通过
+- HTML 内联脚本: 全部通过 (含 type=module 页面)
+- 代码与手机运行版逐文件 md5 一致
+
+【运行】
+- node gateway.js start  (需 Node 18+; 需自备 config.json, 格式参考 README)
+- 管理面板: http://127.0.0.1:16384/admin ; 用户端: /user
