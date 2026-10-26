@@ -730,9 +730,29 @@ md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wg
       <div class="stat-row">
         <div class="stat-box"><div class="num" id="st-requests">-</div><div class="lbl">请求数</div></div>
         <div class="stat-box"><div class="num" id="st-errors">-</div><div class="lbl">错误数</div></div>
+        <div class="stat-box"><div class="num" id="st-intok">-</div><div class="lbl">输入 Token</div></div>
+        <div class="stat-box"><div class="num" id="st-outtok">-</div><div class="lbl">输出 Token</div></div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-box"><div class="num" id="st-cached">-</div><div class="lbl">缓存节省 Token</div></div>
+        <div class="stat-box"><div class="num" id="st-hitrate">-</div><div class="lbl">缓存命中率</div></div>
         <div class="stat-box"><div class="num" id="st-uptime">-</div><div class="lbl">运行时长</div></div>
         <div class="stat-box"><div class="num" id="st-rps">-</div><div class="lbl">平均 RPS</div></div>
       </div>
+      <md-filled-card>
+        <div class="card-head"><div class="card-title">Token 分布 <span style="font-size:11px;opacity:.6">(估算)</span></div></div>
+        <div id="st-dist" style="padding:4px 16px 12px"></div>
+      </md-filled-card>
+      <md-filled-card>
+        <div class="card-head"><div class="card-title">按模型</div></div>
+        <div id="st-model" style="padding:4px 16px 12px"></div>
+      </md-filled-card>
+      <md-filled-card>
+        <div class="card-head"><div class="card-title">每日用量</div></div>
+        <div class="tbl-wrap"><table class="tbl" id="st-daily" aria-label="每日用量">
+          <thead><tr><th style="width:28%">日期</th><th style="width:18%">请求</th><th style="width:18%">入Token</th><th style="width:18%">出Token</th><th style="width:18%">缓存</th></tr></thead>
+          <tbody></tbody></table></div>
+      </md-filled-card>
       <md-filled-card>
         <div class="card-head"><div class="card-title">渠道统计</div></div>
         <div class="tbl-wrap"><table class="tbl" id="st-table" aria-label="渠道统计">
@@ -1613,11 +1633,35 @@ async function renderStats(){
   const cur = await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
   try{
     const s=await adapter.getStats(cur,signal);
+    const chs=Object.entries(s.byChannel||{});
+    const sumIn=chs.reduce((t,[,d])=>t+(d.inputTokens||0),0);
+    const sumOut=chs.reduce((t,[,d])=>t+(d.outputTokens||0),0);
+    const models=Object.entries(s.byModel||{});
+    const sumCached=models.reduce((t,[,d])=>t+(d.cached||0),0);
     $('#st-requests').textContent=fmtNum(s.requests);
     $('#st-errors').textContent=fmtNum(s.errors);
+    $('#st-intok').textContent=fmtNum(sumIn);
+    $('#st-outtok').textContent=fmtNum(sumOut);
+    $('#st-cached').textContent=fmtNum(sumCached);
+    $('#st-hitrate').textContent=sumIn?((sumCached/sumIn)*100).toFixed(1)+'%':'-';
     $('#st-uptime').textContent=fmtDur(s.uptime);
     $('#st-rps').textContent=((s.requests||0)/(s.uptime||1)).toFixed(2);
-    const chs=Object.entries(s.byChannel||{});
+    // Token 分布(聚合全部分日)
+    const D={tools:0,system:0,user:0,reasoning:0,text:0,tool:0};
+    for(const v of Object.values(s.daily||{})){ for(const k of Object.keys(D)) D[k]+=(v.dist&&v.dist[k])||0; }
+    const dTot=Object.values(D).reduce((a,b)=>a+b,0);
+    const DN={tools:'工具定义',system:'提示词(系统+历史)',user:'用户输入',reasoning:'思考内容',text:'正文',tool:'ToolCall'};
+    const bar=(pct,label,val)=>`<div style="margin:6px 0"><div style="display:flex;justify-content:space-between;font-size:12px"><span>${esc(label)}</span><span class="mono" style="opacity:.8">${fmtNum(val)} · ${pct.toFixed(1)}%</span></div><div style="height:6px;border-radius:3px;background:var(--md-sys-color-surface-container-highest,#333);overflow:hidden"><div style="height:100%;width:${Math.max(pct,0.5)}%;background:var(--md-sys-color-primary)"></div></div></div>`;
+    $('#st-dist').innerHTML=dTot?Object.keys(DN).map(k=>bar(D[k]/dTot*100,DN[k],D[k])).join(''):'<div class="empty" style="padding:8px 0">暂无分布数据(需有请求流过)</div>';
+    // 按模型
+    const mRows=models.map(([m,d])=>({m,...d,sum:(d.inputTokens||0)+(d.outputTokens||0)})).sort((a,b)=>b.sum-a.sum);
+    const mTot=mRows.reduce((t,r)=>t+r.sum,0)||1;
+    $('#st-model').innerHTML=mRows.length?mRows.slice(0,12).map(r=>bar(r.sum/mTot*100,r.m,r.sum)).join(''):'<div class="empty" style="padding:8px 0">暂无数据</div>';
+    // 每日用量
+    const days=Object.entries(s.daily||{}).sort((a,b)=>b[0].localeCompare(a[0])).slice(0,14);
+    $('#st-daily tbody').innerHTML=days.length?days.map(([d,v])=>
+      `<tr><td class="mono">${esc(d)}</td><td>${fmtNum(v.requests)}</td><td>${fmtNum(v.inputTokens)}</td><td>${fmtNum(v.outputTokens)}</td><td>${fmtNum(v.cached)}</td></tr>`).join('')
+      :'<tr><td colspan="5" class="empty">暂无数据</td></tr>';
     $('#st-table tbody').innerHTML=chs.length?chs.map(([n,d])=>
       `<tr><td class="mono truncate" title="${escAttr(n)}">${esc(n)}</td><td>${fmtNum(d.requests)}</td><td>${fmtNum(d.inputTokens)}</td><td>${fmtNum(d.outputTokens)}</td></tr>`).join('')
       :'<tr><td colspan="4" class="empty">暂无数据</td></tr>';
