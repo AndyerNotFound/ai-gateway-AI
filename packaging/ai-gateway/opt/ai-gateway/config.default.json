@@ -1,9 +1,0 @@
-{
-  "listen": { "host": "127.0.0.1", "port": 16384 },
-  "gatewayKey": "",
-  "adminKey": "",
-  "channels": [
-    { "name": "default", "type": "openai", "baseUrl": "https://api.deepseek.com",
-      "apiKey": "PUT-YOUR-KEY-HERE", "default": true }
-  ]
-}

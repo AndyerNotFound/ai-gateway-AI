@@ -789,8 +789,54 @@ function cmdNotice(argv) {
   setTimeout(() => { if (!n) console.log('  一切正常'); }, 1500);
 }
 function cmdStat(argv) {
+  const ri = argv.indexOf('--refresh');
+  if (ri >= 0) {
+    const val = Number(argv[ri + 1]);
+    if (!(val >= 0)) return die('用法: agw stat --refresh <分钟> [实例]   (0=关闭)');
+    const inst = argv[ri + 2] && !argv[ri + 2].startsWith('-') ? argv[ri + 2] : 'default';
+    return (async () => {
+      const c = loadCfg(inst); c.statsFlushMin = val; saveCfg(inst, c);
+      console.log(`  ${inst}: statsFlushMin = ${val} (${val > 0 ? '每 ' + val + ' 分钟落盘 data/stats-' + inst + '.json' : '已关闭定时落盘'})`);
+      const { execFile } = require('child_process');
+      execFile('bash', [path.join(DIR, 'agw.sh'), 'restart'], { timeout: 60000 }, (err) => {
+        if (err) console.log(C.yel('  ⚠ 重启失败(' + (err.message || '?') + '), 下次启动生效'));
+        else console.log('  网关已重启生效');
+      });
+    })();
+  }
   const scope = (argv[0] || 'all').toLowerCase();
-  if (!['all', 'daily', 'weekly', 'monthly'].includes(scope)) { console.log(t('用法: agw stat <all|daily|weekly|monthly> [实例名, 缺省=default]')); return; }
+  const instArg = argv.find(a => !a.startsWith('-') && !['all', 'daily', 'weekly', 'monthly', 'models', 'dist'].includes(a));
+  if (scope === 'models' || scope === 'dist') {
+    const inst = instArg || 'default';
+    const sf = path.join(DATA_DIR, 'stats-' + inst + '.json');
+    if (!fs.existsSync(sf)) return console.log(C.dim(`  ${sf} 不存在 (先 agw stat --refresh <分钟> ${inst} 开启落盘)`));
+    let j; try { j = JSON.parse(fs.readFileSync(sf, 'utf8')); } catch (e) { return die('统计文件解析失败: ' + e.message); }
+    if (scope === 'models') {
+      const rows = Object.entries(j.byModel || {}).sort((a, b) => (b[1].inputTokens + b[1].outputTokens) - (a[1].inputTokens + a[1].outputTokens));
+      if (!rows.length) return console.log('  无按模型数据');
+      const total = rows.reduce((t, [, v]) => t + v.inputTokens + v.outputTokens, 0) || 1;
+      console.log(`  ${inst} 按模型 (since ${j.since || j.savedAt}):`);
+      for (const [m, v] of rows.slice(0, 15)) {
+        const sum = v.inputTokens + v.outputTokens;
+        const bar = '█'.repeat(Math.max(1, Math.round(sum / total * 24)));
+        console.log(`    ${pad(m.slice(0, 28), 30)} ${pad(String(v.requests), 6)}次  ${fmtTok(sum).padStart(8)} tok  ${bar} ${(sum / total * 100).toFixed(1)}%`);
+      }
+      return;
+    }
+    // dist: 聚合全部分日的六分类
+    const D = { tools: 0, system: 0, user: 0, reasoning: 0, text: 0, tool: 0 };
+    for (const v of Object.values(j.daily || {})) { for (const k of Object.keys(D)) D[k] += (v.dist && v.dist[k]) || 0; }
+    const tot = Object.values(D).reduce((a, b) => a + b, 0);
+    if (!tot) return console.log('  无 Token 分布数据');
+    console.log(`  ${inst} Token 分布 (估算, since ${j.since || j.savedAt}):`);
+    const names = { tools: '工具定义', system: '提示词(system+历史)', user: '用户输入', reasoning: '思考内容', text: '正文', tool: 'ToolCall' };
+    for (const k of Object.keys(names)) {
+      const bar = '█'.repeat(Math.max(1, Math.round(D[k] / tot * 24)));
+      console.log(`    ${pad(names[k], 20)} ${fmtTok(D[k]).padStart(9)} tok  ${bar} ${(D[k] / tot * 100).toFixed(1)}%`);
+    }
+    return;
+  }
+  if (!['all', 'daily', 'weekly', 'monthly'].includes(scope)) { console.log(t('用法: agw stat <all|daily|weekly|monthly|models|dist> [实例名] / agw stat --refresh <分钟> [实例]')); return; }
   const inst = argv[1] && !argv[1].startsWith('-') ? argv[1] : 'default';
   if (scope === 'all') {
     return api('GET', `/admin/api/stats?instance=${encodeURIComponent(inst)}`).then(d => {
@@ -872,6 +918,8 @@ function help(sub) {
   agw cloudflared <start|stop|restart|clear|status>
   agw notice                                    告警汇总(空key/卡到期/余额/证书)
   agw stat <all|daily|weekly|monthly> [实例]
+  agw stat --refresh <分钟> [实例]       统计落盘间隔(0=关; 写 config.statsFlushMin)
+  agw stat models|dist [实例]            按模型 / Token 分布(读落盘统计)
 
 配置
   agw encrypt|decrypr|recrypt <all|实例> [口令]

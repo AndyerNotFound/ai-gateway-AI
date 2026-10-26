@@ -1511,7 +1511,7 @@ class ResponsesStreamParser {
   finish() {
     if (this.finished) return;
     this.finished = true;
-    this.emit({ type: 'end', finish_reason: this.finishReason || 'stop', usage: this.usage || { input: 0, output: 0 } });
+    this.emit({ type: 'end', finish_reason: this.finishReason || 'stop', usage: this.usage || { input: 0, output: 0, cached: 0, reasoning: 0 } });
   }
 }
 
@@ -1851,7 +1851,12 @@ function openaiRespToCanonical(j) {
     reasoning: typeof msg.reasoning_content === 'string' ? msg.reasoning_content : (typeof msg.reasoning === 'string' ? msg.reasoning : undefined),
     tool_calls: toolCalls,
     finish_reason: ({ stop: 'stop', length: 'length', tool_calls: 'tool_calls', content_filter: 'content_filter', function_call: 'tool_calls' })[choice.finish_reason] || 'stop',
-    usage: { input: usage.prompt_tokens != null ? usage.prompt_tokens : 0, output: usage.completion_tokens != null ? usage.completion_tokens : 0 },
+    usage: {
+      input: usage.prompt_tokens != null ? usage.prompt_tokens : 0,
+      output: usage.completion_tokens != null ? usage.completion_tokens : 0,
+      cached: (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) || 0,
+      reasoning: (usage.completion_tokens_details && usage.completion_tokens_details.reasoning_tokens) || 0,
+    },
   };
 }
 function claudeRespToCanonical(j) {
@@ -1870,7 +1875,12 @@ function claudeRespToCanonical(j) {
     reasoning: reasoningParts.length ? reasoningParts.join('\n') : undefined,
     tool_calls: toolCalls.length ? toolCalls : undefined,
     finish_reason: ({ end_turn: 'stop', stop_sequence: 'stop', max_tokens: 'length', tool_use: 'tool_calls', refusal: 'content_filter' })[j.stop_reason] || 'stop',
-    usage: { input: usage.input_tokens != null ? usage.input_tokens : 0, output: usage.output_tokens != null ? usage.output_tokens : 0 },
+    usage: {
+      input: usage.input_tokens != null ? usage.input_tokens : 0,
+      output: usage.output_tokens != null ? usage.output_tokens : 0,
+      cached: (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0),
+      reasoning: 0,
+    },
   };
 }
 function geminiRespToCanonical(j) {
@@ -1897,7 +1907,12 @@ function geminiRespToCanonical(j) {
     reasoning: reasoningParts.length ? reasoningParts.join('\n') : undefined,
     tool_calls: toolCalls.length ? toolCalls : undefined,
     finish_reason: finish,
-    usage: { input: u.promptTokenCount != null ? u.promptTokenCount : (u.prompt_token_count || 0), output: u.candidatesTokenCount != null ? u.candidatesTokenCount : (u.candidates_token_count || 0) },
+    usage: {
+      input: u.promptTokenCount != null ? u.promptTokenCount : (u.prompt_token_count || 0),
+      output: u.candidatesTokenCount != null ? u.candidatesTokenCount : (u.candidates_token_count || 0),
+      cached: u.cachedContentTokenCount || u.cached_content_token_count || 0,
+      reasoning: u.thoughtsTokenCount || u.thoughts_token_count || 0,
+    },
   };
 }
 
@@ -1976,7 +1991,12 @@ function responsesRespToCanonical(j) {
     reasoning: reasoningParts.length ? reasoningParts.join('\n') : undefined,
     tool_calls: toolCalls.length ? toolCalls : undefined,
     finish_reason: finish,
-    usage: { input: usage.input_tokens != null ? usage.input_tokens : 0, output: usage.output_tokens != null ? usage.output_tokens : 0 },
+    usage: {
+      input: usage.input_tokens != null ? usage.input_tokens : 0,
+      output: usage.output_tokens != null ? usage.output_tokens : 0,
+      cached: (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0),
+      reasoning: 0,
+    },
   };
 }
 
@@ -2055,13 +2075,23 @@ class UpstreamStreamParser {
           if (tc.index != null && tc.index >= this.toolIdx) this.toolIdx = tc.index + 1;
         }
       }
-      if (j.usage) this.usage = { input: j.usage.prompt_tokens || 0, output: j.usage.completion_tokens || 0 };
+      if (j.usage) this.usage = {
+        input: j.usage.prompt_tokens || 0,
+        output: j.usage.completion_tokens || 0,
+        cached: (j.usage.prompt_tokens_details && j.usage.prompt_tokens_details.cached_tokens) || 0,
+        reasoning: (j.usage.completion_tokens_details && j.usage.completion_tokens_details.reasoning_tokens) || 0,
+      };
       if (ch.finish_reason) this.finishReason = ({ stop: 'stop', length: 'length', tool_calls: 'tool_calls', content_filter: 'content_filter', function_call: 'tool_calls' })[ch.finish_reason] || 'stop';
     } else if (this.format === 'claude') {
       const t = j.type;
       if (t === 'message_start') {
         const u = (j.message && j.message.usage) || {};
-        this.usage = { input: u.input_tokens || 0, output: (this.usage && this.usage.output) || 0 };
+        this.usage = {
+          input: u.input_tokens || 0,
+          output: (this.usage && this.usage.output) || 0,
+          cached: (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0),
+          reasoning: 0,
+        };
         evs.push({ type: 'start', usage: { input: this.usage.input } });
       } else if (t === 'content_block_start') {
         const b = j.content_block || {};
@@ -2074,7 +2104,12 @@ class UpstreamStreamParser {
       } else if (t === 'message_delta') {
         const d = j.delta || {};
         if (d.stop_reason) this.finishReason = ({ end_turn: 'stop', stop_sequence: 'stop', max_tokens: 'length', tool_use: 'tool_calls', refusal: 'content_filter' })[d.stop_reason] || 'stop';
-        if (j.usage && j.usage.output_tokens != null) this.usage = { input: (this.usage && this.usage.input) || 0, output: j.usage.output_tokens };
+        if (j.usage && j.usage.output_tokens != null) this.usage = {
+          input: (this.usage && this.usage.input) || 0,
+          output: j.usage.output_tokens,
+          cached: (this.usage && this.usage.cached) || (j.usage.cache_read_input_tokens || 0) + (j.usage.cache_creation_input_tokens || 0),
+          reasoning: (j.usage && (j.usage.reasoning_tokens != null ? j.usage.reasoning_tokens : 0)) || (this.usage && this.usage.reasoning) || 0,
+        };
       }
       // message_stop / ping / error: end 统一在 finish() 发
     } else { // gemini
@@ -2091,7 +2126,12 @@ class UpstreamStreamParser {
         }
       }
       const u = j.usageMetadata || j.usage_metadata;
-      if (u) this.usage = { input: u.promptTokenCount || 0, output: u.candidatesTokenCount || 0 };
+      if (u) this.usage = {
+        input: u.promptTokenCount || 0,
+        output: u.candidatesTokenCount || 0,
+        cached: u.cachedContentTokenCount || u.cached_content_token_count || 0,
+        reasoning: u.thoughtsTokenCount || u.thoughts_token_count || 0,
+      };
       const fr = cand.finishReason || cand.finish_reason;
       if (fr) this.finishReason = ({ STOP: 'stop', MAX_TOKENS: 'length', SAFETY: 'content_filter', RECITATION: 'content_filter' })[String(fr).toUpperCase()] || 'stop';
     }
@@ -2100,7 +2140,7 @@ class UpstreamStreamParser {
   finish() {
     if (this.finished) return;
     this.finished = true;
-    this.emit({ type: 'end', finish_reason: this.finishReason || 'stop', usage: this.usage || { input: 0, output: 0 } });
+    this.emit({ type: 'end', finish_reason: this.finishReason || 'stop', usage: this.usage || { input: 0, output: 0, cached: 0, reasoning: 0 } });
   }
 }
 
@@ -2437,6 +2477,30 @@ function estimatePromptTokens(canonical, charsPerToken) {
   }
   if (Array.isArray(canonical && canonical.tools)) add(JSON.stringify(canonical.tools));
   return Math.ceil(cjk + other / cpt) + msgs.length * 4;
+}
+
+// 请求侧 Token 分布估算(2026-10-27): 工具定义/提示词(system)/用户输入 三段分开计
+function estimatePromptDist(canonical, charsPerToken) {
+  const cpt = Math.max(1, Number(charsPerToken) || 4);
+  const tokOf = (t) => {
+    const str = String(t || '');
+    if (!str) return 0;
+    const cjk = (str.match(CJK_RE) || []).length;
+    return Math.ceil(cjk + (str.length - cjk) / cpt);
+  };
+  const dist = { tools: 0, system: 0, user: 0 };
+  if (Array.isArray(canonical && canonical.tools)) dist.tools = tokOf(JSON.stringify(canonical.tools));
+  const msgs = Array.isArray(canonical && canonical.messages) ? canonical.messages : [];
+  for (const m of msgs) {
+    if (!m) continue;
+    if (m.role === 'system' || m.role === 'developer') { dist.system += tokOf(toText(m.content)) + 4; continue; }
+    if (m.role === 'user') { dist.user += tokOf(toText(m.content)) + 4; continue; }
+    // assistant/tool 消息(历史轮次)计入 system 池外的"提示词"仍偏粗——归入 system(上下文池)
+    if (Array.isArray(m.tool_calls)) for (const tc of m.tool_calls) { const fn = (tc && tc.function) || {}; dist.system += tokOf(fn.name) + tokOf(fn.arguments); }
+    dist.system += tokOf(toText(m.content)) + 4;
+  }
+  dist.system += Math.ceil(msgs.length * 0.5);
+  return dist;
 }
 
 // 记录最近一次请求的上下文占用(仅内存, 供悬浮球/面板读)
@@ -3208,6 +3272,8 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
           dec.end(); parser.finish();
           usageCapture.input = parser.usage ? parser.usage.input : 0;
           usageCapture.output = parser.usage ? parser.usage.output : 0;
+          usageCapture.cached = parser.usage ? (parser.usage.cached || 0) : 0;
+          usageCapture.reasoning = parser.usage ? (parser.usage.reasoning || 0) : 0;
           __settle(upRes.statusCode);
         } catch (e) { logErr('[stream] 结算失败，仍强制给下游收尾:', e.message); }
         /* ★有改写管道(inc 替换 / DSML 清洗)时, 收尾交给管道 —— 它得先冲掉末行残留与状态机残留;
@@ -3220,7 +3286,18 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
       upRes.on('data', c => chunks.push(c));
       upRes.on('end', () => {
         const j = safeParse(Buffer.concat(chunks).toString('utf8'));
-        if (j) { const cr = isResponsesUp ? responsesRespToCanonical(j) : UP_RESP[ch.type](j); usageCapture.input = cr.usage.input; usageCapture.output = cr.usage.output; }
+        if (j) {
+          const cr = isResponsesUp ? responsesRespToCanonical(j) : UP_RESP[ch.type](j);
+          usageCapture.input = cr.usage.input; usageCapture.output = cr.usage.output;
+          usageCapture.cached = cr.usage.cached || 0; usageCapture.reasoning = cr.usage.reasoning || 0;
+          try {
+            const __cpt = Math.max(1, Number((cfg.contextLimit || {}).charsPerToken) || 4);
+            const __tok = (t) => { const str = String(t || ''); if (!str) return 0; const cjk = (str.match(CJK_RE) || []).length; return Math.ceil(cjk + (str.length - cjk) / __cpt); };
+            respDist.reasoning = __tok(cr.reasoning);
+            respDist.text = __tok(cr.text);
+            if (Array.isArray(cr.tool_calls)) for (const tc of cr.tool_calls) { const fn = (tc && tc.function) || {}; respDist.tool += __tok(fn.name) + __tok(fn.arguments) + 8; }
+          } catch (_) {}
+        }
         __settle(upRes.statusCode);
       });
       upRes.on('error', (e) => { try { res.end(); } catch (_) {} __settle(502, '上游中断(非流式): ' + e.message); });
@@ -3270,6 +3347,19 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
     /* DSML 清洗放在最内层(紧贴 writer): 正文/思考在变成客户端格式前就已干净,
      * 也不会把内部标记喂给 thinkingSummary 的总结模型。 */
     const writer = wrapThinkingSummary(dsmlOn ? wrapDsmlClean(baseWriter, true, dsmlThink, dsmlOpts) : baseWriter, cfg.thinkingSummary, ch, cfg);
+    // 响应侧 Token 分布计数(旁路, 只数不转发; respDist 声明在 handleChat 顶层)
+    const __origOnEvent = writer.onEvent.bind(writer);
+    writer.onEvent = (ev) => {
+      try {
+        const cpt = Math.max(1, Number((cfg.contextLimit || {}).charsPerToken) || 4);
+        const tokOf = (t) => { const str = String(t || ''); if (!str) return 0; const cjk = (str.match(CJK_RE) || []).length; return Math.ceil(cjk + (str.length - cjk) / cpt); };
+        if (ev.type === 'reasoning') respDist.reasoning += tokOf(ev.t);
+        else if (ev.type === 'text') respDist.text += tokOf(ev.t);
+        else if (ev.type === 'tool_start') respDist.tool += tokOf(ev.name) + 8;
+        else if (ev.type === 'tool_delta') respDist.tool += tokOf(ev.s);
+      } catch (_) {}
+      return __origOnEvent(ev);
+    };
     const parser = isResponsesUp ? new ResponsesStreamParser(ev => {
       try { if (rpInc.length) rpWalk(ev, rpInc, 0, false); writer.onEvent(ev); } catch (e) { logErr('writer error:', e.message); }
     }) : new UpstreamStreamParser(ch.type, ev => {
@@ -3288,6 +3378,8 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
         dec.end(); parser.finish();
         usageCapture.input = parser.usage ? parser.usage.input : 0;
         usageCapture.output = parser.usage ? parser.usage.output : 0;
+        usageCapture.cached = parser.usage ? (parser.usage.cached || 0) : 0;
+        usageCapture.reasoning = parser.usage ? (parser.usage.reasoning || 0) : 0;
         __settle(200);
       } catch (e) { logErr('[stream] 转换路径结算失败，仍强制收尾:', e.message); }
       try { res.end(); } catch (_) {}
@@ -3420,7 +3512,8 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
   log('[req]', reqId, 'model=' + canonical.model, stream ? 'stream' : 'block',
     'tools=' + (Array.isArray(canonical.tools) ? canonical.tools.length : 0));
   const t0 = Date.now();
-  const usageCapture = { input: 0, output: 0 };
+  const usageCapture = { input: 0, output: 0, cached: 0, reasoning: 0 };
+  const respDist = { reasoning: 0, text: 0, tool: 0 }; // 响应侧分布计数(流式由 writer 钩子、非流式由 __settle 前填)
   // 首字时间(TTFB): 只记时间戳, 不改写内容
   let firstWriteAt = 0;
   try {
@@ -3505,6 +3598,25 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
         const __est = !usageCapture.input;
         const __inTok = usageCapture.input || estimatePromptTokens(canonical, (cfg.contextLimit || {}).charsPerToken || 4);
         recordContext(cfg, canonical.model, __inTok, usageCapture.output, ch.name, __est);
+        // ===== Token 分布 + daily/byModel 累加 (2026-10-27) =====
+        try {
+          const __cpt = Math.max(1, Number((cfg.contextLimit || {}).charsPerToken) || 4);
+          const __pd = __est ? { tools: 0, system: 0, user: 0 } : estimatePromptDist(canonical, __cpt);
+          const __rd = respDist || { reasoning: 0, text: 0, tool: 0 };
+          const __rdActual = usageCapture.reasoning ? usageCapture.reasoning : __rd.reasoning;
+          const __textTok = Math.max(0, (usageCapture.output || 0) - __rdActual - __rd.tool);
+          const __cacheSaved = usageCapture.cached || 0;
+          stats.byModel = stats.byModel || {};
+          const __bm = stats.byModel[canonical.model] = stats.byModel[canonical.model] || { requests: 0, inputTokens: 0, outputTokens: 0, cached: 0 };
+          __bm.requests++; __bm.inputTokens += __inTok; __bm.outputTokens += usageCapture.output || 0; __bm.cached += __cacheSaved;
+          const __day = new Date().toISOString().slice(0, 10);
+          stats.daily = stats.daily || {};
+          const __dd = stats.daily[__day] = stats.daily[__day] || { requests: 0, errors: 0, inputTokens: 0, outputTokens: 0, cached: 0, dist: { tools: 0, system: 0, user: 0, reasoning: 0, text: 0, tool: 0 } };
+          __dd.requests++; if (status >= 400) __dd.errors++;
+          __dd.inputTokens += __inTok; __dd.outputTokens += usageCapture.output || 0; __dd.cached += __cacheSaved;
+          __dd.dist.tools += __pd.tools; __dd.dist.system += __pd.system; __dd.dist.user += __pd.user;
+          __dd.dist.reasoning += __rdActual; __dd.dist.text += __textTok; __dd.dist.tool += __rd.tool;
+        } catch (__e) { try { logErr('[stat] 累加失败:', __e.message); } catch (_) {} }
         recordReq(status, ch.name, usageCapture.input, usageCapture.output);
       },
     };
@@ -4311,6 +4423,17 @@ function startServer(cfg, opts = {}) {
   setupProbe(cfg);
   if (PLUGINS) { try { PLUGINS.activateInstance(cfg._name || 'default', cfg, makeGatewayApi(cfg)); } catch (e) { logErr('[plugins] 激活失败: ' + e.message); } }
   cfg._stats = { startedAt: new Date().toISOString(), requests: 0, errors: 0, retries: 0, byChannel: {}, recent: [] };
+  try { // 冷启动恢复(单实例模式)
+    const sf = statsFlushFile(cfg);
+    if (fs.existsSync(sf)) {
+      const j = JSON.parse(fs.readFileSync(sf, 'utf8'));
+      cfg._stats.requests = j.requests || 0; cfg._stats.errors = j.errors || 0; cfg._stats.retries = j.retries || 0;
+      cfg._stats.byChannel = j.byChannel || {}; cfg._stats.byKey = j.byKey || {};
+      cfg._stats.byModel = j.byModel || {}; cfg._stats.daily = j.daily || {};
+      cfg._stats.startedAt = j.since || cfg._stats.startedAt;
+    }
+  } catch (_) {}
+  setupStatsFlush(cfg);
   const handler = (req, res) => {
     handleHttp(cfg, req, res).catch(e => {
       logErr('handler crash:', e);
@@ -4563,6 +4686,35 @@ function poolHandler(req, res) {
 }
 
 // 加载/热重载一个实例; 返回 cfg 或 null(配置文件不存在)
+// ===== 统计定时落盘 (2026-10-27) =====
+function statsFlushFile(cfg) {
+  const dir = path.join(path.dirname(cfg._configFile || process.cwd()));
+  return path.join(dir, 'stats-' + instName(cfg) + '.json');
+}
+function flushStats(cfg) {
+  try {
+    const st = cfg._stats; if (!st) return;
+    const dir = path.dirname(statsFlushFile(cfg));
+    fs.mkdirSync(dir, { recursive: true });
+    const snap = {
+      savedAt: new Date().toISOString(),
+      since: st.startedAt, requests: st.requests || 0, errors: st.errors || 0, retries: st.retries || 0,
+      byChannel: st.byChannel || {}, byKey: st.byKey || {}, byModel: st.byModel || {}, daily: st.daily || {},
+    };
+    const tmp = statsFlushFile(cfg) + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(snap, null, 1));
+    fs.renameSync(tmp, statsFlushFile(cfg));
+  } catch (e) { try { logErr('[stats-flush] 失败:', e.message); } catch (_) {} }
+}
+function setupStatsFlush(cfg) {
+  if (cfg._statsFlushTimer) { clearInterval(cfg._statsFlushTimer); cfg._statsFlushTimer = null; }
+  const min = Number(cfg.statsFlushMin);
+  if (!min || min <= 0) return; // 0/未设 = 关闭
+  const ms = Math.max(0.2, min) * 60 * 1000;
+  cfg._statsFlushTimer = setInterval(() => flushStats(cfg), ms);
+  if (cfg._statsFlushTimer.unref) cfg._statsFlushTimer.unref();
+}
+
 function poolLoadInstance(pool, name) {
   const old = pool.instances.get(name);
   if (old) teardownModelSync(old);
@@ -4582,6 +4734,20 @@ function poolLoadInstance(pool, name) {
     for (const k of (cfg.apiKeys || [])) k.usedTokens = Math.max(k.usedTokens || 0, oldMap[k.key] || 0);
   }
   cfg._stats = (old && old._stats) || { startedAt: new Date().toISOString(), requests: 0, errors: 0, byChannel: {}, recent: [] }; // 热重载保留统计
+  if (!old) { // 冷启动: 从 data/stats-<inst>.json 读回历史(内存统计在重启后丢失的兜底)
+    try {
+      const sf = statsFlushFile(cfg);
+      if (fs.existsSync(sf)) {
+        const j = JSON.parse(fs.readFileSync(sf, 'utf8'));
+        cfg._stats.requests = j.requests || 0; cfg._stats.errors = j.errors || 0; cfg._stats.retries = j.retries || 0;
+        cfg._stats.byChannel = j.byChannel || {}; cfg._stats.byKey = j.byKey || {};
+        cfg._stats.byModel = j.byModel || {}; cfg._stats.daily = j.daily || {};
+        cfg._stats.startedAt = j.since || cfg._stats.startedAt;
+        log('[stats] ' + name + ' 已从磁盘恢复统计: ' + (j.requests || 0) + ' 请求');
+      }
+    } catch (_) {}
+  }
+  setupStatsFlush(cfg);
   pool.instances.set(name, cfg);
   setupModelSync(cfg);
   setupProbe(cfg);
@@ -4594,6 +4760,7 @@ function poolLoadAll(pool, defaultCfg) {
   defaultCfg._name = 'default';
   defaultCfg._disabled = !!defaultCfg.disabled;
   defaultCfg._stats = { startedAt: new Date().toISOString(), requests: 0, errors: 0, retries: 0, byChannel: {}, recent: [] };
+  setupStatsFlush(defaultCfg);
   pool.instances.set('default', defaultCfg);
   setupModelSync(defaultCfg);
   if (PLUGINS) { try { PLUGINS.activateInstance('default', defaultCfg, makeGatewayApi(defaultCfg)); } catch (e) { logErr('[plugins] default 激活失败: ' + e.message); } }
@@ -4674,7 +4841,7 @@ function main() {
   if (!cfg.channels.length) logErr('⚠ 配置里没有任何有效渠道, 请求会返回 503');
   process.on('unhandledRejection', e => logErr('unhandledRejection:', (e && e.message) || e));
   process.on('uncaughtException', e => logErr('uncaughtException:', (e && e.message) || e));
-  process.on('SIGTERM', () => { const cs = CUR_POOL ? [...CUR_POOL.instances.values()] : [cfg]; for (const c of cs) { try { saveKeyUsage(c); } catch (_) {} } try { PLUGINS && PLUGINS.flushAll(); } catch (_) {} process.exit(0); });
+  process.on('SIGTERM', () => { const cs = CUR_POOL ? [...CUR_POOL.instances.values()] : [cfg]; for (const c of cs) { try { saveKeyUsage(c); } catch (_) {} try { flushStats(c); } catch (_) {} } try { PLUGINS && PLUGINS.flushAll(); } catch (_) {} process.exit(0); });
   process.on('SIGINT', () => process.exit(0));
   // 默认多实例单进程模式(托管目录下全部 config*.json); AGW_SINGLE=1 或显式端口参数时退回单实例
   const multi = portOverride == null && process.env.AGW_SINGLE !== '1';

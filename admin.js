@@ -1808,7 +1808,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       return jsonRes(res, 200, {
         requests: cfg._stats.requests, inflight: inflightOf(cfg), errors: cfg._stats.errors,
         retries: cfg._stats.retries || 0, onceChannel: cfg._onceChannel || null, context: cfg._lastCtx ? Object.assign({}, cfg._lastCtx, { soft: (cfg.contextLimit||{}).soft || 80, hard: (cfg.contextLimit||{}).hard || 0 }) : null,
-        byChannel: cfg._stats.byChannel, byKey: cfg._stats.byKey || {}, startedAt: cfg._stats.startedAt,
+        byChannel: cfg._stats.byChannel, byKey: cfg._stats.byKey || {}, byModel: cfg._stats.byModel || {}, daily: cfg._stats.daily || {}, startedAt: cfg._stats.startedAt,
         uptime: Math.round(process.uptime()),
       });
     }

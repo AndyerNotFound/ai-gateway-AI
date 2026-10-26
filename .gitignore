@@ -25,3 +25,5 @@ tls/legacy/
 tls/ca.key
 *.srl
 *.deb
+/packaging/ai-gateway/opt/ai-gateway/packaging/
+packaging/ai-gateway/opt/ai-gateway/
