@@ -24,3 +24,4 @@ tls/legacy/
 .agwkey
 tls/ca.key
 *.srl
+*.deb
