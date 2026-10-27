@@ -58,6 +58,7 @@ curl http://127.0.0.1:16384/v1/chat/completions \
   "proxies": {
     "clash": { "type": "socks5", "host": "127.0.0.1", "port": 7890 }
   },
+  "redact": { "enable": true, "response": false, "extra": ["工号[0-9]+"] },
   "channels": [
     {
       "name": "gemini-official",
@@ -93,8 +94,19 @@ curl http://127.0.0.1:16384/v1/chat/completions \
 | `channels[].modelMap` | 改名映射：`{"gpt-4o": "gemini-2.0-flash"}` 客户端发 gpt-4o 实际用 gemini |
 | `channels[].default` | `true`=兜底渠道（没匹配到 models 的请求都发这里，模型名原样透传） |
 | `channels[].insecure` | `true`=跳过 HTTPS 证书校验（自签名中转站用） |
+| `redact.enable` | 隐私过滤总开关（默认 `true`）。卡密可再设 `redact=false` 单卡关闭，实例开关是上限 |
+| `redact.response` | 响应方向也打码（默认 `false`）：上游返回的正文/思考/工具参数同样替换为 `***` |
+| `redact.extra` | 自定义正则数组，在内置规则之外追加打码规则（面板「路由」页可直接编辑） |
 
 **路由规则**：`modelMap` 精确命中 > `models` 列表 > `default` 渠道 > 第一个渠道。
+
+### 隐私过滤（敏感内容打码）
+
+- **请求方向**：转发上游前遍历请求体 JSON，命中字段名（`api_key`/`secret`/`token`/`password`/`authorization` 等）的字符串整值打码；其余字符串按规则打码；`data:` URL 与顶层 `model` 不动（保护图片与路由）。
+- **响应方向**（`redact.response=true`）：上游返回的正文、思考链、工具参数同样打码；流式响应逐片处理，密钥被 SSE 分片切开也不会漏。开启后为保证可解析会走统一转换路径（同格式不再逐字节直通）。
+- **内置规则**：`sk-`/GitHub/Slack/AWS/Google/GitLab/HuggingFace 等 API Key、`Bearer` token、邮箱、中国大陆手机号、身份证、银行卡（过 Luhn 才打码，避免误伤普通长数字）、内网 IPv4。
+- **自定义规则**：`redact.extra` 每项一条正则，例如 `"工号[0-9]+"`；面板路由页可编辑（每行一条），保存后热重载生效。
+- **性能**：无敏感特征的普通对话走快路径，不跑正则/不算哈希；含密钥的长上下文用多级 CDC 缓存，只重算改动过的块。
 
 ### 多渠道轮询 & 故障切换
 
@@ -288,6 +300,14 @@ curl `--cacert ca.pem`；手机/电脑把 `tls/ca.pem` 装成「CA 证书」即�
 | Claude / Gemini | canonical 转换 | canonical 转换 → Responses body |
 
 ## 变更记录
+
+### 2026-10-27 — 隐私过滤增强（响应方向 + 更多规则 + 性能）
+
+- 新增 `redact.response`：响应正文/思考/工具参数打码，流式跨分片不漏；面板新增开关。
+- 新增邮箱/手机号/身份证/银行卡/内网 IPv4 规则；`redact.extra` 支持面板编辑（每行一条正则）。
+- 修复：面板保存只发 `{enable}` 会清空 `extra`；长 token 跨 CDC 切点被切开导致漏打码；块指纹未覆盖安全切点后移的尾部。
+- 性能：无敏感特征文本走前缀/数字快路径（只做一次字符扫描，85KB 上下文约 1ms；命中后零正则、零分配）；内置 13+ 条规则合并为单次正则扫描。
+- 顶层 `model` 字段不再参与打码，避免模型名被改写导致路由失败。
 
 ### 2026-10-16 — 修复 DSML 标记泄漏（思考链与工具调用不连贯）
 

@@ -696,6 +696,7 @@ function dsmlCleanText(t) {   // 非流式/跨格式: 一次性清洗一段文�
 let crypt = null; try { crypt = require('./crypt.js'); } catch (_) {}
 let PLUGINS = null; try { PLUGINS = new (require('./plugins.js').PluginManager)(__dirname, (...a) => log(...a)); } catch (e) { logErr('插件管理器初始化失败:', e && e.message); }
 const redactCache = require('./redact-cache.js'); // CDC 增量分块缓存: 干净内容只算 hash, 命中跳过正则
+const ctxp = require('./ctxp'); // 全局上下文上限(warn/max), 规则由 admin 热推 + 文件变更自检
 
 /* ---- 隐私过滤: 请求体里的密钥/token 替换为 *** ---- */
 const REDACT_PATTERNS = [
@@ -713,12 +714,19 @@ const REDACT_FIELD_RE = /api[-_]?key|apikey|secret|password|passwd|token|authori
 function redactText(s, extra) {
   return redactCache.redactSmart(s, extra);
 }
+/* 响应方向过滤开关(实例级 redact.enable 为上限, 再叠加 redact.response;
+ * 卡密 redact=false 与请求方向一致, 单卡关闭) */
+function respRedactOn(cfg, urlInfo) {
+  if (!(cfg && cfg.redact && cfg.redact.enable !== false && cfg.redact.response)) return false;
+  return !(urlInfo && urlInfo.userKey && urlInfo.userKey.redact === false);
+}
 function redactDeep(v, extra, depth) {
   if (v == null || depth > 12) return v;
   if (typeof v === 'string') return v.startsWith('data:') ? v : redactText(v, extra); // 跳过 data:URL(图片/音频)
   if (Array.isArray(v)) { for (let i = 0; i < v.length; i++) v[i] = redactDeep(v[i], extra, depth + 1); return v; }
   if (typeof v === 'object') {
     for (const k of Object.keys(v)) {
+      if (depth === 0 && k === 'model') continue;   // 不动模型名, 保护路由
       const val = v[k];
       if (typeof val === 'string' && val && REDACT_FIELD_RE.test(k)) v[k] = '***';
       else v[k] = redactDeep(val, extra, depth + 1);
@@ -726,6 +734,36 @@ function redactDeep(v, extra, depth) {
     return v;
   }
   return v;
+}
+/* 流式响应过滤: 文本/思考/工具参数各自缓冲, 密钥跨分片也不会漏;
+ * 只回压尾部可能继续生长的 token, 其余照常边收边发。 */
+function wrapRedactWriter(baseWriter, extra) {
+  const textF = redactCache.createStreamFilter(extra);
+  const reasF = redactCache.createStreamFilter(extra);
+  const toolFs = new Map();
+  const send = (ev) => { try { baseWriter.onEvent(ev); } catch (e) { logErr('redact writer error:', e.message); } };
+  const flushText = () => { const o = textF.flush(); if (o) send({ type: 'text', t: o }); };
+  const flushReas = () => { const o = reasF.flush(); if (o) send({ type: 'reasoning', t: o }); };
+  const flushAll = () => {
+    flushText(); flushReas();
+    for (const [i, f] of toolFs) { const o = f.flush(); if (o) send({ type: 'tool_delta', i, s: o }); }
+    toolFs.clear();
+  };
+  return {
+    onEvent(ev) {
+      if (!ev || !ev.type) return;
+      if (ev.type === 'text') { const o = textF.push(ev.t); if (o) send({ type: 'text', t: o }); return; }
+      if (ev.type === 'reasoning') { const o = reasF.push(ev.t); if (o) send({ type: 'reasoning', t: o }); return; }
+      if (ev.type === 'tool_delta') {
+        let f = toolFs.get(ev.i);
+        if (!f) { f = redactCache.createStreamFilter(extra); toolFs.set(ev.i, f); }
+        const o = f.push(ev.s); if (o) send({ type: 'tool_delta', i: ev.i, s: o });
+        return;
+      }
+      if (ev.type === 'end') { flushAll(); send(ev); return; }
+      flushText(); flushReas(); send(ev);   // start/tool_start/usage: 先冲暂存, 保事件顺序
+    },
+  };
 }
 function toText(content) {
   if (content == null) return '';
@@ -771,6 +809,11 @@ function applyDefaults(cfg) {
   cfg.apiKeys = Array.isArray(cfg.apiKeys) ? cfg.apiKeys.filter(k => k && k.key) : [];
   // 用户表规整(账密登录: uid+密码 → 返回该用户的卡密)
   cfg.users = Array.isArray(cfg.users) ? cfg.users.filter(u => u && u.uid && u.passwordHash) : [];
+  // 隐私过滤: enable 实例总开关; response 响应方向过滤; extra 自定义正则(字符串数组)
+  cfg.redact = (cfg.redact && typeof cfg.redact === 'object') ? cfg.redact : {};
+  cfg.redact.enable = cfg.redact.enable !== false;
+  cfg.redact.response = !!cfg.redact.response;
+  cfg.redact.extra = Array.isArray(cfg.redact.extra) ? cfg.redact.extra.filter(p => typeof p === 'string' && p) : [];
   // 卡密长度(8-128, 默认24; 不含 sk- 前缀)
   cfg.keyLength = Math.min(128, Math.max(8, Number(cfg.keyLength) || 24));
   // 注册开关(默认关; 公网中转站才开)
@@ -2454,65 +2497,92 @@ function matchContextWindow(cfg, model) {
 // 粗估 prompt token 数: 只用于硬上限的前置拦截, 不是精确分词
 // 中文/日文/韩文按 1 字 ≈ 1 token, 其余按 charsPerToken(默认 4) 字符 ≈ 1 token
 const CJK_RE = /[\u3000-\u9fff\uff00-\uffef\u3040-\u30ff\uac00-\ud7af]/g;
-function estimatePromptTokens(canonical, charsPerToken) {
-  const cpt = Math.max(1, Number(charsPerToken) || 4);
-  let cjk = 0, other = 0;
-  const add = (t) => {
-    const str = String(t || '');
-    if (!str) return;
-    const n = (str.match(CJK_RE) || []).length;
-    cjk += n;
-    other += str.length - n;
-  };
-  const msgs = Array.isArray(canonical && canonical.messages) ? canonical.messages : [];
-  for (const m of msgs) {
-    if (!m) continue;
-    add(toText(m.content));
-    if (Array.isArray(m.tool_calls)) {
-      for (const tc of m.tool_calls) {
-        const fn = (tc && tc.function) || {};
-        add(fn.name); add(fn.arguments);
-      }
-    }
+// 零分配 CJK 计数(与旧 CJK_RE 正则等价的范围判断): 大上下文时省掉 match 数组分配
+function countCjk(str) {
+  let n = 0;
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    if ((c >= 0x3000 && c <= 0x9fff) || (c >= 0xff00 && c <= 0xffef) ||
+        (c >= 0x3040 && c <= 0x30ff) || (c >= 0xac00 && c <= 0xd7af)) n++;
   }
-  if (Array.isArray(canonical && canonical.tools)) add(JSON.stringify(canonical.tools));
-  return Math.ceil(cjk + other / cpt) + msgs.length * 4;
+  return n;
+}
+// 粗估 token 数(不是精确分词): CJK 1字 ≈ 1 token, 其余 cpt 字符 ≈ 1 token
+function tokOf(str, cpt) {
+  str = String(str || '');
+  if (!str) return 0;
+  const cjk = countCjk(str);
+  return Math.ceil(cjk + (str.length - cjk) / cpt);
 }
 
-// 请求侧 Token 分布估算(2026-10-27): 工具定义/提示词(system)/用户输入 三段分开计
-function estimatePromptDist(canonical, charsPerToken) {
+// 请求侧单次扫描(2026-10-27 重构): 总量 + 分布(tools/system/user/history) 一趟算完
+// history = assistant/tool 历史轮次, 与 system(系统提示) 分开, 才能看出"是提示膨胀还是历史膨胀"
+function analyzePrompt(canonical, charsPerToken) {
   const cpt = Math.max(1, Number(charsPerToken) || 4);
-  const tokOf = (t) => {
-    const str = String(t || '');
-    if (!str) return 0;
-    const cjk = (str.match(CJK_RE) || []).length;
-    return Math.ceil(cjk + (str.length - cjk) / cpt);
-  };
-  const dist = { tools: 0, system: 0, user: 0 };
-  if (Array.isArray(canonical && canonical.tools)) dist.tools = tokOf(JSON.stringify(canonical.tools));
+  const dist = { tools: 0, system: 0, user: 0, history: 0 };
   const msgs = Array.isArray(canonical && canonical.messages) ? canonical.messages : [];
+  if (Array.isArray(canonical && canonical.tools)) dist.tools = tokOf(JSON.stringify(canonical.tools), cpt);
   for (const m of msgs) {
     if (!m) continue;
-    if (m.role === 'system' || m.role === 'developer') { dist.system += tokOf(toText(m.content)) + 4; continue; }
-    if (m.role === 'user') { dist.user += tokOf(toText(m.content)) + 4; continue; }
-    // assistant/tool 消息(历史轮次)计入 system 池外的"提示词"仍偏粗——归入 system(上下文池)
-    if (Array.isArray(m.tool_calls)) for (const tc of m.tool_calls) { const fn = (tc && tc.function) || {}; dist.system += tokOf(fn.name) + tokOf(fn.arguments); }
-    dist.system += tokOf(toText(m.content)) + 4;
+    if (m.role === 'system' || m.role === 'developer') { dist.system += tokOf(toText(m.content), cpt) + 4; continue; }
+    if (m.role === 'user') { dist.user += tokOf(toText(m.content), cpt) + 4; continue; }
+    if (Array.isArray(m.tool_calls)) for (const tc of m.tool_calls) { const fn = (tc && tc.function) || {}; dist.history += tokOf(fn.name, cpt) + tokOf(fn.arguments, cpt); }
+    dist.history += tokOf(toText(m.content), cpt) + 4;
   }
-  dist.system += Math.ceil(msgs.length * 0.5);
-  return dist;
+  dist.history += Math.ceil(msgs.length * 0.5);
+  return { total: dist.tools + dist.system + dist.user + dist.history, dist };
+}
+// 兼容旧调用
+function estimatePromptTokens(canonical, charsPerToken) { return analyzePrompt(canonical, charsPerToken).total; }
+function estimatePromptDist(canonical, charsPerToken) { return analyzePrompt(canonical, charsPerToken).dist; }
+
+// ---- 自校准(2026-10-27): 每模型 EMA(真实 input / 本地估算), 存 byModel[n].estRatio 随统计落盘 ----
+const EST_RATIO_MIN = 0.1, EST_RATIO_MAX = 10, EST_EMA_A = 0.2;
+function calibRatio(cfg, model) {
+  const bm = cfg && cfg._stats && cfg._stats.byModel && cfg._stats.byModel[model];
+  const r = bm && Number(bm.estRatio);
+  return (r >= EST_RATIO_MIN && r <= EST_RATIO_MAX) ? r : 1;
+}
+function calibUpdate(cfg, model, actual, rawEst) {
+  if (!(actual > 0) || !(rawEst > 0)) return;
+  const stats = cfg._stats = cfg._stats || {};
+  stats.byModel = stats.byModel || {};
+  const bm = stats.byModel[model] = stats.byModel[model] || { requests: 0, inputTokens: 0, outputTokens: 0, cached: 0 };
+  const r = Math.min(EST_RATIO_MAX, Math.max(EST_RATIO_MIN, actual / rawEst));
+  bm.estRatio = bm.estRatio ? bm.estRatio * (1 - EST_EMA_A) + r * EST_EMA_A : r;
+}
+// 应用校准系数后的估算(硬上限/ctxp 拦截用, 误杀更少)
+function estPromptAdj(cfg, model, canonical) {
+  const raw = analyzePrompt(canonical, ((cfg.contextLimit || {}).charsPerToken) || 4);
+  const ratio = calibRatio(cfg, model);
+  if (ratio === 1) return raw;
+  const dist = {}; for (const k in raw.dist) dist[k] = Math.round(raw.dist[k] * ratio);
+  return { total: Math.round(raw.total * ratio), dist };
+}
+// 有真实 usage 时把分布归一到真实 input, 三段加总 = 真实 input(口径一致)
+function scaleDist(dist, rawTotal, actualInput) {
+  if (!(actualInput > 0) || !(rawTotal > 0)) return dist;
+  const f = actualInput / rawTotal, out = {};
+  for (const k in dist) out[k] = Math.round(dist[k] * f);
+  return out;
 }
 
-// 记录最近一次请求的上下文占用(仅内存, 供悬浮球/面板读)
-function recordContext(cfg, model, prompt, completion, channel, estimated) {
+// 记录最近一次请求的上下文占用(仅内存, 供悬浮球/面板读) + 最近占用序列(趋势/触顶预测)
+function recordContext(cfg, model, prompt, completion, channel, estimated, extra) {
   const p = Number(prompt) || 0;
   if (p <= 0) return;
   const win = matchContextWindow(cfg, model);
+  const percent = win > 0 ? Math.round(p / win * 1000) / 10 : null;
   cfg._lastCtx = {
     model: String(model || ''), channel: String(channel || ''), est: !!estimated,
-    prompt: p, completion: Number(completion) || 0, window: win,
-    percent: win > 0 ? Math.round(p / win * 1000) / 10 : null, at: Date.now(),
+    prompt: p, completion: Number(completion) || 0, window: win, percent, at: Date.now(),
+    cached: (extra && extra.cached) || 0, dist: (extra && extra.dist) || null,
   };
+  if (percent != null) {
+    const h = cfg._ctxHist = cfg._ctxHist || [];
+    h.push({ at: cfg._lastCtx.at, percent, model: cfg._lastCtx.model });
+    if (h.length > 50) h.splice(0, h.length - 50);
+  }
 }
 
 // 向后兼容: 返回第一个候选
@@ -3080,7 +3150,7 @@ function buildRequestForChannel(cfg, ch, clientFormat, clientApi, canonical, bod
   // 思考链精简开启时, 即使同格式也走 canonical 转换路径(否则直通管道会绕过精简);
   // 客户端 API(chat/responses) 与上游 API(chat/responses) 不一致时也必须走转换中枢
   const upApi = chUsesResponses(cfg, ch, clientApi) ? 'responses' : 'chat';
-  const direct = clientFormat === ch.type && clientApi === upApi && !(cfg.thinkingSummary && cfg.thinkingSummary.enable);
+  const direct = clientFormat === ch.type && clientApi === upApi && !(cfg.thinkingSummary && cfg.thinkingSummary.enable) && !respRedactOn(cfg, urlInfo);
   const stream = canonical.stream;
   const upstreamModel = canonical.model; // 已被调用方改写为该渠道的上游模型名
   let url, headers = {}, bodyBuf;
@@ -3292,7 +3362,7 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
           usageCapture.cached = cr.usage.cached || 0; usageCapture.reasoning = cr.usage.reasoning || 0;
           try {
             const __cpt = Math.max(1, Number((cfg.contextLimit || {}).charsPerToken) || 4);
-            const __tok = (t) => { const str = String(t || ''); if (!str) return 0; const cjk = (str.match(CJK_RE) || []).length; return Math.ceil(cjk + (str.length - cjk) / __cpt); };
+            const __tok = (t) => tokOf(t, __cpt);
             respDist.reasoning = __tok(cr.reasoning);
             respDist.text = __tok(cr.text);
             if (Array.isArray(cr.tool_calls)) for (const tc of cr.tool_calls) { const fn = (tc && tc.function) || {}; respDist.tool += __tok(fn.name) + __tok(fn.arguments) + 8; }
@@ -3346,13 +3416,13 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
     const baseWriter = (clientFormat === 'openai' && clientApi === 'responses') ? makeResponsesWriter(res, canonical.model) : makeWriter(clientFormat, res, canonical.model, { geminiArray: isArrayStream });
     /* DSML 清洗放在最内层(紧贴 writer): 正文/思考在变成客户端格式前就已干净,
      * 也不会把内部标记喂给 thinkingSummary 的总结模型。 */
-    const writer = wrapThinkingSummary(dsmlOn ? wrapDsmlClean(baseWriter, true, dsmlThink, dsmlOpts) : baseWriter, cfg.thinkingSummary, ch, cfg);
+    let writer = wrapThinkingSummary(dsmlOn ? wrapDsmlClean(baseWriter, true, dsmlThink, dsmlOpts) : baseWriter, cfg.thinkingSummary, ch, cfg);
+    if (respRedactOn(cfg, urlInfo)) writer = wrapRedactWriter(writer, cfg.redact && cfg.redact.extra);
     // 响应侧 Token 分布计数(旁路, 只数不转发; respDist 声明在 handleChat 顶层)
     const __origOnEvent = writer.onEvent.bind(writer);
     writer.onEvent = (ev) => {
       try {
         const cpt = Math.max(1, Number((cfg.contextLimit || {}).charsPerToken) || 4);
-        const tokOf = (t) => { const str = String(t || ''); if (!str) return 0; const cjk = (str.match(CJK_RE) || []).length; return Math.ceil(cjk + (str.length - cjk) / cpt); };
         if (ev.type === 'reasoning') respDist.reasoning += tokOf(ev.t);
         else if (ev.type === 'text') respDist.text += tokOf(ev.t);
         else if (ev.type === 'tool_start') respDist.tool += tokOf(ev.name) + 8;
@@ -3427,6 +3497,16 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
           else cresp.reasoning = truncateReasoning(cresp.reasoning, cfg.thinkingSummary.maxCharsPerSegment);
         } catch (e) { logErr('[thinkingSummary] 非流式精简失败:', e.message); }
       }
+      if (respRedactOn(cfg, urlInfo)) {   // 响应方向过滤(非流式): 正文/思考/工具参数
+        try {
+          const rx = cfg.redact && cfg.redact.extra;
+          if (typeof cresp.text === 'string') cresp.text = redactText(cresp.text, rx);
+          if (typeof cresp.reasoning === 'string') cresp.reasoning = redactText(cresp.reasoning, rx);
+          if (Array.isArray(cresp.tool_calls)) for (const tc of cresp.tool_calls) {
+            if (tc && tc.function && typeof tc.function.arguments === 'string') tc.function.arguments = redactText(tc.function.arguments, rx);
+          }
+        } catch (e) { logErr('[redact] 非流式响应过滤失败:', e.message); }
+      }
       let out;
       if (clientFormat === 'openai') out = clientApi === 'responses' ? canonicalToResponsesResp(cresp, canonical.model) : canonicalToOpenAIResp(cresp, canonical.model);
       else if (clientFormat === 'claude') out = canonicalToClaudeResp(cresp, canonical.model);
@@ -3474,12 +3554,35 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
   }
   // 卡级隐私过滤覆盖在 redactDeep 前已应用(2250行附近), 此处不再重复
 
+  // 全局上下文上限(ctxp): 按模型名通配, max 拦截 / warn 走 TermuxBridge 通知(5分钟节流)
+  {
+    const __fresh = ctxp.loadRulesIfChanged();
+    if (__fresh !== undefined) cfg._ctxpRules = __fresh;
+    else if (!cfg._ctxpRules) cfg._ctxpRules = ctxp.loadRules();
+    if (cfg._ctxpRules && Object.keys(cfg._ctxpRules).length) {
+      const __hit = ctxp.matchRule(cfg._ctxpRules, canonical.model);
+      if (__hit) {
+        const __rule = __hit.rule;
+        const __mx = Math.max(0, Number(__rule.max) || 0), __wn = Math.max(0, Number(__rule.warn) || 0);
+        if (__mx > 0 || __wn > 0) {
+          const __estC = estPromptAdj(cfg, canonical.model, canonical).total;
+          if (__mx > 0 && __estC > __mx) {
+            log('[ctxp] 拒收超限请求 model=' + canonical.model + ' est=' + __estC + ' max=' + __mx + ' (rule ' + __hit.pattern + ')');
+            stats.errors++;
+            return sendError(clientFormat, res, 400,
+              '上下文超出全局上限: 估算 ' + __estC + ' tokens > max ' + __mx + ' (规则: ' + __hit.pattern + ')');
+          }
+          if (__wn > 0 && __estC > __wn) ctxp.fireWarn(__hit.pattern, __rule, canonical.model, __estC).catch(() => {});
+        }
+      }
+    }
+  }
   // 上下文硬上限: 按估算先卡住, 别白跑一趟上游(软上限只影响提示色, 不拦)
   const cl = cfg.contextLimit || { soft: 80, hard: 0, charsPerToken: 2 };
   if (cl.hard > 0) {
     const win = matchContextWindow(cfg, canonical.model);
     if (win > 0) {
-      const est = estimatePromptTokens(canonical, cl.charsPerToken);
+      const est = estPromptAdj(cfg, canonical.model, canonical).total;
       const limit = Math.floor(win * cl.hard / 100);
       if (est > limit) {
         log('[ctx] 拒收超限请求 model=' + canonical.model + ' est=' + est + ' limit=' + limit + ' win=' + win);
@@ -3595,13 +3698,15 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
           cfg._keyUsageDirty = true;
         }
         // 有的反代渠道不给 usage: 退回本地估算, 否则悬浮球的上下文圈永远不动
+        const __cpt = Math.max(1, Number((cfg.contextLimit || {}).charsPerToken) || 4);
+        const __raw = analyzePrompt(canonical, __cpt);
         const __est = !usageCapture.input;
-        const __inTok = usageCapture.input || estimatePromptTokens(canonical, (cfg.contextLimit || {}).charsPerToken || 4);
-        recordContext(cfg, canonical.model, __inTok, usageCapture.output, ch.name, __est);
+        const __inTok = usageCapture.input || Math.round(__raw.total * calibRatio(cfg, canonical.model));
+        calibUpdate(cfg, canonical.model, usageCapture.input, __raw.total); // 自校准 EMA(真实/估算)
+        const __pd = scaleDist(__raw.dist, __raw.total, usageCapture.input); // 有真实 usage 时归一到 input
+        recordContext(cfg, canonical.model, __inTok, usageCapture.output, ch.name, __est, { cached: usageCapture.cached || 0, dist: __pd });
         // ===== Token 分布 + daily/byModel 累加 (2026-10-27) =====
         try {
-          const __cpt = Math.max(1, Number((cfg.contextLimit || {}).charsPerToken) || 4);
-          const __pd = __est ? { tools: 0, system: 0, user: 0 } : estimatePromptDist(canonical, __cpt);
           const __rd = respDist || { reasoning: 0, text: 0, tool: 0 };
           const __rdActual = usageCapture.reasoning ? usageCapture.reasoning : __rd.reasoning;
           const __textTok = Math.max(0, (usageCapture.output || 0) - __rdActual - __rd.tool);
@@ -3611,10 +3716,10 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
           __bm.requests++; __bm.inputTokens += __inTok; __bm.outputTokens += usageCapture.output || 0; __bm.cached += __cacheSaved;
           const __day = new Date().toISOString().slice(0, 10);
           stats.daily = stats.daily || {};
-          const __dd = stats.daily[__day] = stats.daily[__day] || { requests: 0, errors: 0, inputTokens: 0, outputTokens: 0, cached: 0, dist: { tools: 0, system: 0, user: 0, reasoning: 0, text: 0, tool: 0 } };
+          const __dd = stats.daily[__day] = stats.daily[__day] || { requests: 0, errors: 0, inputTokens: 0, outputTokens: 0, cached: 0, dist: { tools: 0, system: 0, user: 0, history: 0, reasoning: 0, text: 0, tool: 0 } };
           __dd.requests++; if (status >= 400) __dd.errors++;
           __dd.inputTokens += __inTok; __dd.outputTokens += usageCapture.output || 0; __dd.cached += __cacheSaved;
-          __dd.dist.tools += __pd.tools; __dd.dist.system += __pd.system; __dd.dist.user += __pd.user;
+          for (const __k of ['tools', 'system', 'user', 'history']) __dd.dist[__k] += __pd[__k] || 0;
           __dd.dist.reasoning += __rdActual; __dd.dist.text += __textTok; __dd.dist.tool += __rd.tool;
         } catch (__e) { try { logErr('[stat] 累加失败:', __e.message); } catch (_) {} }
         recordReq(status, ch.name, usageCapture.input, usageCapture.output);
@@ -3947,7 +4052,7 @@ async function handleHttp(cfg, req, res) {
       stats: { requests: cfg._stats.requests, errors: cfg._stats.errors, retries: cfg._stats.retries || 0, byChannel: cfg._stats.byChannel, byKey: cfg._stats.byKey || {} },
       forceChannel: cfg.forceChannel || null,
       onceChannel: cfg._onceChannel || null,
-      context: cfg._lastCtx ? Object.assign({}, cfg._lastCtx, { soft: (cfg.contextLimit||{}).soft || 80, hard: (cfg.contextLimit||{}).hard || 0 }) : null,
+      context: cfg._lastCtx ? Object.assign({}, cfg._lastCtx, { soft: (cfg.contextLimit||{}).soft || 80, hard: (cfg.contextLimit||{}).hard || 0, history: (cfg._ctxHist || []).slice(-24) }) : null,
       probe: Object.fromEntries(Object.entries(cfg._stats.probe || {}).map(([k, v]) => [k, { rate: v.total ? Math.round(v.ok / v.total * 100) : null, total: v.total, lastOk: v.lastOk, lastErr: v.lastErr }])),
     }));
   }
@@ -4852,7 +4957,8 @@ if (require.main === module) main();
 
 module.exports = {
   VERSION, loadConfig, normalizeProxy, joinUrl, pickChannel, pickChannels, collectModels, RETRYABLE,
-  matchContextWindow, recordContext, globMatch, estimatePromptTokens,
+  matchContextWindow, recordContext, globMatch, estimatePromptTokens, estimatePromptDist, analyzePrompt,
+  calibRatio, calibUpdate, estPromptAdj, scaleDist,
   openaiToCanonical, claudeToCanonical, geminiToCanonical,
   canonicalToOpenAIBody, canonicalToClaudeBody, canonicalToGeminiBody,
   openaiRespToCanonical, claudeRespToCanonical, geminiRespToCanonical,

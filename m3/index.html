@@ -505,8 +505,19 @@ md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wg
           <md-switch id="rt-redact"></md-switch>
           <div style="min-width:0">
             <div style="font-size:14px">隐私过滤</div>
-            <div style="font-size:12px;color:var(--md-sys-color-on-surface-variant)">转发前把请求里的密钥/token(sk-…、Bearer、GitHub/AWS/Google 等格式)替换为 *** ; 重启实例生效</div>
+            <div style="font-size:12px;color:var(--md-sys-color-on-surface-variant)">转发前把请求里的密钥与敏感信息(API Key/Bearer/邮箱/手机号/身份证/银行卡/内网 IP)替换为 *** ; 保存后热重载生效</div>
           </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;padding:10px 14px;border:1px solid var(--md-sys-color-outline-variant);border-radius:12px">
+          <md-switch id="rt-redactRes"></md-switch>
+          <div style="min-width:0">
+            <div style="font-size:14px">响应过滤</div>
+            <div style="font-size:12px;color:var(--md-sys-color-on-surface-variant)">上游返回的正文/思考/工具参数也做同样打码(流式逐片处理, 跨片密钥不漏); 保存后热重载生效</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;padding:10px 14px;border:1px solid var(--md-sys-color-outline-variant);border-radius:12px">
+          <md-outlined-text-field id="rt-redactExtra" type="textarea" rows="3" label="自定义规则(每行一条正则, 如 工号[0-9]+)" style="width:100%"></md-outlined-text-field>
+          <div style="font-size:12px;color:var(--md-sys-color-on-surface-variant)">内置规则: API Key / Bearer / 邮箱 / 手机号 / 身份证 / 银行卡 / 内网 IP</div>
         </div>
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;padding:10px 14px;border:1px solid var(--md-sys-color-outline-variant);border-radius:12px;flex-wrap:wrap">
           <md-switch id="rt-modelSync"></md-switch>
@@ -1328,6 +1339,8 @@ async function renderRouting(){
     const r=cfg.routing||{};
     $('#rt-maxRetry').value=String(r.maxRetry??3); $('#rt-timeout').value=String(r.timeoutSec??60); $('#rt-cooldown').value=String(r.cooldownSec??30);
     $('#rt-redact').selected=!((cfg.redact||{}).enable===false);
+    $('#rt-redactRes').selected=!!((cfg.redact||{}).response);
+    $('#rt-redactExtra').value=((cfg.redact||{}).extra||[]).join('\n');
     $('#rt-modelSync').selected=!((cfg.modelSync||{}).enable===false);
     $('#rt-syncInterval').value=String((cfg.modelSync||{}).intervalHours??24);
     $('#rt-oeEnable').selected=!!((cfg.openaiExtras||{}).enable);
@@ -1647,10 +1660,10 @@ async function renderStats(){
     $('#st-uptime').textContent=fmtDur(s.uptime);
     $('#st-rps').textContent=((s.requests||0)/(s.uptime||1)).toFixed(2);
     // Token 分布(聚合全部分日)
-    const D={tools:0,system:0,user:0,reasoning:0,text:0,tool:0};
+    const D={tools:0,system:0,history:0,user:0,reasoning:0,text:0,tool:0};
     for(const v of Object.values(s.daily||{})){ for(const k of Object.keys(D)) D[k]+=(v.dist&&v.dist[k])||0; }
     const dTot=Object.values(D).reduce((a,b)=>a+b,0);
-    const DN={tools:'工具定义',system:'提示词(系统+历史)',user:'用户输入',reasoning:'思考内容',text:'正文',tool:'ToolCall'};
+    const DN={tools:'工具定义',system:'系统提示',history:'对话历史',user:'用户输入',reasoning:'思考内容',text:'正文',tool:'ToolCall'};
     const bar=(pct,label,val)=>`<div style="margin:6px 0"><div style="display:flex;justify-content:space-between;font-size:12px"><span>${esc(label)}</span><span class="mono" style="opacity:.8">${fmtNum(val)} · ${pct.toFixed(1)}%</span></div><div style="height:6px;border-radius:3px;background:var(--md-sys-color-surface-container-highest,#333);overflow:hidden"><div style="height:100%;width:${Math.max(pct,0.5)}%;background:var(--md-sys-color-primary)"></div></div></div>`;
     $('#st-dist').innerHTML=dTot?Object.keys(DN).map(k=>bar(D[k]/dTot*100,DN[k],D[k])).join(''):'<div class="empty" style="padding:8px 0">暂无分布数据(需有请求流过)</div>';
     // 按模型
@@ -2234,10 +2247,11 @@ async function saveRouting(){
   try{
     await adapter.saveConfig(Store.inst,{routing:{
       maxRetry:+$('#rt-maxRetry').value||0, timeoutSec:+$('#rt-timeout').value||0, cooldownSec:+$('#rt-cooldown').value||0 },
-      redact:{enable:!!$('#rt-redact').selected},
+      redact:{enable:!!$('#rt-redact').selected, response:!!$('#rt-redactRes').selected,
+        extra:$('#rt-redactExtra').value.split('\n').map(x=>x.trim()).filter(Boolean)},
       modelSync:{enable:!!$('#rt-modelSync').selected, intervalHours:+$('#rt-syncInterval').value||24},
       openaiExtras:{enable:!!$('#rt-oeEnable').selected, upstreamResponses:!!$('#rt-oeUpstream').selected}});
-    snack('已保存 (重启实例后生效)'); await renderRouting();
+    snack('已保存 (热重载生效)'); await renderRouting();
   }catch(e){ snack(e.message,true); }
 }
 async function doInstanceAction(name,cmd){

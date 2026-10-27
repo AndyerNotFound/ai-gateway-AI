@@ -214,7 +214,8 @@ function cmdInst(argv) {
   agw inst <name> --adminkey <key>  设置 Admin-Key(空串=清除)
   agw inst <name> --tls <port>      启用 TLS(<port>=主端口=纯 HTTPS); 0=关闭 TLS
   agw inst <name> --cold <sec>      上游连接超时秒数
-  agw inst <name> --filter <on/off> 隐私过滤(密钥/地址打码)
+  agw inst <name> --filter <on/off> 隐私过滤(密钥/敏感信息打码)
+  agw inst <name> --filter-resp <on/off>  响应方向也打码
   agw inst <name> --transcreet <on/off/res-only>  DSML 清洗范围`));
     return;
   }
@@ -258,6 +259,11 @@ function cmdInst(argv) {
     c.redact = c.redact || {}; c.redact.enable = !/^off$/i.test(v || 'on');
     saveCfg(name, c); ok(`隐私过滤 ${onoff(c.redact.enable)}`);
   });
+  if (has('--filter-resp')) touch.push(() => {
+    const c = loadCfg(name); const v = get('--filter-resp');
+    c.redact = c.redact || {}; c.redact.response = !/^off$/i.test(v || 'on');
+    saveCfg(name, c); ok(`响应过滤 ${onoff(c.redact.response)}`);
+  });
   if (has('--transcreet')) touch.push(() => {
     const c = loadCfg(name); const v = (get('--transcreet') || 'on').toLowerCase();
     c.dsmlClean = { enable: v !== 'off', reasoning: v === 'on' };
@@ -294,7 +300,7 @@ function cmdInst(argv) {
     }
   };
   if (onlyStatus) return showStatus();
-  const valFlags = ['--apikey', '--adminkey', '--tls', '--cold', '--filter', '--transcreet', '--status'];
+  const valFlags = ['--apikey', '--adminkey', '--tls', '--cold', '--filter', '--filter-resp', '--transcreet', '--status'];
   const act = flags.find((f, i) => !f.startsWith('--') && !valFlags.includes(flags[i - 1]));
   if (act === 'start' || act === 'stop') {
     return api('POST', `/admin/api/action/${name}/${act}`).then(d => ok(`${name} ${act}${d && d.restarting ? '' : ''}`)).catch(e => die(e.message + ' (单进程池模式下或需 agw.sh restart)'));
@@ -316,6 +322,7 @@ function cmdRouter(argv) {
   agw router <inst> --cold <sec>             上游连接超时(connectTimeout)
   agw router <inst> --models-fetch <h>       模型自动同步间隔(0=关)
   agw router <inst> --filter <on/off>        隐私过滤 redact.enable
+  agw router <inst> --filter-resp <on/off>   响应方向打码 redact.response
   agw router <inst> --transcreet <on/off/res-only>  DSML 清洗(dsmlClean)`));
     return;
   }
@@ -331,6 +338,7 @@ function cmdRouter(argv) {
     c.modelSync = c.modelSync || {}; c.modelSync.enable = h > 0; c.modelSync.intervalHours = Math.max(1, h || 24);
   });
   if (get('--filter') != null) touch.push(() => { c.redact = c.redact || {}; c.redact.enable = !/^off$/i.test(get('--filter')); });
+  if (get('--filter-resp') != null) touch.push(() => { c.redact = c.redact || {}; c.redact.response = !/^off$/i.test(get('--filter-resp')); });
   if (get('--transcreet') != null) touch.push(() => {
     const v = get('--transcreet').toLowerCase();
     c.dsmlClean = { enable: v !== 'off', reasoning: v === 'on' };
@@ -343,7 +351,7 @@ function cmdRouter(argv) {
 }
 function showRouter(c) {
   console.log(`  connRetry=${c.connRetry ?? 2}  responseTimeout=${msStr(c.responseTimeout || 180000)}  connectTimeout=${msStr(c.connectTimeout || 15000)}
-  modelSync=${(c.modelSync && c.modelSync.enable !== false) ? (c.modelSync.intervalHours || 24) + 'h' : C.dim('off')}  redact=${onoff(c.redact && c.redact.enable)}  dsml=${(c.dsmlClean && c.dsmlClean.enable) ? ((c.dsmlClean.reasoning ? 'on' : 'res-only')) : 'off'}`);
+  modelSync=${(c.modelSync && c.modelSync.enable !== false) ? (c.modelSync.intervalHours || 24) + 'h' : C.dim('off')}  redact=${onoff(c.redact && c.redact.enable)}${(c.redact && c.redact.response) ? '+resp' : ''}  dsml=${(c.dsmlClean && c.dsmlClean.enable) ? ((c.dsmlClean.reasoning ? 'on' : 'res-only')) : 'off'}`);
 }
 
 /* ================================================================
@@ -824,12 +832,12 @@ function cmdStat(argv) {
       return;
     }
     // dist: 聚合全部分日的六分类
-    const D = { tools: 0, system: 0, user: 0, reasoning: 0, text: 0, tool: 0 };
+    const D = { tools: 0, system: 0, history: 0, user: 0, reasoning: 0, text: 0, tool: 0 };
     for (const v of Object.values(j.daily || {})) { for (const k of Object.keys(D)) D[k] += (v.dist && v.dist[k]) || 0; }
     const tot = Object.values(D).reduce((a, b) => a + b, 0);
     if (!tot) return console.log('  无 Token 分布数据');
     console.log(`  ${inst} Token 分布 (估算, since ${j.since || j.savedAt}):`);
-    const names = { tools: '工具定义', system: '提示词(system+历史)', user: '用户输入', reasoning: '思考内容', text: '正文', tool: 'ToolCall' };
+    const names = { tools: '工具定义', system: '系统提示', history: '对话历史', user: '用户输入', reasoning: '思考内容', text: '正文', tool: 'ToolCall' };
     for (const k of Object.keys(names)) {
       const bar = '█'.repeat(Math.max(1, Math.round(D[k] / tot * 24)));
       console.log(`    ${pad(names[k], 20)} ${fmtTok(D[k]).padStart(9)} tok  ${bar} ${(D[k] / tot * 100).toFixed(1)}%`);

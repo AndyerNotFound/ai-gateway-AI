@@ -106,6 +106,27 @@ function loadCfg(name) {
   c._name = name;
   return c;
 }
+/* 隐私过滤自定义规则: 接受数组或换行文本, 只留能编译的正则(最多 50 条) */
+function normalizeRedactExtra(v) {
+  const arr = Array.isArray(v) ? v : (typeof v === 'string' ? v.split(/\r?\n/) : []);
+  const out = [];
+  for (const x of arr) {
+    const p = String(x == null ? '' : x).trim();
+    if (!p || p.length > 500) continue;
+    try { new RegExp(p); } catch (_) { continue; }
+    out.push(p);
+    if (out.length >= 50) break;
+  }
+  return out;
+}
+function maskRedactCfg(c) {
+  const r = (c && c.redact) || {};
+  return {
+    enable: r.enable !== false,
+    response: !!r.response,
+    extra: Array.isArray(r.extra) ? r.extra.filter(x => typeof x === 'string') : [],
+  };
+}
 function saveCfg(name, cfg) {
   const f = cfgFile(name);
   const plain = JSON.stringify(cfg, null, 2) + '\n';
@@ -979,7 +1000,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       gatewayKey: reveal ? (c.gatewayKey || '') : (c.gatewayKey ? '(已设)' : ''),
       adminKey: reveal ? (c.adminKey || '') : (c.adminKey ? '(已设)' : ''),
       tls: c.tls || { enable: false },
-      redact: c.redact || { enable: true },
+      redact: maskRedactCfg(c),
       replace: c.replace || { out: [], inc: [] },
       record: c.record || { enable: false, server: '' },
       thinkingSummary: c.thinkingSummary || { enable: false, mode: 'truncate', maxCharsPerSegment: 80, summarizeBaseUrl: '', summarizeApiKey: '', summarizeModel: '', summarizePrompt: '用一句话中文概括以下思考片段:', maxSegments: 12 },
@@ -1009,7 +1030,14 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     if (data.gatewayKey !== undefined) c.gatewayKey = data.gatewayKey;
     if (data.adminKey !== undefined) c.adminKey = data.adminKey;
     if (data.tls !== undefined) c.tls = data.tls;
-    if (data.redact !== undefined && data.redact && typeof data.redact === 'object') c.redact = data.redact;
+    if (data.redact !== undefined && data.redact && typeof data.redact === 'object') {
+      /* 合并而不是整体替换: 老面板只发 {enable}, 不能把 extra 规则清空 */
+      const next = Object.assign({}, c.redact || {}, data.redact);
+      next.enable = next.enable !== false;
+      next.response = !!next.response;
+      next.extra = normalizeRedactExtra(next.extra);
+      c.redact = next;
+    }
     if (data.replace !== undefined && data.replace && typeof data.replace === 'object') {
       const rp = data.replace;
       c.replace = {
@@ -1807,7 +1835,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     if (inst === currentName(cfg)) {
       return jsonRes(res, 200, {
         requests: cfg._stats.requests, inflight: inflightOf(cfg), errors: cfg._stats.errors,
-        retries: cfg._stats.retries || 0, onceChannel: cfg._onceChannel || null, context: cfg._lastCtx ? Object.assign({}, cfg._lastCtx, { soft: (cfg.contextLimit||{}).soft || 80, hard: (cfg.contextLimit||{}).hard || 0 }) : null,
+        retries: cfg._stats.retries || 0, onceChannel: cfg._onceChannel || null, context: cfg._lastCtx ? Object.assign({}, cfg._lastCtx, { soft: (cfg.contextLimit||{}).soft || 80, hard: (cfg.contextLimit||{}).hard || 0, history: (cfg._ctxHist || []).slice(-24) }) : null,
         byChannel: cfg._stats.byChannel, byKey: cfg._stats.byKey || {}, byModel: cfg._stats.byModel || {}, daily: cfg._stats.daily || {}, startedAt: cfg._stats.startedAt,
         uptime: Math.round(process.uptime()),
       });
@@ -1836,6 +1864,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
           prompt: cx.prompt || 0, window: cx.window || 0, percent: cx.percent,
           est: !!cx.est, inflight: inflightOf(c),
           soft: (c.contextLimit || {}).soft || 80, hard: (c.contextLimit || {}).hard || 0,
+          history: (c._ctxHist || []).slice(-24),
         });
       }
     }
