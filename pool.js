@@ -62,10 +62,10 @@ const GENERIC_BALANCE_PATHS = new Set([
 function setupModelSync(cfg) {
   teardownModelSync(cfg);
   if (!(cfg.modelSync && cfg.modelSync.enable !== false)) return;
-  const hrs = Math.max(1, Number(cfg.modelSync.intervalHours) || 24);
+  const min = Number(cfg.modelSync.intervalMin) > 0 ? Number(cfg.modelSync.intervalMin) : Math.max(1, Number(cfg.modelSync.intervalHours) || 24) * 60;
   const run = () => syncModels(cfg).catch(e => logErr('[sync:' + instName(cfg) + '] 定时任务出错:', e.message));
   cfg._syncTimer0 = setTimeout(run, 30000); // 启动 30 秒后首次同步, 不阻塞启动
-  cfg._syncTimer = setInterval(run, hrs * 3600 * 1000);
+  cfg._syncTimer = setInterval(run, Math.max(60, min) * 1000);
 }
 function teardownModelSync(cfg) {
   if (cfg._syncTimer0) { clearTimeout(cfg._syncTimer0); cfg._syncTimer0 = null; }

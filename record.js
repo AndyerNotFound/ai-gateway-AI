@@ -64,8 +64,10 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
   const { direct, stream, upApi } = built;
   const { logMeta, t0, usageCapture, stats } = ctx;
   const rpInc = (cfg.replace && Array.isArray(cfg.replace.inc)) ? rpCompile(cfg.replace.inc) : [];
-  const dsmlOn = !!(cfg.dsmlClean && cfg.dsmlClean.enable);        // 内置 DSML 标记清洗(默认开)
-  const dsmlThink = !!(cfg.dsmlClean && cfg.dsmlClean.reasoning); // 思考字段是否也清
+  // 渠道级覆盖(ch.transcreet): on / off / res-only; 未设=沿用实例全局 dsmlClean
+  const chTrans = ch && ch.transcreet ? String(ch.transcreet).toLowerCase() : '';
+  const dsmlOn = chTrans === 'off' ? false : (chTrans ? true : !!(cfg.dsmlClean && cfg.dsmlClean.enable));        // 内置 DSML 标记清洗(默认开)
+  const dsmlThink = chTrans === 'on' ? true : (chTrans === 'off' || chTrans === 'res-only') ? false : !!(cfg.dsmlClean && cfg.dsmlClean.reasoning); // 思考字段是否也清
   /* ★DSML 清洗只对"能按事件解析"的响应生效: SSE 流 与 非流式 JSON。
    *   Gemini 的 JSON 数组流(content-type: application/json)不解析 —— 要解析就得整份缓冲,
    *   会把"边收边发"退化成"收完再发"(打字机效果直接没了)。那条链路维持原样。 */
@@ -386,9 +388,9 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
       if (__hit) {
         const __rule = __hit.rule;
         const __mx = Math.max(0, Number(__rule.max) || 0), __wn = Math.max(0, Number(__rule.warn) || 0);
-        if (__mx > 0 || __wn > 0) {
+        if ((__mx > 0 || __wn > 0) && (cfg.ctxpMode || 'force') !== 'none') {
           const __estC = estPromptAdj(cfg, canonical.model, canonical).total;
-          if (__mx > 0 && __estC > __mx) {
+          if ((cfg.ctxpMode || 'force') === 'force' && __mx > 0 && __estC > __mx) {
             log('[ctxp] 拒收超限请求 model=' + canonical.model + ' est=' + __estC + ' max=' + __mx + ' (rule ' + __hit.pattern + ')');
             stats.errors++;
             return sendError(clientFormat, res, 400,

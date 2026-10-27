@@ -70,6 +70,11 @@ function applyDefaults(cfg) {
   cfg.modelSync = cfg.modelSync && typeof cfg.modelSync === 'object' ? cfg.modelSync : {};
   cfg.modelSync.enable = cfg.modelSync.enable !== false; // 默认开
   cfg.modelSync.intervalHours = Math.max(1, Number(cfg.modelSync.intervalHours) || 24);
+  cfg.modelSync.intervalMin = Number(cfg.modelSync.intervalMin) > 0 ? Number(cfg.modelSync.intervalMin) : null; // loop: fetch=<分钟>
+  // 管理端资料(agw admin profile) 与全局 ctxp 执行模式(agw inst edit ctxp=)
+  const __ap = (cfg.adminProfile && typeof cfg.adminProfile === "object") ? cfg.adminProfile : {};
+  cfg.adminProfile = { name: String(__ap.name || ""), avatar: String(__ap.avatar || ""), profile: String(__ap.profile || ""), other: String(__ap.other || "") };
+  cfg.ctxpMode = ["force", "warn", "none"].includes(String(cfg.ctxpMode || "")) ? String(cfg.ctxpMode) : "force";
   cfg.maxBodyBytes = Number(cfg.maxBodyBytes || 64 * 1024 * 1024);
   cfg.connectTimeout = Number(cfg.connectTimeout || 15000);
   cfg.responseTimeout = Number(cfg.responseTimeout || 180000);
@@ -172,6 +177,10 @@ function loadConfig(file) {
       modelMap: (ch.modelMap && typeof ch.modelMap === 'object' && !Array.isArray(ch.modelMap)) ? ch.modelMap : null,
       default: !!ch.default,
       delayMs: Math.max(0, Number(ch.delayMs) || 0),
+      // 渠道锁定(loop: chan lock/unlock) 与 DSML 清洗覆盖(loop: chan edit transcreet)
+      lockAt: Number(ch.lockAt) > 0 ? Number(ch.lockAt) : null,   // 何时开始锁(ms epoch)
+      lockUntil: Number(ch.lockUntil) > 0 ? Number(ch.lockUntil) : null, // 何时自动解锁(ms epoch, 空=手动解锁)
+      transcreet: ['on', 'off', 'res-only'].includes(String(ch.transcreet || '').toLowerCase()) ? String(ch.transcreet).toLowerCase() : null,
       useResponses: ch.useResponses === undefined ? undefined : !!ch.useResponses,
       probe: !!ch.probe,
       addUsage: ch.addUsage !== false,

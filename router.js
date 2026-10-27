@@ -18,8 +18,18 @@ const admin = require('./admin');
 
 // 收集所有匹配该 model 的候选渠道, 按 round-robin 计数器旋转起始位置
 // 返回 [{ ch, upstreamModel }, ...] (已旋转, 第一个该本轮使用)
+// 渠道锁定判定: lockAt=开始锁定的时间戳, lockUntil=解锁时间戳(0/空=手动解锁前一直锁)
+function channelLocked(ch, now) {
+  if (!ch) return false;
+  const t = now || Date.now();
+  const at = Number(ch.lockAt) || 0, until = Number(ch.lockUntil) || 0;
+  if (!at && !until) return false;
+  if (at && t < at) return false;         // 还没到锁定时刻
+  if (until && t >= until) return false;  // 已过解锁时刻
+  return true;
+}
 function pickChannels(cfg, model, forceName) {
-  const chs = cfg.channels || [];
+  const chs = (cfg.channels || []).filter(c => !channelLocked(c)); // 锁定的渠道不参与路由
   const candidates = [];
   // 手动路由: 请求头 x-agw-channel > 实例级 forceChannel > 自动匹配。命中即单渠道, 不参与轮转
   const forced = forceName ? String(forceName).trim() : '';
@@ -370,4 +380,4 @@ function modelsResponse(cfg, format) {
   return { object: 'list', data: ms.map(m => ({ id: m, object: 'model', type: 'model', created: 1700000000, owned_by: 'ai-gateway', display_name: m })) };
 }
 
-module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, ctxp, state, admin, pickChannels, forcedChannelName, globMatch, matchContextWindow, CJK_RE, countCjk, tokOf, analyzePrompt, estimatePromptTokens, estimatePromptDist, EST_RATIO_MIN, calibRatio, calibUpdate, estPromptAdj, scaleDist, recordContext, pickChannel, collectJson, availableBranches, genApiKey, persistRuntimeCfg, hashPassword, verifyPassword, keyCreditsJSON, checkAuth, cfgDirOf, keyUsageFile, loadKeyUsage, saveKeyUsage, makeGatewayApi, corsHeaders, jsonErr, sendJson, sendError, collectModels, modelsResponse };
+module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, ctxp, state, admin, pickChannels, channelLocked, forcedChannelName, globMatch, matchContextWindow, CJK_RE, countCjk, tokOf, analyzePrompt, estimatePromptTokens, estimatePromptDist, EST_RATIO_MIN, calibRatio, calibUpdate, estPromptAdj, scaleDist, recordContext, pickChannel, collectJson, availableBranches, genApiKey, persistRuntimeCfg, hashPassword, verifyPassword, keyCreditsJSON, checkAuth, cfgDirOf, keyUsageFile, loadKeyUsage, saveKeyUsage, makeGatewayApi, corsHeaders, jsonErr, sendJson, sendError, collectModels, modelsResponse };

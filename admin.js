@@ -227,7 +227,7 @@ function totpVerify(secretB32, code) {
   return false;
 }
 
-// 管理端认证: webToken(访问令牌, agw web 生成)主验证 + 可选第二验证(adminAuth.secondKey 第二密码 / adminAuth.totpSecret TOTP)
+// 管理端认证: webToken(访问令牌, agw admin login 生成)主验证 + 可选第二验证(adminAuth.secondKey 第二密码 / adminAuth.totpSecret TOTP)
 function checkAdminAuth(cfg, req, query) {
   const h = req.headers;
   const auth = h.authorization || '';
@@ -284,6 +284,7 @@ function maskedChannels(cfg, reveal) {
     proxy: c.proxy || null, models: c.models, modelMap: c.modelMap,
     default: c.default, hasKey: !!(c.apiKey && c.apiKey.length),
     useResponses: c.useResponses === undefined ? undefined : !!c.useResponses, delayMs: c.delayMs || 0, probe: !!c.probe,
+    lockAt: c.lockAt || null, lockUntil: c.lockUntil || null, transcreet: c.transcreet || null,
     // 余额透传配置(非敏感, 面板可编辑; 缺省=用内置预设)
     balanceUrl: c.balanceUrl || null, balancePath: c.balancePath || null, balanceUnit: c.balanceUnit || null,
     warnBelow: c.warnBelow || null,
@@ -711,9 +712,9 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
   };
   const authDeny = () => textRes(res, 401, '<!doctype html><meta charset="utf-8"><title>401</title>'
     + '<body style="font-family:sans-serif;background:#1c1b1f;color:#e6e1e5;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">'
-    + '<div>⚠️ 需要访问令牌: 请访问 <code>/auth?key=<访问令牌></code>(agw web login 生成)</div></body>', 'text/html; charset=utf-8');
+    + '<div>⚠️ 需要访问令牌: 请访问 <code>/auth?key=<访问令牌></code>(agw admin login 生成)</div></body>', 'text/html; charset=utf-8');
 
-  // /auth/<sid>/<token> — 一次性路径式登录(agw web login 生成):
+  // /auth/<sid>/<token> — 一次性路径式登录(agw admin login 生成):
   // 令牌校验通过 + 消耗预注册的 sid → 以 sid 为会话 ID 签发 7 天会话, 链接从此作废(防历史记录/分享重放)
   const pm = (req.method === 'GET') && p.match(/^\/auth\/([A-Za-z0-9_-]{16,128})\/([A-Za-z0-9_-]{8,256})\/?$/);
   if (pm) {
@@ -723,7 +724,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     const pend = cfg._webSessPend && cfg._webSessPend.get(sid) > Date.now();
     if (!pend) return textRes(res, 401, '<!doctype html><meta charset="utf-8"><title>401</title>'
       + '<body style="font-family:sans-serif;background:#1c1b1f;color:#e6e1e5;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">'
-      + '<div>⚠️ 登录链接已失效或已使用, 请在服务器重新执行 <code>agw web login</code></div></body>', 'text/html; charset=utf-8');
+      + '<div>⚠️ 登录链接已失效或已使用, 请在服务器重新执行 <code>agw admin login</code></div></body>', 'text/html; charset=utf-8');
     cfg._webSessPend.delete(sid); // 一次性
     const f = path.join(CORE, 'm3', 'index.html');
     if (!fs.existsSync(f)) return textRes(res, 404, 'M3 面板未找到, 请把 index.html 放到 ' + path.join(CORE, 'm3'));
@@ -800,18 +801,18 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
   if (!p.startsWith('/admin/api/')) return null; // 不是管理路由, 交给后续
 
   if (!checkAdminAuth(cfg, req, u.searchParams)) {
-    return jsonRes(res, 401, { error: '需要访问令牌 (webToken, agw web login 生成)' });
+    return jsonRes(res, 401, { error: '需要访问令牌 (webToken, agw admin login 生成)' });
   }
 
   const api = p.slice('/admin/api/'.length);
 
-  // POST /admin/api/web-expired — 注销全部面板会话(agw web --expired)
+  // POST /admin/api/web-expired — 注销全部面板会话(agw admin expire)
   if (api === 'web-expired') {
     if (cfg._webSess) cfg._webSess.clear();
     if (cfg._webSessPend) cfg._webSessPend.clear();
     return jsonRes(res, 200, { ok: true, cleared: true });
   }
-  // POST /admin/api/web-session {sid} — 注册一次性登录链接的会话UID(agw web login, 15 分钟有效)
+  // POST /admin/api/web-session {sid} — 注册一次性登录链接的会话UID(agw admin login, 15 分钟有效)
   if (api === 'web-session') {
     let j = null; try { j = JSON.parse(bodyStr || '{}'); } catch (_) {}
     const sid = String((j && j.sid) || '');
@@ -1064,6 +1065,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       keyLength: c.keyLength || 24,
       registration: c.registration || { enable: false },
       modelSync: c.modelSync || { enable: true, intervalHours: 24 },
+      ctxpMode: c.ctxpMode || 'force',
       proxies: c.proxies || {},
       channels: maskedChannels(c, reveal),
       forceChannel: c.forceChannel || null,
@@ -1104,8 +1106,10 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       c.modelSync = {
         enable: data.modelSync.enable !== false,
         intervalHours: Math.max(1, Number(data.modelSync.intervalHours) || 24),
+        intervalMin: Number(data.modelSync.intervalMin) > 0 ? Number(data.modelSync.intervalMin) : null,
       };
     }
+    if (data.ctxpMode !== undefined) c.ctxpMode = ['force', 'warn', 'none'].includes(String(data.ctxpMode)) ? String(data.ctxpMode) : 'force';
     // 卡密长度(8-128)
     if (data.keyLength !== undefined) c.keyLength = Math.min(128, Math.max(8, Number(data.keyLength) || 24));
     // 注册设置
@@ -1884,7 +1888,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return n;
   }
 
-// 实例仪表字段(供 agw loop 等 CLI 用; 原 /status 已删除)
+// 实例仪表字段(供 agw inst/admin 等 CLI 用; 原 /status 已删除)
 function dashOf(c) {
   return {
     version: VERSION, listen: c.listen,
@@ -2100,12 +2104,12 @@ let curTab='instances', curInst='\${instName}';
 
 // 如果没密码, 弹框输入并写 cookie
 if(!adminKey){
-  const input = prompt('请输入访问令牌 (webToken, agw web login 生成):');
+  const input = prompt('请输入访问令牌 (webToken, agw admin login 生成):');
   if(input){
     document.cookie = 'agwWeb='+input+';path=/;max-age=86400';
     location.search = '?key='+encodeURIComponent(input);
   } else {
-    document.querySelector('.m3').innerHTML='<div class="card"><h2>需要访问令牌</h2><p>请在服务器执行 agw web login 获取登录链接</p></div>';
+    document.querySelector('.m3').innerHTML='<div class="card"><h2>需要访问令牌</h2><p>请在服务器执行 agw admin login 获取登录链接</p></div>';
   }
 }
 

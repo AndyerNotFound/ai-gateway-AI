@@ -206,12 +206,12 @@ function parseUserPass(s) { // user[:pass]@host[:port]
 function cmdInst(argv) {
   const a = argv[0];
   if (canLoop() && a && !a.startsWith('-') && !['help', '--help', 'list', 'delete'].includes(a) && argv.length === 1 && listInsts().includes(a)) return loopInst(a);
-  if (canLoop() && !a) return loopInst('default');
+  if (!a) return cmdInst(['list']);
   if (!a || a === 'help' || a === '--help') {
     console.log(t(`用法:
   agw inst list                     列出全部实例(端口/运行态/TLS)
   agw inst delete <name> [-y]       删除实例(配置/日志/pid, default 不可删)
-  agw inst <name> [start|stop]      启动/停止(缺省=显示状态)
+  agw inst <name> [start|stop]      启动/停止(缺省=进入实例 loop)
   agw inst <name> --status <kind>   日志/统计: all|requests|error|debug (默认 all, 50 行)
   agw inst <name> --apikey <key>    设置 Gateway-Key(空串=清除)
   agw inst <name> --adminkey <key>  设置管理令牌(= --webtoken 面板令牌)
@@ -290,6 +290,23 @@ function cmdInst(argv) {
         for (const [cn, v] of rows) console.log(`    ${pad(cn, 20)} ${v.requests}次 ${v.errors ? C.red(v.errors + '错') : ''}`);
       } catch (e) { if (kind === 'requests') die(e.message); }
     }
+    if (kind === 'usage') {
+      try {
+        const d = await api('GET', `/admin/api/stats?instance=${encodeURIComponent(name)}`);
+        const s2 = d.stats || d;
+        const rows = Object.entries(s2.byChannel || {}).sort((x, y) => (y[1].requests || 0) - (x[1].requests || 0));
+        if (rows.length) {
+          console.log(C.dim('  渠道用量(请求 / 输入 / 输出)'));
+          for (const [cn, v] of rows) console.log(`    ${pad(cn, 20)} ${pad(String(v.requests || 0), 7)} ${pad(fmtTok(v.inputTokens || 0), 9)} ${pad(fmtTok(v.outputTokens || 0), 9)}`);
+        }
+        const ks = Object.entries(s2.byKey || {}).sort((x, y) => (y[1].requests || 0) - (x[1].requests || 0));
+        if (ks.length) {
+          console.log(C.dim('  卡密用量'));
+          for (const [kn, v] of ks.slice(0, 20)) console.log(`    ${pad(kn, 20)} ${pad(String(v.requests || 0), 7)}次`);
+        }
+        if (!rows.length && !ks.length) console.log(C.dim('  暂无用量'));
+      } catch (e) { die(e.message); }
+    }
     if (kind === 'error' || kind === 'all') {
       let log = '';
       try { log = await api('GET', `/admin/api/logs/${encodeURIComponent(name)}?lines=400`); } catch (e) { log = ''; }
@@ -319,7 +336,6 @@ function cmdInst(argv) {
  * ================================================================ */
 function cmdRouter(argv) {
   const name = argv[0];
-  if (canLoop() && name && !name.startsWith('-') && name !== 'help' && argv.length === 1 && listInsts().includes(name)) return loopRouter(name);
   if (!name || name === 'help' || /help/.test(argv[1] || '')) {
     console.log(t(`用法:
   agw router <inst>                          查看路由相关配置
@@ -385,8 +401,9 @@ function cmdChan(argv) {
     if (argv[1] === '--sdk') { c.channels = c.channels || []; const v = argv[2]; if (!['openai', 'gemini', 'claude'].includes(v)) die('--sdk 只接受 openai|gemini|claude'); c.channels.forEach(ch => { if (!ch.type) ch.type = v; }); saveCfg(name, c); return ok(`缺省 type 写入无 type 的渠道=${v}`); }
     if (!c.channels || !c.channels.length) return console.log('  (无渠道)');
     for (const ch of c.channels) {
-      console.log(`  ${C.cyn(pad(ch.name, 18))} ${pad(ch.type || 'openai', 8)} ${trunc(ch.baseUrl, 46)}
-      models:${(ch.models || []).length || '-'} map:${Object.keys(ch.modelMap || {}).length} proxy:${ch.proxy || '-'} bal:${ch.balanceUrl ? 'custom' : ''}${ch.balanceWarn ? C.yel(' warn<' + ch.balanceWarn + '>') : ''}`);
+      const lk = chanLockInfo(ch);
+      console.log(`  ${C.cyn(pad(ch.name, 18))} ${pad(ch.type || 'openai', 8)} ${trunc(ch.baseUrl, 46)}${ch.default ? C.grn(' [默认]') : ''}${lk.locked ? C.red(' [锁定]') + C.dim(' 至 ' + fmtWhen(lk.until || 0)) : lk.scheduled ? C.yel(' [待锁定 ' + fmtWhen(lk.at) + ']') : ''}
+      models:${(ch.models || []).length || '-'} map:${Object.keys(ch.modelMap || {}).length} proxy:${ch.proxy || '-'} delay:${ch.delayMs || 0}ms dsml:${ch.transcreet || 'inherit'} bal:${ch.balanceUrl ? 'custom' : ''}${ch.balanceWarn ? C.yel(' warn<' + ch.balanceWarn + '>') : ''}`);
     }
     return;
   }
@@ -501,6 +518,7 @@ function cmdCtxp(argv) {
   num 支持 200k / 2m / 200000`)); return; }
   if (argv[0] === 'clear') { ctxp.writeRules({}); return ok('已清空全部 ctxp 规则'); }
   const pat = argv[0];
+  if (!pat && canLoop()) return loopCtxp();
   if (!pat) { show(); return; }
   const maxV = get('--max'), warnV = get('--warn'), killV = get('--kill');
   if (maxV == null && warnV == null && killV == null) { // 查询单条
@@ -521,6 +539,79 @@ function cmdCtxp(argv) {
   }
   ctxp.writeRules(rules);
   ok(t('规则 %s 已保存(热生效)').replace('%s', pat)); show();
+}
+
+
+/* ---------- 上下文上限 loop ---------- */
+const HELP_CTXP = t(`上下文上限 loop 命令:
+  stat <模型|*>                查看规则(*=全部)
+  edit                         编辑 loop(models= / max= / warn=, apply 生效)
+  delete <模型|*>              删除规则(*=清空全部)
+  空行                          查看全部规则`);
+function loopCtxp() {
+  let mode = null;
+  const view = () => {
+    const rules = ctxp.loadRules(), ks = Object.keys(rules);
+    if (!ks.length) return console.log('  (无规则)');
+    ks.forEach(k => {
+      const r = rules[k] || {};
+      console.log(`  ${pad(k, 24)} max=${r.max ? fmtN(r.max) : C.dim('-')}  warn=${r.warn ? fmtN(r.warn) : C.dim('-')}`);
+    });
+  };
+  const editView = () => {
+    console.log(C.bold('■ 编辑 ctxp 规则') + C.dim('  (key=value, apply 生效, exit 返回)'));
+    console.log(`  models=${mode.pattern || C.dim('(未设)')}  max=${mode.max || '-'}  warn=${mode.warn || '-'}`);
+  };
+  const apply = () => {
+    if (!mode.pattern) return console.log(C.yel('先设 models=<模型通配>'));
+    const body = { model: mode.pattern };
+    if (mode.max !== undefined) body.max = mode.max;
+    if (mode.warn !== undefined) body.warn = mode.warn;
+    return api('POST', '/admin/api/ctxp', body)
+      .then(() => { ok('规则已保存: ' + mode.pattern); mode = null; view(); })
+      .catch(e => console.log(C.yel('保存失败: ' + e.message)));
+  };
+  const before = raw => {
+    if (!mode) return;
+    const line = raw.trim();
+    if (/^(exit|done|q|:q|back)$/i.test(line)) { mode = null; console.log(C.dim('已返回 ctxp loop')); view(); return true; }
+    if (!line) { editView(); return true; }
+    if (/^(apply|save)$/i.test(line)) return apply() || true;
+    const eq = line.indexOf('=');
+    if (eq < 0) { console.log(C.yel('edit: models=… / max=… / warn=… / apply / exit')); return true; }
+    const k = line.slice(0, eq).trim().toLowerCase(), v = line.slice(eq + 1).trim();
+    if (k === 'models') mode.pattern = v;
+    else if (k === 'max' || k === 'warn') {
+      const n = parseNum(v);
+      if (!(n > 0)) return console.log(C.yel(k + ' 需要正数(支持 200k/2m)')), true;
+      mode[k] = Math.round(n);
+    }
+    else console.log(C.yel('未知字段: ' + k));
+    editView(); return true;
+  };
+  const commands = {
+    stat: a => {
+      const rules = ctxp.loadRules(), pat = a[0] || '*';
+      const ks = Object.keys(rules).filter(k => pat === '*' || k === pat || ctxp.globMatch(pat, k));
+      if (!ks.length) return console.log(pat === '*' ? '  (无规则)' : '  无匹配规则: ' + pat);
+      ks.forEach(k => { const r = rules[k] || {}; console.log(`  ${pad(k, 24)} max=${r.max ? fmtN(r.max) : '-'}  warn=${r.warn ? fmtN(r.warn) : '-'}`); });
+    },
+    edit: () => { mode = { pattern: '', max: undefined, warn: undefined }; editView(); },
+    delete: a => {
+      if (!a[0]) return console.log('用法: delete <模型|*>');
+      if (a[0] === '*') return api('POST', '/admin/api/ctxp', { rules: {} }).then(() => { ok('已清空全部规则'); view(); }).catch(e => console.log(C.yel('删除失败: ' + e.message)));
+      return api('POST', '/admin/api/ctxp', { model: a[0], max: 0, warn: 0 }).then(() => { ok('已删除: ' + a[0]); view(); }).catch(e => console.log(C.yel('删除失败: ' + e.message)));
+    },
+  };
+  return startRepl({
+    title: 'agw 上下文上限 loop',
+    prompt: () => mode ? 'agw·ctxp [edit]> ' : 'agw·ctxp> ',
+    help: HELP_CTXP,
+    refresh: view,
+    commands,
+    before: before,
+    unknown: parts => console.log(C.yel('未知命令: ' + parts[0] + '  (help 查看)')),
+  });
 }
 
 /* ================================================================
@@ -631,10 +722,10 @@ function cmdRecord(argv) {
   hotRestart(inst);
 }
 function cmdCloudflared(argv) {
+  if (!argv.length && canLoop()) return loopCf();
   const a = (argv[0] || '').toLowerCase();
-  if (!['start', 'stop', 'restart', 'clear', 'status'].includes(a)) { console.log(t('用法: agw cloudflared <start|stop|restart|clear|status>')); return; }
+  if (!['start', 'stop', 'restart', 'clear'].includes(a)) { console.log(t('用法: agw cloudflared <start|stop|restart|clear>')); return; }
   const get = () => api('GET', '/admin/api/tunnel');
-  if (a === 'status') return get().then(d => console.log(`  running=${d.running}  url=${d.url || '-'}${(d.log || []).length ? '\n' + C.dim((d.log || []).slice(-3).join('\n')) : ''}`));
   if (a === 'clear') return get().then(() => api('POST', '/admin/api/tunnel', { action: 'stop' })).then(() => ok('隧道已停止并清理状态'));
   if (a === 'restart') return api('POST', '/admin/api/tunnel', { action: 'stop' }).then(() => new Promise(r => setTimeout(r, 800))).then(() => api('POST', '/admin/api/tunnel', { action: 'start' })).then(() => new Promise(r => setTimeout(r, 2500))).then(get).then(d => ok('隧道已重启: ' + (d.url || '(域名获取中, 稍后 agw cloudflared status)')));
   const act = a;
@@ -642,6 +733,74 @@ function cmdCloudflared(argv) {
     if (act === 'start') return new Promise(r => setTimeout(r, 2500)).then(get).then(d => ok('隧道启动: ' + (d.url || '(域名获取中, 稍后 status 查看)')));
     ok('隧道已停止');
   }).catch(e => die(e.message));
+}
+
+/* ---------- 隧道 loop ---------- */
+const HELP_CF = t(`隧道管理 loop 命令:
+  log [silence|log|warn|error|debug]   日志尾部(可按级别过滤)
+  grep <time|line|content|other> <值>  日志过滤
+  kill                                 立即停止隧道
+  start | stop                         启动/停止
+  空行                                 刷新状态`);
+function loopCf() {
+  const get = () => api('GET', '/admin/api/tunnel');
+  const view = () => get().then(d => {
+    console.log(`  隧道 running=${d.running ? C.grn('on') : C.dim('off')}  url=${d.url || '-'}`);
+    (d.log || []).slice(-8).forEach(l => console.log('  ' + trunc(l, 160)));
+  }).catch(e => console.log(C.yel('隧道状态读取失败: ' + e.message)));
+  const grep = a => {
+    const mode = (a[0] || '').toLowerCase(), val = a.slice(1).join(' ');
+    return get().then(d => {
+      let lines = (d.log || []).slice();
+      if (mode === 'line') lines = lines.slice(-(Math.max(1, Number(val) || 50)));
+      else if (mode === 'content') lines = val ? lines.filter(l => l.toLowerCase().includes(val.toLowerCase())) : lines;
+      else if (mode === 'other') {
+        let re; try { re = new RegExp(val || '.', 'i'); } catch (e) { return console.log(C.yel('正则无效: ' + e.message)); }
+        lines = lines.filter(l => re.test(l));
+      } else if (mode === 'time') {
+        const win = parseWhen(val || '10m'), nowT = Date.now();
+        const from = win > nowT ? nowT - (win - nowT) : win;
+        lines = lines.filter(l => {
+          const m = l.match(/\[(\d{2}):(\d{2}):(\d{2})\]/);
+          if (!m) return false;
+          const t = new Date(); t.setHours(Number(m[1]), Number(m[2]), Number(m[3]), 0);
+          return t.getTime() >= from;
+        });
+      } else return console.log('用法: grep <time|line|content|other> <值>');
+      if (!lines.length) return console.log(C.dim('  无匹配日志'));
+      lines.slice(-200).forEach(l => console.log('  ' + trunc(l, 180)));
+    }).catch(e => console.log(C.yel('日志读取失败: ' + e.message)));
+  };
+  const commands = {
+    log: a => {
+      const lv = (a[0] || 'log').toLowerCase();
+      if (lv === 'silence') return console.log(C.dim('  (静默)'));
+      return get().then(d => {
+        let lines = (d.log || []).slice(-40);
+        if (lv !== 'log') lines = lines.filter(l => new RegExp(lv, 'i').test(l));
+        if (!lines.length) return console.log(C.dim('  无日志'));
+        lines.forEach(l => console.log('  ' + trunc(l, 180)));
+      }).catch(e => console.log(C.yel('日志读取失败: ' + e.message)));
+    },
+    grep: grep,
+    kill: () => api('POST', '/admin/api/tunnel', { action: 'stop' }).then(() => { ok('隧道已停止'); view(); }).catch(e => console.log(C.yel('停止失败: ' + e.message))),
+    start: a => {
+      if (a.includes('-t') || a.includes('--time') || a.includes('-w') || a.includes('--wait')) return console.log(C.yel('定时启停需要网关常驻调度, 暂不支持'));
+      return api('POST', '/admin/api/tunnel', { action: 'start' }).then(() => new Promise(r => setTimeout(r, 2500))).then(get).then(d => { ok('隧道启动: ' + (d.url || '(域名获取中)')); }).catch(e => console.log(C.yel('启动失败: ' + e.message)));
+    },
+    stop: a => {
+      if (a.includes('-t') || a.includes('--time') || a.includes('-w') || a.includes('--wait')) return console.log(C.yel('定时启停需要网关常驻调度, 暂不支持'));
+      return api('POST', '/admin/api/tunnel', { action: 'stop' }).then(() => { ok('隧道已停止'); view(); }).catch(e => console.log(C.yel('停止失败: ' + e.message)));
+    },
+  };
+  return startRepl({
+    title: 'agw 隧道管理 loop',
+    prompt: () => 'agw·cloudflared> ',
+    help: HELP_CF,
+    refresh: view,
+    commands,
+    unknown: parts => console.log(C.yel('未知命令: ' + parts[0] + '  (help 查看)')),
+  });
 }
 
 /* ================================================================
@@ -662,7 +821,7 @@ function cmdEncrypt(argv) {
   const [scope, pass] = argv;
   if (!scope || /help/.test(scope)) { console.log(t(`用法:
   agw encrypt <all|inst> [password]     口令缺省=用 .agwkey(推荐: agw 才能继续编辑; 自定义口令仅作归档)
-  agw decrypr <all|inst> [password]     解密(别名 decrypt)
+  agw decrypr <all|inst> [password]     解密
   agw recrypt <all|inst> [new-password] 换口令重加密`)); return; }
   const p = pass || crypt.loadPass();
   if (!p) die('无口令: 传参或设置 AGW_CRYPT_PASS / .agwkey');
@@ -804,7 +963,6 @@ function cmdNotice(argv) {
   setTimeout(() => { if (!n) console.log('  一切正常'); }, 1500);
 }
 function cmdStat(argv) {
-  if (!argv.length && canLoop()) return loopStat('default');
   const ri = argv.indexOf('--refresh');
   if (ri >= 0) {
     const val = Number(argv[ri + 1]);
@@ -993,85 +1151,9 @@ async function cmdWeb(argv) {
 
 }
 
-/* ==================== agw loop — 交互式管理台(REPL) ==================== */
-function loopDash(inst) { // 单屏仪表: 实例列表 + 网关信息/渠道/探测 + 统计
-  return Promise.all([
-    api('GET', '/admin/api/instances').catch(() => null),
-    api('GET', '/admin/api/stats?instance=' + encodeURIComponent(inst)).catch(() => null),
-  ]).then(([il, st]) => {
-    const W = Math.min(72, process.stdout.columns || 72);
-    const line = '─'.repeat(W);
-    console.log(C.cyn('┌' + line + '┐'));
-    if (il && (il.instances || il.length)) {
-      const its = il.instances || il;
-      console.log('│ 实例 ' + its.map(x => (x.running ? C.grn('●') : C.dim('○')) + (x.name === inst ? C.bold(x.name) : x.name)).join('  '));
-    } else console.log('│ 实例 ' + C.dim('(获取失败)'));
-    if (st) {
-      const up = st.uptime >= 3600 ? Math.floor(st.uptime / 3600) + 'h' + Math.floor((st.uptime % 3600) / 60) + 'm' : Math.floor(st.uptime / 60) + 'm';
-      console.log('│ 网关 v' + (st.version || '?') + '  uptime ' + up + '  监听 ' + (((st.listen || {}).host) || '?') + ':' + (((st.listen || {}).port) || '?'));
-      console.log('│ 渠道 ' + ((st.channels || []).map(c => c.name + '(' + (c.models || 0) + ')').join('  ') || C.dim('无')));
-      const prs = Object.entries(st.probe || {}).map(([k, v]) => k + ' ' + (v.rate == null ? C.dim('-') : (v.rate >= 90 ? C.grn(v.rate + '%') : C.yel(v.rate + '%')))).join('  ');
-      if (prs) console.log('│ 探测 ' + prs);
-    }
-    if (st && st.requests != null) {
-      console.log('│ 统计 请求 ' + (st.requests || 0) + '  错误 ' + (st.errors || 0) + '  重试 ' + (st.retries || 0) + '  进行中 ' + (st.inflight || 0));
-      const tops = Object.entries(st.byChannel || {}).sort((a, b) => ((b[1] || {}).requests || 0) - ((a[1] || {}).requests || 0)).slice(0, 6)
-        .map(([k, v]) => k + ' ' + ((v || {}).requests || 0) + '次/' + ((v || {}).outputTokens || 0) + 'tok').join('  ');
-      if (tops) console.log('│ 用量 ' + tops);
-    } else console.log('│ ' + C.dim('统计获取失败(实例未运行?)'));
-    console.log(C.cyn('└' + line + '┘'));
-  });
-}
-function cmdLoop(argv) {
-  const has = f => argv.includes(f);
-  if (has('help') || has('--help')) { console.log(t('用法: agw loop [实例]\n  交互式管理台: 短命令连发; 空行或 stat 刷新仪表\n  命令: stat [daily|weekly|monthly|models|dist] inst [args] chan [args] card [args] logs [行数] use <实例> watch [秒|off] help exit')); return; }
-  const ii = argv.indexOf('--inst');
-  let cur = (ii >= 0 && argv[ii + 1]) ? argv[ii + 1] : (argv[0] && !argv[0].startsWith('-') ? argv[0] : 'default');
-  process.env.AGW_NO_LOOP = '1'; // 综合台内命令保持一次性输出, 不嵌套分域 loop
-  const rl = require('readline').createInterface({ input: process.stdin, output: process.stdout, prompt: '' });
-  let watchTimer = null, closing = false;
-  const P = () => { if (!closing) { try { rl.prompt(); } catch (_) {} } };
-  const setPrompt = () => rl.setPrompt(C.cyn('agw·' + cur + '> '));
-  setPrompt();
-  const H = t('命令: stat 刷新仪表 | stat daily|weekly|monthly|models|dist [实例] | inst list/<名> [start|stop] | chan [args] | card list/--generate | logs [行数] | use <实例> 切换 | watch [秒|off] 定时刷新 | help | exit');
-  const run = (raw) => {
-    const args = String(raw || '').trim().split(/\s+/).filter(Boolean);
-    const c = (args[0] || '').toLowerCase();
-    if (!args.length || (c === 'stat' && args.length === 1)) return loopDash(cur);
-    if (c === 'stat') { const rest = args.slice(1); return cmdStat(rest.length ? rest : ['all', cur]); }
-    if (c === 'inst') { const rest = args.slice(1); if (!rest.length) return cmdInst(['list']); return cmdInst(rest[0] === 'list' || rest[0] === 'delete' ? rest : [rest[0]].concat(rest.slice(1))); }
-    if (c === 'chan') { const rest = args.slice(1); return cmdChan([cur].concat(rest)); }
-    if (c === 'card') { const rest = args.slice(1); return cmdCard(rest.length ? rest : ['list', '--inst', cur]); }
-    if (c === 'logs') { const n = Number(args[1]) || 30; return api('GET', '/admin/api/logs/' + encodeURIComponent(cur) + '?lines=' + n).then(d => console.log((d && (d.logs || d.text)) || JSON.stringify(d))).catch(e => console.log(C.red(e.message))); }
-    if (c === 'use') { if (!args[1]) { console.log('用法: use <实例名>'); return; } cur = args[1]; setPrompt(); return loopDash(cur); }
-    if (c === 'watch') {
-      if (watchTimer) { clearInterval(watchTimer); watchTimer = null; if (args[1] === 'off') { console.log(C.dim('(watch 已停)')); return; } }
-      if (args[1] === 'off') return;
-      const sec = Math.max(2, Number(args[1]) || 5);
-      watchTimer = setInterval(() => { console.log(C.dim('── 刷新 ' + new Date().toLocaleTimeString() + ' ──')); const r = loopDash(cur); if (r && r.catch) r.catch(() => {}); }, sec * 1000);
-      console.log(C.dim('(每 ' + sec + 's 自动刷新仪表; watch off 停止)'));
-      return;
-    }
-    if (['exit', 'quit', 'q', ':q'].includes(c)) return rl.close();
-    if (c === 'help' || c === '?') { console.log(H); return; }
-    console.log(C.yel('未知命令: ' + c + '  (help 查看)'));
-  };
-  console.log(C.dim('agw loop 交互台 — 空行刷新仪表, help 看命令, exit 退出'));
-  const first = loopDash(cur); if (first && first.catch) first.catch(e => console.log(C.red(e.message)));
-  first && first.then && first.then(() => P());
-  rl.on('line', (l) => { try { const r = run(l); if (r && r.then) r.then(() => P()).catch(e => { console.log(C.red(e.message)); P(); }); else P(); } catch (e) { console.log(C.red(e.message)); rl.prompt(); } });
-  rl.on('close', () => { closing = true; if (watchTimer) clearInterval(watchTimer); console.log(C.dim('bye')); setTimeout(() => process.exit(0), 400); }); // 留 400ms 让在途仪表输出落地
-}
-
-
 /* ==================== 分域 loop — agw inst/chan/router/stat/register/admin ==================== */
 const LOOP_HINT = '空行刷新 | help 看命令 | exit 退出';
 function canLoop() { return !process.env.AGW_NO_LOOP && !!(process.stdin.isTTY && process.stdout.isTTY); } // loop 内再调用 cmdXxx 时不再嵌套进 loop
-function pickInst(name) {
-  if (!name) { console.log(C.yel('缺少实例名')); return false; }
-  if (!listInsts().includes(name)) { console.log(C.yel('实例不存在: ' + name + '  (已有: ' + (listInsts().join(', ') || '无') + ')')); return false; }
-  return true;
-}
 function tailLog(name, n) {
   const k = Math.max(1, Number(n) || 30);
   return api('GET', `/admin/api/logs/${encodeURIComponent(name)}?lines=${k}`)
@@ -1100,6 +1182,7 @@ function startRepl(o) {
   const P = () => { if (!closing) { try { rl.setPrompt(C.cyn(typeof o.prompt === 'function' ? o.prompt() : o.prompt)); rl.prompt(); } catch (_) {} } };
   const done = r => { if (r && r.then) r.then(P).catch(e => { console.log(C.red('✗ ' + e.message)); P(); }); else P(); };
   const run = raw => {
+    if (o.before) { const h = o.before(raw); if (h) return h; } // 子 loop(edit/scope/models) 优先接管输入
     const parts = splitArgs(raw);
     if (!parts.length) return o.refresh && o.refresh();
     const c = parts[0].toLowerCase();
@@ -1124,440 +1207,618 @@ function startRepl(o) {
 
 /* ---------- 实例管理 ---------- */
 const HELP_INST = t(`实例管理 loop 命令:
-  list                          实例清单
-  show                          刷新(清单 + 当前实例状态)
-  use <实例>                    切换当前实例
-  status [all|requests|error|debug]  状态/日志摘要
-  start | stop | restart        启停/重启当前实例
-  logs [行数]                   日志尾部
-  new <实例> <端口> [监听地址]   新建实例
-  del <实例> -y                 删除实例(default 不可删)
-  stat | chan [参数] | router [参数]  转到对应命令
-  -- 参数也是子命令:
-  --status <kind> | --apikey <key|clear> | --adminkey <key|clear> | --webtoken <key|clear>
-  --tls <port|0=关> | --cold <秒> | --filter <on|off> | --filter-resp <on|off>
-  --transcreet <on|off|res-only>
-  例: --apikey sk-x   --tls 8443   --cold 15   --status requests`);
+  status [all|requests|error|debug|usage]   状态 / 日志 / 用量
+  grep <time|line|content|other> <值>       日志过滤
+       time 10m        最近 10 分钟
+       line 100        最后 100 行
+       content timeout 包含文本
+       other <正则>     正则匹配
+  dist [--export -p <路径>] [--export-type -t image|table|html]
+       上下文 Token 六分类分布; 导出缺省 ./dist-<实例>-<时间>.<svg|txt|html>
+  edit                                     进入编辑 loop
+       name=<实例名>   port=<端口|r=随机>   tls=<on/off>
+       apikey=<key|0=随机|none>   fetch=<分钟|0=关>
+       filter=<on/off>   ctxp=<force|warn|none>
+  空行刷新当前实例状态`);
+function distData(inst) {
+  const sf = path.join(DATA_DIR, 'stats-' + inst + '.json');
+  if (!fs.existsSync(sf)) return null;
+  let j; try { j = JSON.parse(fs.readFileSync(sf, 'utf8')); } catch (_) { return null; }
+  const D = { tools: 0, system: 0, history: 0, user: 0, reasoning: 0, text: 0, tool: 0 };
+  for (const v of Object.values(j.daily || {})) for (const k of Object.keys(D)) D[k] += (v.dist && v.dist[k]) || 0;
+  const tot = Object.values(D).reduce((a, b) => a + b, 0);
+  return { since: j.since || j.savedAt, D, tot };
+}
+const DIST_NAMES = { tools: '工具定义', system: '系统提示', history: '对话历史', user: '用户输入', reasoning: '思考内容', text: '正文', tool: 'ToolCall' };
+function distExport(inst, opt) {
+  const d = distData(inst);
+  if (!d || !d.tot) return console.log(C.dim('  无 Token 分布数据(先 stat --refresh <分钟> 开启落盘)'));
+  const type = (opt.type || 'table').toLowerCase();
+  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  const def = path.join(process.cwd(), 'dist-' + inst + '-' + stamp + (type === 'image' ? '.svg' : type === 'html' ? '.html' : '.txt'));
+  const out = path.resolve(opt.path || def);
+  const rows = Object.keys(DIST_NAMES).map(k => ({ k, name: DIST_NAMES[k], v: d.D[k], pct: d.tot ? d.D[k] / d.tot * 100 : 0 }));
+  let body;
+  if (type === 'html') {
+    body = '<!doctype html><meta charset="utf-8"><title>Token 分布 ' + inst + '</title><style>body{font:14px system-ui;background:#111;color:#ddd;padding:24px}table{border-collapse:collapse}td,th{padding:6px 14px;border-bottom:1px solid #333;text-align:left}.bar{background:#2b6cb0;height:10px}</style>'
+      + '<h2>' + inst + ' Token 分布</h2><p>since ' + (d.since || '-') + ' · 合计 ' + d.tot + ' tok</p><table><tr><th>分类</th><th>Token</th><th>占比</th><th></th></tr>'
+      + rows.map(r => '<tr><td>' + r.name + '</td><td>' + r.v + '</td><td>' + r.pct.toFixed(1) + '%</td><td><div class="bar" style="width:' + Math.max(1, Math.round(r.pct * 4)) + 'px"></div></td></tr>').join('')
+      + '</table>';
+  } else if (type === 'image') {
+    const W = 640, rowH = 34, H = 60 + rows.length * rowH;
+    body = '<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H + '" font-family="sans-serif">'
+      + '<rect width="100%" height="100%" fill="#111"/><text x="24" y="34" fill="#eee" font-size="18">' + inst + ' Token 分布 (since ' + (d.since || '-') + ')</text>'
+      + rows.map((r, i) => {
+        const y = 60 + i * rowH, w = Math.max(1, Math.round(r.pct / 100 * 380));
+        return '<text x="24" y="' + (y + 14) + '" fill="#bbb" font-size="13">' + r.name + '</text>'
+          + '<rect x="120" y="' + y + '" width="' + w + '" height="18" fill="#2b6cb0"/>'
+          + '<text x="' + (128 + w) + '" y="' + (y + 14) + '" fill="#ddd" font-size="12">' + r.v + ' tok ' + r.pct.toFixed(1) + '%</text>';
+      }).join('') + '</svg>';
+  } else {
+    body = [inst + ' Token 分布 (since ' + (d.since || '-') + ', 合计 ' + d.tot + ' tok)', ...rows.map(r => pad(r.name, 10) + '\t' + String(r.v).padStart(10) + '\t' + r.pct.toFixed(1) + '%')].join('\n');
+  }
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  fs.writeFileSync(out, body);
+  fs.chmodSync(out, 0o600);
+  ok('已导出 ' + type + ': ' + out);
+}
+function instGrep(cur, a) {
+  const mode = (a[0] || '').toLowerCase();
+  const val = a.slice(1).join(' ');
+  if (!mode) return console.log('用法: grep <time|line|content|other> <值>');
+  return api('GET', `/admin/api/logs/${encodeURIComponent(cur)}?lines=400`).then(d => {
+    const txt = typeof d === 'string' ? d : ((d && (d.logs || d.text)) || '');
+    let lines = String(txt).split('\n').filter(Boolean);
+    if (mode === 'line') {
+      const n = Math.max(1, Number(val) || 50);
+      lines = lines.slice(-n);
+    } else if (mode === 'content') {
+      if (!val) return console.log('用法: grep content <文本>');
+      lines = lines.filter(l => l.toLowerCase().includes(val.toLowerCase()));
+    } else if (mode === 'other') {
+      if (!val) return console.log('用法: grep other <正则>');
+      let re; try { re = new RegExp(val, 'i'); } catch (e) { return console.log(C.yel('正则无效: ' + e.message)); }
+      lines = lines.filter(l => re.test(l));
+    } else if (mode === 'time') {
+      const win = parseWhen(val || '10m');
+      if (!win) return console.log('用法: grep time <10m|2h|HH:MM>');
+      const nowT = Date.now();
+      const from = win > nowT ? nowT - (win - nowT) : win; // 相对窗口 → now-时长; 绝对时间 → 直接比较
+      lines = lines.filter(l => {
+        const m = l.match(/\[(\d{2}):(\d{2}):(\d{2})\]/);
+        if (!m) return false;
+        const d = new Date(); d.setHours(Number(m[1]), Number(m[2]), Number(m[3]), 0);
+        return d.getTime() >= from;
+      });
+    } else return console.log('用法: grep <time|line|content|other> <值>');
+    if (!lines.length) return console.log(C.dim('  无匹配日志'));
+    lines.slice(-200).forEach(l => console.log('  ' + trunc(l, 200)));
+  }).catch(e => console.log(C.yel('日志读取失败: ' + e.message)));
+}
 function loopInst(startName) {
-  let cur = startName || 'default';
-  const show = () => {
-    console.log(C.bold('实例清单'));
-    cmdInst(['list']);
-    console.log(C.dim('── ' + cur + ' ──'));
-    return cmdInst([cur, '--status', 'all']);
+  let cur = startName || 'default', mode = null;
+  const show = () => cmdInst([cur, '--status', 'all']);
+  const editView = () => {
+    const c = loadCfg(cur);
+    const port = (c.listen || {}).port || 16384;
+    const ms = c.modelSync || {};
+    const fetchMin = ms.enable === false ? 0 : (ms.intervalMin || Math.round((ms.intervalHours || 24) * 60));
+    console.log(C.bold('■ 编辑实例 ' + cur) + C.dim('  (key=value 逐项生效, exit 返回)'));
+    console.log(`  name=${cur}  port=${port}  tls=${(c.tls && c.tls.enable) ? 'on' : 'off'}  apikey=${c.gatewayKey ? maskKey(c.gatewayKey) : C.dim('(空)')}`);
+    console.log(`  fetch=${fetchMin ? fetchMin + 'min' : 'off'}  filter=${(c.redact && c.redact.enable) ? 'on' : 'off'}  ctxp=${c.ctxpMode || 'force'}`);
   };
-  const instFlag = (fl, a) => { // 计划通里的 --参数在 loop 内同样当子命令
-    const keyFlag = ['--apikey', '--webtoken', '--adminkey'].includes(fl);
-    if (a[0] == null) {
-      if (!keyFlag) return cmdInst([cur, fl]); // --filter/--filter-resp/--transcreet 缺省=on
-      return console.log(C.yel('用法: ' + fl + ' <key|clear>'));
+  const editPost = body => api('POST', `/admin/api/config/${encodeURIComponent(cur)}`, body);
+  const applyEdit = line => {
+    const eq = line.indexOf('=');
+    if (eq < 0) return console.log(C.yel('格式: key=value (name/port/tls/apikey/fetch/filter/ctxp)'));
+    const k = line.slice(0, eq).trim().toLowerCase(), v = line.slice(eq + 1).trim();
+    if (k === 'name') {
+      if (!v) return console.log(C.yel('name 不能为空'));
+      if (cur === 'default') return console.log(C.yel('default 实例不能改名'));
+      const old = cur;
+      return api('POST', `/admin/api/instance-rename/${encodeURIComponent(old)}`, { newName: v })
+        .then(d => { cur = (d && d.name) || v; ok('实例已改名: ' + cur); editView(); })
+        .catch(e => console.log(C.yel('改名失败: ' + e.message)));
     }
-    const v = keyFlag && /^(clear|off|none|空)$/i.test(a[0]) ? '' : a[0];
-    return cmdInst([cur, fl, v].concat(a.slice(1)));
+    if (k === 'port') {
+      const port = /^r(andom)?$/i.test(v) ? 20000 + Math.floor(Math.random() * 20000) : Number(v);
+      if (!(port >= 1024 && port <= 65535)) return console.log(C.yel('port: 1024-65535 或 r=随机'));
+      return editPost({ port }).then(() => { ok('端口已改为 ' + port); editView(); }).catch(e => console.log(C.yel('保存失败: ' + e.message)));
+    }
+    if (k === 'tls') {
+      const c = loadCfg(cur), on = !/^(off|0|no|false)$/i.test(v);
+      const tls = Object.assign({}, c.tls || {}, { enable: on });
+      if (on && !tls.port) tls.port = (c.listen || {}).port || 16384;
+      return editPost({ tls }).then(() => { ok('TLS ' + (on ? '已开启' : '已关闭')); editView(); }).catch(e => console.log(C.yel('保存失败: ' + e.message)));
+    }
+    if (k === 'apikey') {
+      const key = /^0$/.test(v) ? crypto.randomBytes(24).toString('base64url') : /^(none|clear|-|空)$/i.test(v) ? '' : v;
+      if (!key && v && !/^(none|clear|-|空)$/i.test(v)) return console.log(C.yel('apikey: 填 key / 0=随机 / none=清除'));
+      return editPost({ gatewayKey: key }).then(() => { ok('Gateway-Key ' + (key ? '已设置' : '已清除')); editView(); }).catch(e => console.log(C.yel('保存失败: ' + e.message)));
+    }
+    if (k === 'fetch') {
+      const n = Math.max(0, Math.round(Number(v) || 0));
+      const body = { modelSync: { enable: n > 0, intervalMin: n, intervalHours: Math.max(1, Math.round(n / 60) || 24) } };
+      return editPost(body).then(() => { ok('模型同步 ' + (n ? n + ' 分钟' : '已关闭')); editView(); }).catch(e => console.log(C.yel('保存失败: ' + e.message)));
+    }
+    if (k === 'filter' || k === 'fliter') {
+      return editPost({ redact: { enable: !/^(off|0|no|false)$/i.test(v) } }).then(() => { ok('隐私过滤已更新'); editView(); }).catch(e => console.log(C.yel('保存失败: ' + e.message)));
+    }
+    if (k === 'ctxp') {
+      const m = v.toLowerCase();
+      if (!['force', 'warn', 'none'].includes(m)) return console.log(C.yel('ctxp: force(拦截) / warn(只告警) / none(关闭)'));
+      return editPost({ ctxpMode: m }).then(() => { ok('ctxp 模式: ' + m); editView(); }).catch(e => console.log(C.yel('保存失败: ' + e.message)));
+    }
+    console.log(C.yel('未知字段: ' + k));
+  };
+  const before = raw => {
+    if (!mode) return;
+    const line = raw.trim();
+    if (/^(exit|done|q|:q|back)$/i.test(line)) { mode = null; console.log(C.dim('已返回实例 loop')); show(); return true; }
+    if (!line) { editView(); return true; }
+    return applyEdit(line) || true;
   };
   const commands = {
-    list: () => cmdInst(['list']),
-    show: show,
-    use: a => { if (!pickInst(a[0])) return; cur = a[0]; return show(); },
     status: a => cmdInst([cur, '--status', (a[0] || 'all').toLowerCase()]),
-    start: () => cmdInst([cur, 'start']),
-    stop: () => cmdInst([cur, 'stop']),
-    restart: () => api('POST', `/admin/api/action/${encodeURIComponent(cur)}/restart`).then(() => ok(`${cur} 已重启`)),
-    logs: a => tailLog(cur, a[0]),
-    new: a => {
-      if (!a[0] || !a[1]) return console.log('用法: new <实例> <端口> [监听地址]');
-      return api('POST', `/admin/api/instance-create/${encodeURIComponent(a[0])}`, { port: Number(a[1]), host: a[2] || '0.0.0.0' })
-        .then(() => { ok(`实例 ${a[0]} 已创建 (端口 ${a[1]})`); if (pickInst(a[0])) cur = a[0]; return show(); });
+    grep: a => instGrep(cur, a),
+    dist: a => {
+      const pi = a.findIndex(x => x === '-p' || x === '--output' || x === '--export-path');
+      const ti = a.findIndex(x => x === '-t' || x === '--export-type');
+      const outPath = pi >= 0 ? a[pi + 1] : undefined;
+      const type = ti >= 0 ? a[ti + 1] : (outPath ? (/\.svg$/i.test(outPath) ? 'image' : /\.html?$/i.test(outPath) ? 'html' : 'table') : 'table');
+      const d = distData(cur);
+      if (d && d.tot) {
+        console.log(`  ${cur} Token 分布 (since ${d.since || '-'}, 合计 ${fmtTok(d.tot)} tok):`);
+        for (const k of Object.keys(DIST_NAMES)) {
+          const pct = d.D[k] / d.tot * 100;
+          console.log(`    ${pad(DIST_NAMES[k], 20)} ${fmtTok(d.D[k]).padStart(9)} tok  ${'█'.repeat(Math.max(1, Math.round(pct / 4)))} ${pct.toFixed(1)}%`);
+        }
+      } else console.log(C.dim('  无 Token 分布数据(先 stat --refresh <分钟> 开启落盘)'));
+      if (pi >= 0 || a.includes('--export')) return distExport(cur, { path: outPath, type });
     },
-    del: a => {
-      if (!a[0]) return console.log('用法: del <实例> -y');
-      if (!a.includes('-y')) return console.log(C.yel('删除不可撤销, 确认请加 -y: del ' + a[0] + ' -y'));
-      return Promise.resolve(cmdInst(['delete', a[0], '-y'])).then(() => { if (cur === a[0]) cur = 'default'; });
-    },
-    '--status': a => commands.status(a),
-    '--apikey': a => instFlag('--apikey', a),
-    '--adminkey': a => instFlag('--adminkey', a),
-    '--webtoken': a => instFlag('--webtoken', a),
-    '--tls': a => instFlag('--tls', a),
-    '--cold': a => instFlag('--cold', a),
-    '--filter': a => instFlag('--filter', a),
-    '--filter-resp': a => instFlag('--filter-resp', a),
-    '--transcreet': a => instFlag('--transcreet', a),
-    stat: () => cmdStat(['all', cur]),
-    chan: a => cmdChan([cur].concat(a)),
-    router: a => cmdRouter([cur].concat(a)),
+    edit: () => { mode = { type: 'edit' }; editView(); },
   };
   return startRepl({
     title: 'agw 实例管理 loop',
-    prompt: () => 'agw·inst ' + cur + '> ',
+    prompt: () => mode ? 'agw·inst ' + cur + ' [edit]> ' : 'agw·inst ' + cur + '> ',
     help: HELP_INST,
     refresh: show,
     commands,
-    unknown: parts => {
-      if (parts[0].startsWith('-')) return console.log(C.yel('未知参数: ' + parts[0] + '  (help 查看 -- 子命令)'));
-      console.log(C.yel('未知命令: ' + parts[0] + '  (help 查看)'));
-    },
-  });
-}
-
-/* ---------- 渠道管理 ---------- */
-const HELP_CHAN = t(`渠道管理 loop 命令:
-  list                          渠道列表
-  add <渠道> "url=…, key=…" [--sdk openai|gemini|claude]   新建/更新
-  rm <渠道> -y                  删除渠道
-  scope <渠道> "请求模型=真实模型, …"   模型映射/白名单
-  value <渠道> <BaseURL> <JSON-Key> [币种]  余额代查覆盖
-  proxy <渠道> "user:pass@host:port"     渠道代理
-  warn <渠道> <余额阈值>         余额告警
-  sdk <openai|gemini|claude>    缺省上游格式
-  fetch <渠道>                  拉取上游模型列表
-  balance <渠道>                代查余额
-  use <实例>                    切换实例
-  -- 参数也是子命令:
-  --provider <渠道> "url=…, key=…" [--sdk …]     = add <渠道> …
-  --provider <渠道> --scope "…" | --value … | --proxy … | --warn …   = 对应命令
-  --provider <渠道> --remove                     = rm <渠道> -y
-  --sdk <openai|gemini|claude>                   = sdk <…>`);
-function loopChan(startName) {
-  let cur = startName;
-  const show = () => cmdChan([cur]);
-  const pv = (a, rest) => { // <渠道名> + 其余参数 → cmdChan --provider
-    if (!a[0]) return console.log(C.yel('缺少渠道名'));
-    return cmdChan([cur, '--provider', a[0]].concat(rest));
-  };
-  const thru = parts => { // --参数原样交给 cmdChan; 依赖渠道的旗标必须带 --provider
-    if (!parts.includes('--provider') && parts[0] !== '--sdk') return console.log(C.yel('用法: ' + parts[0] + ' … 需配合 --provider <渠道>'));
-    return cmdChan([cur].concat(parts));
-  };
-  const commands = {
-    provider: a => { if (!a[0]) return console.log('用法: provider <渠道> "url=…, key=…"'); return cmdChan([cur, '--provider'].concat(a)); },
-    '--provider': (a, parts) => thru(parts),
-    '--sdk': (a, parts) => thru(parts),
-    '--scope': (a, parts) => thru(parts),
-    '--value': (a, parts) => thru(parts),
-    '--proxy': (a, parts) => thru(parts),
-    '--warn': (a, parts) => thru(parts),
-    '--remove': (a, parts) => thru(parts),
-    list: () => cmdChan([cur]),
-    add: a => pv(a, a.slice(1)),
-    set: a => pv(a, a.slice(1)),
-    edit: a => pv(a, a.slice(1)),
-    rm: a => {
-      if (!a[0]) return console.log('用法: rm <渠道> -y');
-      if (!a.includes('-y')) return console.log(C.yel('删除渠道需确认: rm ' + a[0] + ' -y'));
-      return Promise.resolve(cmdChan([cur, '--provider', a[0], '--remove']));
-    },
-    remove: a => commands.rm(a),
-    scope: a => pv(a, ['--scope', a.slice(1).join(' ')]),
-    value: a => pv(a, ['--value'].concat(a.slice(1))),
-    proxy: a => a[1] ? pv(a, ['--proxy', a[1]]) : console.log('用法: proxy <渠道> "user:pass@host:port"'),
-    warn: a => a[1] ? pv(a, ['--warn', a[1]]) : console.log('用法: warn <渠道> <余额阈值>'),
-    sdk: a => cmdChan([cur, '--sdk', a[0]]),
-    fetch: a => { if (!a[0]) return console.log('用法: fetch <渠道>'); return cmdFetch(['chan', a[0], cur]); },
-    balance: a => {
-      if (!a[0]) return console.log('用法: balance <渠道>');
-      return api('GET', `/admin/api/balance/${encodeURIComponent(cur)}/${encodeURIComponent(a[0])}`)
-        .then(d => console.log('  ' + d.channel + ': ' + (d.balance != null ? d.balance + (d.unit || '') : JSON.stringify(d))))
-        .catch(e => console.log(C.yel('余额查询失败: ' + e.message)));
-    },
-    use: a => { if (!pickInst(a[0])) return; cur = a[0]; return show(); },
-    show: show,
-  };
-  return startRepl({
-    title: 'agw 渠道管理 loop (' + cur + ')',
-    prompt: () => 'agw·chan ' + cur + '> ',
-    help: HELP_CHAN,
-    refresh: show,
-    commands,
-    unknown: parts => {
-      if (parts[0].startsWith('-')) return console.log(C.yel('未知参数: ' + parts[0] + '  (help 查看 -- 子命令)'));
-      console.log(C.yel('未知命令: ' + parts[0] + '  (help 查看)'));
-    },
-  });
-}
-
-/* ---------- 路由管理 ---------- */
-const HELP_ROUTER = t(`路由管理 loop 命令:
-  show                          路由配置 + 固定/一次性路由
-  retry <n>                     渠道故障重试次数
-  timeout <秒>                  上游响应超时
-  cold <秒>                     上游连接超时
-  models-fetch <小时|0=关>      模型自动同步
-  filter on|off                 隐私过滤
-  filter-resp on|off            响应方向打码
-  transcreet on|off|res-only    DSML 清洗
-  route <渠道|off>              固定路由到某渠道/恢复自动
-  once <渠道|off>               只作用于下一次请求的路由
-  sync                          同步上游模型覆盖本地
-  probe                         立即探测渠道
-  chans                         渠道名清单   use <实例>   日志: logs [n]
-  -- 参数也是子命令: --retry <n> | --timeout <秒> | --cold <秒>
-  --models-fetch <小时|0=关> | --filter <on|off> | --filter-resp <on|off>
-  --transcreet <on|off|res-only>`);
-function loopRouter(startName) {
-  let cur = startName;
-  const show = () => {
-    const c = loadCfg(cur);
-    showRouter(c);
-    console.log('  渠道: ' + ((c.channels || []).map(x => x.name).join('  ') || C.dim('无')));
-    return Promise.all([
-      api('GET', `/admin/api/route/${encodeURIComponent(cur)}`).then(d => console.log('  固定路由: ' + (d.channel || C.dim('自动')))).catch(() => {}),
-      api('GET', `/admin/api/route-once/${encodeURIComponent(cur)}`).then(d => console.log('  一次性路由: ' + (d.channel || C.dim('无')))).catch(() => {}),
-    ]);
-  };
-  const setFlag = (fl, a) => { if (a[0] == null) return console.log('用法: ' + fl.replace('--', '') + ' <值>'); return cmdRouter([cur, fl, a[0]]); };
-  const routeTo = (path, ch, label) => api('POST', `/admin/api/${path}/${encodeURIComponent(cur)}`, { channel: ch })
-    .then(d => { ok(label + (d.channel || '自动')); return show(); })
-    .catch(e => console.log(C.yel('设置失败: ' + e.message)));
-  const commands = {
-    show: show,
-    retry: a => setFlag('--retry', a),
-    timeout: a => setFlag('--timeout', a),
-    cold: a => setFlag('--cold', a),
-    'models-fetch': a => setFlag('--models-fetch', a),
-    'model-sync': a => setFlag('--models-fetch', a),
-    filter: a => setFlag('--filter', a),
-    'filter-resp': a => setFlag('--filter-resp', a),
-    transcreet: a => setFlag('--transcreet', a),
-    route: a => routeTo('route', (a[0] && a[0] !== 'off') ? a[0] : '', '固定路由: '),
-    once: a => routeTo('route-once', (a[0] && a[0] !== 'off') ? a[0] : '', '一次性路由: '),
-    sync: () => cmdFetch(['inst', cur, '-y']),
-    probe: () => api('POST', `/admin/api/probe/${encodeURIComponent(cur)}`).then(d => console.log('  探测: ' + JSON.stringify(d.probe || {}))).catch(e => console.log(C.yel('探测失败: ' + e.message))),
-    chans: () => { const c = loadCfg(cur); console.log('  ' + ((c.channels || []).map(x => x.name).join('  ') || '(无渠道)')); },
-    logs: a => tailLog(cur, a[0]),
-    use: a => { if (!pickInst(a[0])) return; cur = a[0]; return show(); },
-  };
-  for (const k of ['retry', 'timeout', 'cold', 'models-fetch', 'filter', 'filter-resp', 'transcreet']) commands['--' + k] = commands[k]; // 计划通 --参数也是子命令
-  return startRepl({
-    title: 'agw 路由管理 loop (' + cur + ')',
-    prompt: () => 'agw·router ' + cur + '> ',
-    help: HELP_ROUTER,
-    refresh: show,
-    commands,
-    unknown: parts => {
-      if (parts[0].startsWith('-')) return console.log(C.yel('未知参数: ' + parts[0] + '  (help 查看 -- 子命令)'));
-      console.log(C.yel('未知命令: ' + parts[0] + '  (help 查看)'));
-    },
-  });
-}
-
-/* ---------- 统计面板 ---------- */
-const HELP_STAT = t(`统计面板 loop 命令:
-  all | daily | weekly | monthly   请求量统计(内存 / 请求记录)
-  models                        按模型 Token 占用
-  dist                          Token 六分类分布
-  refresh <分钟>                统计落盘间隔(0=关)
-  use <实例>                    切换实例
-  watch [秒|off]                定时刷新仪表
-  --refresh <分钟>              = refresh <分钟>  (0=关)
-  空行                          刷新仪表`);
-function loopStat(startName) {
-  let cur = startName || 'default', timer = null;
-  const dash = () => loopDash(cur);
-  const commands = {
-    all: () => cmdStat(['all', cur]),
-    daily: () => cmdStat(['daily', cur]),
-    weekly: () => cmdStat(['weekly', cur]),
-    monthly: () => cmdStat(['monthly', cur]),
-    models: () => cmdStat(['models', cur]),
-    dist: () => cmdStat(['dist', cur]),
-    refresh: a => { if (a[0] == null) return console.log('用法: refresh <分钟>  (0=关)'); return cmdStat(['--refresh', a[0], cur]); },
-    '--refresh': a => commands.refresh(a),
-    use: a => { if (!pickInst(a[0])) return; cur = a[0]; return dash(); },
-    watch: a => {
-      if (timer) { clearInterval(timer); timer = null; }
-      if ((a[0] || '').toLowerCase() === 'off') { console.log(C.dim('自动刷新已停')); return; }
-      const sec = Math.max(2, Number(a[0]) || 5);
-      timer = setInterval(() => {
-        console.log(C.dim('── 刷新 ' + new Date().toLocaleTimeString() + ' ──'));
-        const r = dash(); if (r && r.catch) r.catch(() => {});
-      }, sec * 1000);
-      console.log(C.dim('每 ' + sec + 's 刷新仪表 (watch off 停止)'));
-    },
-  };
-  return startRepl({
-    title: 'agw 统计面板 loop',
-    prompt: () => 'agw·stat ' + cur + '> ',
-    help: HELP_STAT,
-    refresh: dash,
-    commands,
+    before: before,
     unknown: parts => {
       if (parts[0].startsWith('-')) return console.log(C.yel('未知参数: ' + parts[0] + '  (help 查看)'));
       console.log(C.yel('未知命令: ' + parts[0] + '  (help 查看)'));
     },
-    onClose: () => { if (timer) clearInterval(timer); },
+  });
+}
+
+
+const HELP_CHAN = t(`渠道管理 loop 命令:
+  fetch <渠道|all>              拉取上游模型列表
+  edit <渠道>                   进入编辑 loop
+       name=<渠道名>  url=<BaseURL>  sdk=<0=openai/1=claude/2=google>
+       key=<API-Key>  balance=<URL>  balance-key=<JSON-Key>
+       delay=<毫秒/2s>  transcreet=<on/off/res-only/inherit>
+  default <渠道>                设为默认渠道(其余默认自动取消)
+  lock <渠道> [-t 时长/时间] [-w 时长/时间] [--cancel]   锁定(路由跳过)
+  unlock <渠道> [-t 时长/时间] [-w 时长/时间] [--cancel] 解锁/定时解锁
+  delete <渠道>                 删除渠道(输入 y 二次确认)
+  models <渠道>                 模型清单 loop(add <模型> / delete <模型|*> / list)
+  scope <渠道> "请求模型=真实模型, …"   一次写入映射
+  scope <渠道>                  映射/白名单 loop(models= / name= / override= / apply)
+  空行                          刷新渠道列表`);
+
+/* 渠道锁定判定(与 router.js channelLocked 同口径, 供列表/提示用) */
+function chanLockInfo(ch, now) {
+  const t = now || Date.now();
+  const at = Number(ch && ch.lockAt) || 0, until = Number(ch && ch.lockUntil) || 0;
+  const scheduled = at > t;
+  const expired = until && until <= t;
+  return { locked: !!(at || until) && !scheduled && !expired, scheduled, at, until };
+}
+function fmtWhen(ms) {
+  if (!ms) return '-';
+  const d = new Date(Number(ms)), p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function parseWhen(v) { // "30"=秒 / 30s 10m 2h 1h30m / 22:30 / 10-28 09:00 / 2026-10-28 09:00
+  const s = String(v == null ? '' : v).trim();
+  if (!s) return NaN;
+  const now = Date.now();
+  if (/^\d+(\.\d+)?$/.test(s)) return now + Math.round(Number(s) * 1000);
+  let ms = 0, hit = false;
+  s.replace(/(\d+(?:\.\d+)?)(ms|s|m|h|d)/gi, (m, n, u) => { hit = true; ms += Number(n) * { ms: 1, s: 1000, m: 60000, h: 3600000, d: 86400000 }[u.toLowerCase()]; return m; });
+  if (hit && !s.replace(/(\d+(?:\.\d+)?)(ms|s|m|h|d)/gi, '').trim()) return now + Math.round(ms);
+  const hm = s.match(/^(\d{1,2}):(\d{2})$/);
+  if (hm) { const d = new Date(); d.setHours(Number(hm[1]), Number(hm[2]), 0, 0); if (d.getTime() <= now) d.setDate(d.getDate() + 1); return d.getTime(); }
+  const md = s.match(/^(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2}))?$/);
+  if (md) {
+    const d = new Date(); d.setMonth(Number(md[1]) - 1, Number(md[2]));
+    if (md[3] != null) d.setHours(Number(md[3]), Number(md[4]), 0, 0); else d.setHours(23, 59, 59, 0);
+    if (d.getTime() <= now) d.setFullYear(d.getFullYear() + 1);
+    return d.getTime();
+  }
+  const d = new Date(s.replace(' ', 'T'));
+  if (isNaN(d.getTime())) return NaN;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) d.setHours(23, 59, 59, 0);
+  return d.getTime();
+}
+function loopChan(startName) {
+  let cur = startName, mode = null; // null | {type:'edit'|'scope'|'models', name, ...}
+  const show = () => cmdChan([cur]);
+  const chOf = name => (loadCfg(cur).channels || []).find(x => x.name === name);
+  const post = ch => api('POST', `/admin/api/channel/${encodeURIComponent(cur)}`, ch)
+    .then(d => { if (d && d.hotReload === false) console.log(C.yel('已保存但热重载失败: ' + (d.warn || ''))); return d; });
+  const pv = (a, rest) => { // <渠道名> + 其余参数 → cmdChan --provider
+    if (!a[0]) return console.log(C.yel('缺少渠道名'));
+    return cmdChan([cur, '--provider', a[0]].concat(rest));
+  };
+  /* ---- edit 子 loop ---- */
+  const editView = () => {
+    const ch = chOf(mode.name);
+    if (!ch) { mode = null; return console.log(C.yel('渠道不存在, 已退出编辑')); }
+    const lk = chanLockInfo(ch);
+    console.log(C.bold('■ 编辑渠道 ' + ch.name) + C.dim('  (key=value 逐项生效, exit 返回)'));
+    console.log(`  name=${ch.name}  url=${ch.baseUrl}  sdk=${ch.type}`);
+    console.log(`  key=${ch.apiKey ? maskKey(ch.apiKey) : C.dim('(空)')}  default=${ch.default ? 'on' : 'off'}  delay=${ch.delayMs || 0}ms  transcreet=${ch.transcreet || 'inherit'}`);
+    console.log(`  balance=${ch.balanceUrl || '-'}  balance-key=${ch.balancePath || '-'}` + (lk.locked ? C.red('  [已锁定]') : lk.scheduled ? C.yel('  [待锁定 ' + fmtWhen(lk.at) + ']') : ''));
+  };
+  const applyEdit = line => {
+    const eq = line.indexOf('=');
+    if (eq < 0) return console.log(C.yel('格式: key=value (name/url/sdk/key/balance/balance-key/delay/transcreet)'));
+    const k = line.slice(0, eq).trim().toLowerCase(), v = line.slice(eq + 1).trim();
+    const ch = chOf(mode.name);
+    if (!ch) { mode = null; return console.log(C.yel('渠道已不存在, 退出编辑')); }
+    const next = Object.assign({}, ch);
+    const none = /^(none|clear|-|空)$/i.test(v);
+    if (k === 'name') {
+      if (!v || none) return console.log(C.yel('name 不能为空'));
+      if (v === ch.name) return console.log(C.dim('渠道名未变'));
+      if (chOf(v)) return console.log(C.yel('渠道名已被占用: ' + v));
+      return post(Object.assign(next, { name: v, oldName: ch.name }))
+        .then(() => { mode.name = v; ok('渠道已改名: ' + v); editView(); })
+        .catch(e => console.log(C.yel('改名失败: ' + e.message)));
+    }
+    if (k === 'url') { if (!/^https?:\/\//i.test(v)) return console.log(C.yel('url 需要 http(s):// 开头')); next.baseUrl = v.replace(/\/+$/, ''); }
+    else if (k === 'sdk') {
+      const t = { '0': 'openai', '1': 'claude', '2': 'gemini', openai: 'openai', claude: 'claude', gemini: 'gemini', google: 'gemini' }[v.toLowerCase()];
+      if (!t) return console.log(C.yel('sdk: 0=openai / 1=claude / 2=google(gemini)'));
+      next.type = t;
+    }
+    else if (k === 'key') next.apiKey = none ? '' : v;
+    else if (k === 'balance') next.balanceUrl = none ? null : v;
+    else if (k === 'balance-key') next.balancePath = none ? null : v;
+    else if (k === 'delay') {
+      const ms = /^\d+(\.\d+)?$/.test(v) ? Number(v) : /^\d+(\.\d+)?s$/i.test(v) ? Number(v.slice(0, -1)) * 1000 : /^\d+(\.\d+)?ms$/i.test(v) ? Number(v.slice(0, -2)) : NaN;
+      if (!(ms >= 0)) return console.log(C.yel('delay 需要毫秒数: delay=200 / delay=2s'));
+      next.delayMs = Math.min(120000, Math.round(ms));
+    }
+    else if (k === 'transcreet') {
+      const x = v.toLowerCase();
+      if (!['on', 'off', 'res-only', 'inherit', 'none'].includes(x)) return console.log(C.yel('transcreet: on / off / res-only / inherit'));
+      next.transcreet = (x === 'inherit' || x === 'none') ? '' : x;
+    }
+    else return console.log(C.yel('未知字段: ' + k));
+    return post(next).then(() => { ok(k + ' 已生效'); editView(); }).catch(e => console.log(C.yel('保存失败: ' + e.message)));
+  };
+  /* ---- scope 子 loop ---- */
+  const scopeView = () => {
+    console.log(C.bold('■ 模型映射/白名单 ' + mode.name) + C.dim('  (字段逐项设置, apply 生效, exit 返回)'));
+    console.log(`  models=${mode.models || C.dim('(未设)')}  name=${mode.real || C.dim('(未设)')}  override=${mode.override}`);
+    console.log(C.dim('  models=<请求模型[*], …>  name=<真实模型>  override=true|false  apply'));
+  };
+  const applyScope = () => {
+    if (!mode.models) return console.log(C.yel('先设 models=<请求模型>'));
+    if (mode.override && !mode.real) return console.log(C.yel('override=true 需要 name=<真实模型>'));
+    const ch = chOf(mode.name);
+    if (!ch) { mode = null; return console.log(C.yel('渠道已不存在, 退出编辑')); }
+    const next = Object.assign({}, ch);
+    const map = Object.assign({}, ch.modelMap || {});
+    const pats = mode.models.split(/[,，]/).map(x => x.trim()).filter(Boolean);
+    if (!mode.override) {
+      const ms = Array.isArray(ch.models) ? ch.models.slice() : [];
+      for (const p of pats) { delete map[p]; if (!ms.includes(p)) ms.push(p); }
+      next.models = ms;
+    } else for (const p of pats) map[p] = mode.real;
+    next.modelMap = Object.keys(map).length ? map : null;
+    return post(next).then(() => { ok('映射已保存'); mode = null; show(); }).catch(e => console.log(C.yel('保存失败: ' + e.message)));
+  };
+  /* ---- models 子 loop ---- */
+  const modelsView = () => {
+    const ch = chOf(mode.name);
+    if (!ch) { mode = null; return console.log(C.yel('渠道不存在, 已退出')); }
+    const ms = ch.models || [];
+    console.log(C.bold('■ 模型清单 ' + ch.name) + `  (${ms.length})` + C.dim('  add <模型> / delete <模型|*> / list / exit'));
+    ms.slice(0, 60).forEach(m => console.log('  ' + m));
+    if (ms.length > 60) console.log(C.dim(`  … 共 ${ms.length} 个`));
+  };
+  const modelsSave = (ms, label) => {
+    const ch = chOf(mode.name);
+    if (!ch) { mode = null; return console.log(C.yel('渠道不存在, 已退出')); }
+    return post(Object.assign({}, ch, { models: ms })).then(() => { ok(label); modelsView(); }).catch(e => console.log(C.yel('保存失败: ' + e.message)));
+  };
+  /* ---- lock / unlock ---- */
+  const lockView = ch => {
+    const lk = chanLockInfo(ch);
+    if (lk.locked) console.log(C.red('  已锁定') + (lk.until ? ' 至 ' + fmtWhen(lk.until) : ' (手动解锁)'));
+    else if (lk.scheduled) console.log(C.yel('  待锁定 ') + fmtWhen(lk.at) + (lk.until ? ' 至 ' + fmtWhen(lk.until) : ''));
+    else console.log(C.dim('  未锁定'));
+  };
+  const setLock = (a, want) => {
+    const name = a[0];
+    if (!name) return console.log('用法: ' + (want ? 'lock' : 'unlock') + ' <渠道> [-t 时长/时间] [-w 时长/时间] [--cancel]');
+    const ch = chOf(name);
+    if (!ch) return console.log(C.yel('渠道不存在: ' + name));
+    const getV = (...fl) => { for (let i = 0; i < a.length; i++) if (fl.includes(a[i])) return a[i + 1]; return undefined; };
+    const now = Date.now(), next = Object.assign({}, ch);
+    const tRaw = getV('-t', '--time'), wRaw = getV('-w', '--wait');
+    if (a.includes('--cancel')) {
+      if (want) {
+        if (!(Number(ch.lockAt) > now)) return console.log(C.yel('没有待生效的锁定'));
+        delete next.lockAt; delete next.lockUntil;
+      } else {
+        if (!(Number(ch.lockUntil) > now)) return console.log(C.yel('没有待生效的解锁'));
+        delete next.lockUntil;
+      }
+      return post(next).then(() => { ok('已取消'); lockView(chOf(name)); }).catch(e => console.log(C.yel('保存失败: ' + e.message)));
+    }
+    const tMs = tRaw === undefined ? 0 : parseWhen(tRaw);
+    if (tRaw !== undefined && !tMs) return console.log(C.yel('时间格式: 30(秒) / 10m / 2h / 22:30 / 10-28 09:00 / 2026-10-28 09:00'));
+    const wMs = wRaw === undefined ? 0 : parseWhen(wRaw);
+    if (wRaw !== undefined && !wMs) return console.log(C.yel('时间格式: 30(秒) / 10m / 2h / 22:30 / 10-28 09:00 / 2026-10-28 09:00'));
+    if (want) {
+      const start = wMs || now;
+      const end = tMs || 0;
+      if (end && end <= start) return console.log(C.yel('锁定结束时间必须晚于开始时间'));
+      next.lockAt = start;
+      if (end) next.lockUntil = end; else delete next.lockUntil;
+    } else {
+      const until = wMs || tMs || 0;
+      if (!until) { delete next.lockAt; delete next.lockUntil; }
+      else {
+        if (until <= now) return console.log(C.yel('解锁时间必须晚于当前时间'));
+        if (!(Number(ch.lockAt) > now)) next.lockAt = now; // 未锁则立即锁, 到点自动解
+        next.lockUntil = until;
+      }
+    }
+    return post(next).then(() => { ok(want ? '锁定已生效' : '解锁已设置'); lockView(chOf(name)); }).catch(e => console.log(C.yel('保存失败: ' + e.message)));
+  };
+  /* ---- 子 loop 输入分发 ---- */
+  const before = raw => {
+    if (!mode) return;
+    const line = raw.trim();
+    if (/^(exit|done|q|:q|back)$/i.test(line)) { mode = null; console.log(C.dim('已返回渠道 loop')); show(); return true; }
+    if (mode.type === 'del') {
+      if (!/^y(es)?$/i.test(line)) { mode = null; console.log(C.dim('已取消')); return true; }
+      const name = mode.name; mode = null;
+      return Promise.resolve(cmdChan([cur, '--provider', name, '--remove'])).then(() => show()) || true;
+    }
+    if (mode.type === 'edit') { if (!line) { editView(); return true; } return applyEdit(line) || true; }
+    if (mode.type === 'scope') {
+      if (!line) { scopeView(); return true; }
+      if (/^(apply|save)$/i.test(line)) return applyScope() || true;
+      const eq = line.indexOf('=');
+      if (eq < 0) { console.log(C.yel('scope 编辑: models=… / name=… / override=true|false / apply / exit')); return true; }
+      const k = line.slice(0, eq).trim().toLowerCase(), v = line.slice(eq + 1).trim();
+      if (k === 'models') mode.models = v;
+      else if (k === 'name') mode.real = v;
+      else if (k === 'override') mode.override = !/^(false|0|off|no)$/i.test(v);
+      else console.log(C.yel('未知字段: ' + k));
+      scopeView(); return true;
+    }
+    if (mode.type === 'models') {
+      const p = splitArgs(line), c = (p[0] || '').toLowerCase(), arg = p.slice(1).join(' ');
+      if ((c === 'add') && arg) return modelsSave([].concat((chOf(mode.name) || {}).models || [], arg), '已添加模型: ' + arg) || true;
+      if ((c === 'delete' || c === 'del') && arg) {
+        const ms = ((chOf(mode.name) || {}).models || []).filter(m => arg !== '*' && m !== arg);
+        return modelsSave(ms, arg === '*' ? '已清空模型清单' : '已删除模型: ' + arg) || true;
+      }
+      if (c === 'list' || !line) { modelsView(); return true; }
+      console.log(C.yel('models 编辑: add <模型> / delete <模型|*> / list / exit'));
+      return true;
+    }
+  };
+  const commands = {
+    edit: a => {
+      if (!a[0]) return console.log('用法: edit <渠道>');
+      const ch = chOf(a[0]);
+      if (!ch) return console.log(C.yel('渠道不存在: ' + a[0]));
+      mode = { type: 'edit', name: ch.name };
+      editView();
+    },
+    default: a => {
+      if (!a[0]) return console.log('用法: default <渠道>');
+      const ch = chOf(a[0]);
+      if (!ch) return console.log(C.yel('渠道不存在: ' + a[0]));
+      return post(Object.assign({}, ch, { default: true })).then(() => { ok('默认渠道: ' + a[0]); show(); }).catch(e => console.log(C.yel('保存失败: ' + e.message)));
+    },
+    delete: a => {
+      if (!a[0]) return console.log('用法: delete <渠道>');
+      const ch = chOf(a[0]);
+      if (!ch) return console.log(C.yel('渠道不存在: ' + a[0]));
+      mode = { type: 'del', name: ch.name };
+      console.log(C.yel('删除渠道 ' + ch.name + ' 不可恢复, 输入 y 确认(其它=取消)'));
+    },
+    lock: a => setLock(a, true),
+    unlock: a => setLock(a, false),
+    models: a => {
+      if (!a[0]) return console.log('用法: models <渠道>');
+      const ch = chOf(a[0]);
+      if (!ch) return console.log(C.yel('渠道不存在: ' + a[0]));
+      mode = { type: 'models', name: ch.name };
+      modelsView();
+    },
+    scope: a => {
+      if (a.length > 1) return pv(a, ['--scope', a.slice(1).join(' ')]);
+      if (!a[0]) return console.log('用法: scope <渠道> "a=b" | scope <渠道>');
+      const ch = chOf(a[0]);
+      if (!ch) return console.log(C.yel('渠道不存在: ' + a[0]));
+      mode = { type: 'scope', name: ch.name, models: '', real: '', override: true };
+      scopeView();
+    },
+    fetch: a => {
+      if (!a[0]) return console.log('用法: fetch <渠道|all>');
+      if (a[0] !== 'all') return cmdFetch(['chan', a[0], cur]);
+      const chs = loadCfg(cur).channels || [];
+      if (!chs.length) return console.log(C.dim('  (无渠道)'));
+      return chs.reduce((p, ch) => p.then(() => Promise.resolve(cmdFetch(['chan', ch.name, cur])).catch(e => console.log(C.yel(ch.name + ': ' + e.message)))), Promise.resolve());
+    },
+  };
+  return startRepl({
+    title: 'agw 渠道管理 loop (' + cur + ')',
+    prompt: () => mode ? 'agw·chan ' + cur + ' [' + mode.type + ' ' + mode.name + ']> ' : 'agw·chan ' + cur + '> ',
+    help: HELP_CHAN,
+    refresh: show,
+    commands,
+    before: before,
+    unknown: parts => {
+      if (parts[0].startsWith('-')) return console.log(C.yel('未知参数: ' + parts[0] + '  (help 查看 -- 子命令)'));
+      console.log(C.yel('未知命令: ' + parts[0] + '  (help 查看)'));
+    },
   });
 }
 
 /* ---------- 用户注册 ---------- */
-const HELP_REGISTER = t(`用户注册 loop 命令:
-  on | off                      开关公网自助注册
-  quota <tokens>                注册赠送额度(0=不送)
-  passlen <n>                   密码最小长度
-  captcha none | captcha turnstile <siteKey> <secret>   人机验证
-  email on|off                  注册邮箱必填
-  users                         用户列表
-  add <uid> <密码> [昵称]        新建用户
-  pass <uid> <新密码>            改密码
-  del <uid> -y                  删除用户(保留其卡密)
-  link                          注册接口地址
-  use <实例>                    切换实例`);
-function regView(inst) {
-  const c = loadCfg(inst);
-  const r = c.registration || {};
-  console.log(C.bold(`■ ${inst} 用户注册`) + '  ' + onoff(r.enable));
-  console.log(`  人机验证 ${r.captchaProvider || 'none'}${r.captchaSiteKey ? '(' + maskKey(r.captchaSiteKey) + ')' : ''}  密码≥${r.minPasswordLen || 8}  邮箱${(r.emailVerify && r.emailVerify.enable) ? '必填' : '可选'}  默认额度 ${r.defaultQuota ? fmtTok(r.defaultQuota) + ' tokens' : '0'}  卡长 ${c.keyLength || '-'}`);
-  const us = c.users || [];
-  console.log(`  用户 ${us.length} 个` + (us.length ? ':' : ''));
-  us.slice(0, 20).forEach(u => console.log(`    ${pad(u.uid, 18)} ${pad(trunc(u.name || '-', 16), 18)} 卡 ${(c.apiKeys || []).filter(k => k.uid === u.uid).length}  ${String(u.createdAt || '').slice(0, 10)}`));
-  if (us.length > 20) console.log(C.dim(`    … 共 ${us.length} 个`));
+const HELP_REGISTER = t(`用户注册 loop:
+  name=<UID>         3-32 位字母/数字/下划线
+  password=<密码>    不小于实例要求的最小长度
+  recomfirm=<密码>   再输一次确认
+  email=<邮箱>       实例要求邮箱时必填
+  other=<备注>       额外信息(写入用户 note)
+  空行               信息齐全则提交注册, 否则显示已填内容
+  exit               退出`);
+function plainPost(inst, p, body) { // 直接打实例端口(不经 admin API)
+  return new Promise((resolve, reject) => {
+    const c = loadCfg(inst);
+    const port = (c.listen || {}).port || 16384, useTls = !!(c.tls && c.tls.enable);
+    const payload = JSON.stringify(body || {});
+    const rq = (useTls ? https : http).request({ host: '127.0.0.1', port, path: p, method: 'POST', timeout: 15000,
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      ...(useTls ? { rejectUnauthorized: false } : {}) }, r => {
+      let buf = ''; r.on('data', d => buf += d);
+      r.on('end', () => {
+        let j = null; try { j = JSON.parse(buf); } catch (_) {}
+        if (r.statusCode >= 400) return reject(new Error((j && (j.error && (j.error.message || j.error))) || trunc(buf, 200)));
+        resolve(j || buf);
+      });
+    });
+    rq.on('error', reject); rq.on('timeout', () => rq.destroy(new Error('请求超时')));
+    rq.end(payload);
+  });
 }
 function loopRegister(startName) {
   let cur = startName || 'default';
-  const show = () => regView(cur);
-  const saveReg = patch => {
-    const c = loadCfg(cur);
-    c.registration = Object.assign({}, c.registration || {}, patch);
-    saveCfg(cur, c);
-    ok('注册配置已保存');
-    show();
-    return hotRestart(cur);
+  const form = { name: '', password: '', confirm: '', email: '', other: '' };
+  const view = () => {
+    const c = loadCfg(cur), reg = c.registration || {};
+    console.log(C.bold('■ 用户注册 (' + cur + ')') + '  ' + (reg.enable ? C.grn('已开放') : C.yel('未开放')));
+    console.log(`  name=${form.name || C.dim('(未填)')}  password=${form.password ? '●'.repeat(Math.min(12, form.password.length)) : C.dim('(未填)')}  recomfirm=${form.confirm ? '●'.repeat(Math.min(12, form.confirm.length)) : C.dim('(未填)')}`);
+    console.log(`  email=${form.email || C.dim('(未填)')}  other=${form.other || C.dim('(未填)')}` + (reg.captchaProvider === 'turnstile' ? C.yel('  人机验证已开启(CLI 无法完成)') : ''));
+    console.log(C.dim('  逐项 key=value; 空行提交; exit 退出'));
   };
-  const commands = {
-    show: show,
-    on: () => saveReg({ enable: true }),
-    off: () => saveReg({ enable: false }),
-    quota: a => { if (a[0] == null) return console.log('用法: quota <tokens>  (0=不送)'); return saveReg({ defaultQuota: Math.max(0, Math.round(parseNum(a[0]) || 0)) }); },
-    passlen: a => {
-      const n = Number(a[0]);
-      if (!(n >= 4 && n <= 128)) return console.log('用法: passlen <4~128>');
-      return saveReg({ minPasswordLen: Math.round(n) });
-    },
-    captcha: a => {
-      const p = (a[0] || 'none').toLowerCase();
-      if (!['none', 'turnstile'].includes(p)) return console.log('用法: captcha none | captcha turnstile <siteKey> <secret>');
-      if (p === 'none') return saveReg({ captchaProvider: 'none', captchaSiteKey: '', captchaSecret: '' });
-      return saveReg(Object.assign({ captchaProvider: 'turnstile' }, a[1] ? { captchaSiteKey: a[1] } : {}, a[2] ? { captchaSecret: a[2] } : {}));
-    },
-    email: a => saveReg({ emailVerify: Object.assign({}, (loadCfg(cur).registration || {}).emailVerify || {}, { enable: !/^off$/i.test(a[0] || 'on') }) }),
-    users: () => {
-      const c = loadCfg(cur);
-      const us = c.users || [];
-      console.log(`  用户 ${us.length} 个`);
-      us.forEach(u => console.log(`    ${pad(u.uid, 18)} ${pad(trunc(u.name || '-', 16), 18)} 卡 ${(c.apiKeys || []).filter(k => k.uid === u.uid).length}  密码${u.passwordHash ? '✓' : '✗'}  ${String(u.createdAt || '').slice(0, 10)}`));
-    },
-    add: a => {
-      if (!a[0] || !a[1]) return console.log('用法: add <uid> <密码> [昵称]');
-      return api('POST', `/admin/api/users/${encodeURIComponent(cur)}`, { uid: a[0], password: a[1], name: a[2] || '' })
-        .then(d => { ok(`用户 ${(d && d.uid) || a[0]} 已创建`); show(); });
-    },
-    pass: a => {
-      if (!a[0] || !a[1]) return console.log('用法: pass <uid> <新密码>');
-      return api('POST', `/admin/api/users-update/${encodeURIComponent(cur)}`, { uid: a[0], password: a[1] })
-        .then(() => ok(`用户 ${a[0]} 密码已更新`));
-    },
-    del: a => {
-      if (!a[0]) return console.log('用法: del <uid> -y');
-      if (!a.includes('-y')) return console.log(C.yel('删除用户需确认: del ' + a[0] + ' -y'));
-      return api('DELETE', `/admin/api/users/${encodeURIComponent(cur)}/${encodeURIComponent(a[0])}`)
-        .then(() => { ok(`用户 ${a[0]} 已删除`); show(); });
-    },
-    link: () => {
-      const c = loadCfg(cur);
-      webBases(c).forEach(b => console.log('  POST ' + b + '/auth/register'));
-      console.log(C.dim('  请求体: {"uid":"…","password":"…"}' + ((c.registration || {}).captchaProvider === 'turnstile' ? ' + captchaToken' : '')));
-    },
-    use: a => { if (!pickInst(a[0])) return; cur = a[0]; return show(); },
+  const submit = () => {
+    const c = loadCfg(cur), reg = c.registration || {};
+    if (!reg.enable) return console.log(C.yel('该实例未开放注册'));
+    if (reg.captchaProvider === 'turnstile') return console.log(C.yel('该实例开启 turnstile 人机验证, 请用网页注册'));
+    if (!/^[A-Za-z0-9_-]{3,32}$/.test(form.name)) return console.log(C.yel('name 需 3-32 位字母/数字/下划线'));
+    if (form.password.length < (reg.minPasswordLen || 8)) return console.log(C.yel('password 至少 ' + (reg.minPasswordLen || 8) + ' 位'));
+    if (form.password !== form.confirm) return console.log(C.yel('两次密码不一致'));
+    if (reg.emailVerify && reg.emailVerify.enable && !form.email) return console.log(C.yel('该实例要求填写 email'));
+    const body = { uid: form.name, password: form.password };
+    if (form.email) body.email = form.email;
+    if (form.other) body.note = form.other;
+    return plainPost(cur, '/auth/register', body).then(d => {
+      ok('注册成功: ' + d.uid);
+      if (d.key) console.log('  卡密: ' + C.grn(d.key) + C.dim(' (仅显示一次, 请妥善保存)'));
+      if (d.quotaTokens) console.log('  额度: ' + fmtTok(d.quotaTokens) + ' tokens');
+    }).catch(e => console.log(C.red('注册失败: ' + e.message)));
+  };
+  const before = raw => {
+    const line = raw.trim();
+    if (/^(exit|quit|q|:q)$/i.test(line) || /^(help|\?)$/i.test(line)) return; // 交给 REPL: 退出/帮助
+    if (!line) { submit(); return true; }
+    const eq = line.indexOf('=');
+    if (eq < 0) { view(); return true; }
+    const k = line.slice(0, eq).trim().toLowerCase(), v = line.slice(eq + 1).trim();
+    if (k === 'name') form.name = v;
+    else if (k === 'password') form.password = v;
+    else if (k === 'reconfirm' || k === 'confirm') form.confirm = v;
+    else if (k === 'email') form.email = v;
+    else if (k === 'other') form.other = v;
+    else console.log(C.yel('未知字段: ' + k));
+    view(); return true;
   };
   return startRepl({
-    title: 'agw 用户注册 loop',
+    title: 'agw 用户注册 loop (' + cur + ')',
     prompt: () => 'agw·register ' + cur + '> ',
     help: HELP_REGISTER,
-    refresh: show,
-    commands,
+    refresh: view,
+    commands: {},
+    before: before,
   });
 }
 
+
 /* ---------- 管理体系 ---------- */
 const HELP_ADMIN = t(`管理体系 loop 命令:
-  token                         面板令牌状态
-  token login                   一次性登录链接 + 打开面板(自动令牌会轮换)
-  token set <令牌>              设定固定令牌
-  token clear                   清除令牌
-  token reset                   注销全部面板会话
-  auth                          二次验证状态(second-key/TOTP)
-  auth key <第二密钥>            设置 second-key
-  auth key clear                清除 second-key
-  auth totp on|off              开关 TOTP
-  notice                        告警汇总
-  insts                         实例清单    stat 统计面板    logs [n] 日志尾部
-  use <实例>                    切换实例`);
+  login [token=<令牌|random>]   生成/设置面板令牌并打印登录链接
+  expire [--time -t <时长/时间>] [--wait -w <时长/时间>] [--device -d <id|all>]
+                                注销面板会话(当前仅立即执行)
+  profile change [--avatar <URL/路径>] [--name <名>] [--profile <内容>] [--other <内容>]
+                                管理端资料
+  logout [--device -d <id|all>] 退出面板登录
+  空行                          显示当前状态`);
 function loopAdmin(startName) {
   let cur = startName || 'default';
   const show = () => {
-    const c = loadCfg(cur);
+    const c = loadCfg(cur), pf = c.adminProfile || {};
     console.log(C.bold(`■ 管理体系 (${cur})`));
     console.log('  面板令牌 ' + (c.webToken ? C.grn(maskKey(c.webToken)) + (c.webTokenFixed ? C.dim(' 固定') : C.dim(' 自动轮换')) : C.yel('未设')));
     console.log('  入口 ' + webBases(c).map(b => b + '/auth').join('  '));
-    return Promise.all([
-      api('GET', '/admin/api/instances').then(d => {
-        const its = d.instances || [];
-        console.log('  实例 ' + (its.map(x => (x.running ? C.grn('●') : C.dim('○')) + x.name).join('  ') || '(无)'));
-      }).catch(e => console.log(C.dim('  实例: ' + e.message))),
-      api('GET', `/admin/api/admin-auth/${encodeURIComponent(cur)}`).then(d =>
-        console.log('  二次验证 second-key ' + (d.secondKeySet ? C.grn('已设') : C.dim('未设')) + '  TOTP ' + (d.totpEnabled ? C.grn('开') : C.dim('关')))
-      ).catch(e => console.log(C.dim('  二次验证: ' + e.message))),
-    ]);
+    console.log('  资料 ' + (pf.name || C.dim('-')) + '  avatar=' + (pf.avatar || C.dim('-')) + '  profile=' + (pf.profile ? trunc(pf.profile, 40) : C.dim('-')) + '  other=' + (pf.other || C.dim('-')));
   };
-  const authPost = body => api('POST', `/admin/api/admin-auth/${encodeURIComponent(cur)}`, body);
+  const opt = (a, ...fl) => { for (let i = 0; i < a.length; i++) if (fl.includes(a[i])) return a[i + 1]; return undefined; };
   const commands = {
-    show: show,
-    token: a => {
-      const act = (a[0] || '').toLowerCase();
-      if (!act) return cmdWeb(['--inst', cur]);
-      if (act === 'login' || act === 'rotate') return cmdWeb(['--inst', cur, 'login']);
-      if (act === 'set') { if (!a[1]) return console.log('用法: token set <令牌>'); return cmdWeb(['--inst', cur, '--key', a[1]]); }
-      if (act === 'clear') return cmdWeb(['--inst', cur, '--key', 'clear']);
-      if (act === 'reset' || act === 'expired') return cmdWeb(['--expired']);
-      return console.log('用法: token [login|rotate|set <令牌>|clear|reset]');
+    login: a => {
+      const tv = (a[0] || '').toLowerCase().startsWith('token=') ? a[0].slice(6) : (a[0] === 'token' ? a[1] : undefined);
+      if (tv && !/^random$/i.test(tv)) return cmdWeb(['--inst', cur, '--key', tv]);
+      return cmdWeb(['--inst', cur, 'login']);
     },
-    auth: a => {
+    expire: a => {
+      if (opt(a, '-t', '--time') !== undefined || opt(a, '-w', '--wait') !== undefined) return console.log(C.yel('定时注销需要网关常驻调度, 暂不支持; 去掉 -t/-w 可立即注销'));
+      const dev = opt(a, '-d', '--device') || 'all';
+      if (dev !== 'all') return console.log(C.yel('仅支持 --device all'));
+      return api('POST', '/admin/api/web-expired').then(() => ok('面板会话已全部注销')).catch(e => console.log(C.yel('注销失败: ' + e.message)));
+    },
+    logout: a => {
+      const dev = opt(a, '-d', '--device') || 'all';
+      if (dev !== 'all') return console.log(C.yel('仅支持 --device all'));
+      return api('POST', '/admin/api/web-expired').then(() => ok('已退出面板登录')).catch(e => console.log(C.yel('退出失败: ' + e.message)));
+    },
+    profile: a => {
       const sub = (a[0] || '').toLowerCase();
-      if (!sub) return api('GET', `/admin/api/admin-auth/${encodeURIComponent(cur)}`)
-        .then(d => {
-          console.log('  second-key ' + (d.secondKeySet ? C.grn('已设') : C.dim('未设')) + '  TOTP ' + (d.totpEnabled ? C.grn('开') : C.dim('关')));
-          if (d.totpSecret) console.log('  TOTP 密钥: ' + d.totpSecret);
-        }).catch(e => console.log(C.yel('二次验证状态读取失败: ' + e.message)));
-      if (sub === 'key') {
-        if (a[1] === 'clear') return authPost({ secondKey: '' }).then(d => ok('second-key ' + (d.secondKeySet ? '已设置' : '已清除')));
-        const v = a.slice(1).join(' ');
-        if (!v) return console.log('用法: auth key <第二密钥> | auth key clear');
-        return authPost({ secondKey: v }).then(() => ok('second-key 已设置'));
-      }
-      if (sub === 'totp') {
-        const on = (a[1] || 'on').toLowerCase() !== 'off';
-        return authPost({ totpAction: on ? 'enable' : 'disable' }).then(d => {
-          ok('TOTP ' + (d.totpEnabled ? '已开启' : '已关闭'));
-          if (d.otpauthUrl) console.log('  ' + d.otpauthUrl);
-        });
-      }
-      console.log('用法: auth | auth key <第二密钥> | auth key clear | auth totp on|off');
+      if (sub !== 'change') return show();
+      const c = loadCfg(cur), pf = Object.assign({}, c.adminProfile || {});
+      const av = opt(a, '--avatar'), nm = opt(a, '--name'), pr = opt(a, '--profile'), ot = opt(a, '--other');
+      if (av === undefined && nm === undefined && pr === undefined && ot === undefined) return console.log(C.yel('用法: profile change --avatar <URL/路径> --name <名> --profile <内容> --other <内容>'));
+      if (av !== undefined) pf.avatar = av;
+      if (nm !== undefined) pf.name = nm;
+      if (pr !== undefined) pf.profile = pr;
+      if (ot !== undefined) pf.other = ot;
+      c.adminProfile = pf; saveCfg(cur, c);
+      ok('资料已保存'); show();
     },
-    notice: () => cmdNotice([]),
-    inst: () => cmdInst(['list']),
-    insts: () => cmdInst(['list']),
-    stat: () => loopDash(cur),
-    logs: a => tailLog(cur, a[0]),
-    use: a => { if (!pickInst(a[0])) return; cur = a[0]; return show(); },
   };
   return startRepl({
-    title: 'agw 管理体系 loop',
+    title: 'agw 管理体系 loop (' + cur + ')',
     prompt: () => 'agw·admin ' + cur + '> ',
     help: HELP_ADMIN,
     refresh: show,
     commands,
+    unknown: parts => console.log(C.yel('未知命令: ' + parts[0] + '  (help 查看)')),
   });
 }
+
 
 /* ---------- 命令入口(非 TTY 时打印一次性摘要, 交互终端进 loop) ---------- */
 function cmdRegister(argv) {
@@ -1567,7 +1828,7 @@ function cmdRegister(argv) {
   if (canLoop()) return loopRegister(inst);
   const c = loadCfg(inst); const r = c.registration || {};
   console.log(`  ${inst}: 注册 ${onoff(r.enable)}  captcha ${r.captchaProvider || 'none'}  密码≥${r.minPasswordLen || 8}  用户 ${(c.users || []).length}`);
-  console.log(C.dim('  交互终端执行 agw register 进入管理 loop'));
+  console.log(C.dim('  交互终端执行 agw register 进入注册 loop'));
 }
 function cmdAdmin(argv) {
   if (argv.includes('help') || argv.includes('--help')) { console.log(HELP_ADMIN); return; }
@@ -1578,6 +1839,96 @@ function cmdAdmin(argv) {
   console.log(`  ${inst}: 面板令牌 ${c.webToken ? '已设 ' + maskKey(c.webToken) : '未设'}  second-key ${(c.adminAuth || {}).secondKey ? '已设' : '未设'}  TOTP ${(c.adminAuth || {}).totpSecret ? '开' : '关'}`);
   console.log(C.dim('  交互终端执行 agw admin 进入管理 loop'));
 }
+
+/* ---------- agw config / agw crypt ---------- */
+function cmdConfig(argv) {
+  const sub = (argv[0] || '').toLowerCase();
+  const opt = (...fl) => { for (let i = 0; i < argv.length; i++) if (fl.includes(argv[i])) return argv[i + 1]; return undefined; };
+  const usage = () => console.log(t(`用法:
+  agw config export <config|all|实例> [--output -p <路径>] [--type -t <0=JSON/1=QRcode>] [--encrypt <true/false>]
+  agw config import <文件> [--decrypt <password|none>] [--repair <true/false>]`));
+  if (sub === 'export') {
+    const scope = argv[1];
+    if (!scope) return usage();
+    const targets = (scope === 'config' || scope === 'all') ? listInsts() : [scope];
+    if (!targets.length) return die('没有实例可导出');
+    if (scope !== 'config' && scope !== 'all' && !listInsts().includes(scope)) return die('实例不存在: ' + scope);
+    const qr = opt('-t', '--type') === '1';
+    const enc = /^(true|1|on|yes)$/i.test(opt('--encrypt') || '');
+    const out = opt('-p', '--output');
+    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    const pass = enc ? crypt.loadPass() : null;
+    if (enc && !pass) return die('加密导出需要 .agwkey / AGW_CRYPT_PASS');
+    let dir = null;
+    if (out && !qr) {
+      try { dir = fs.statSync(out).isDirectory() ? out : null; } catch (_) {}
+      if (!dir && targets.length > 1) return die('多实例导出时 --output 必须是已存在的目录');
+    }
+    for (const name of targets) {
+      const c = loadCfg(name);
+      let text = JSON.stringify(c, null, 2);
+      if (enc) text = crypt.encryptText(text, pass);
+      if (qr) {
+        const dest = path.resolve(out && targets.length === 1 ? out : path.join(out || process.cwd(), 'config-' + name + '-' + stamp + '.png'));
+        const r = require('child_process').spawnSync('qrencode', ['-t', 'PNG', '-o', dest], { input: text });
+        if (r.error || r.status !== 0) { console.log(C.yel('  ' + name + ': qrencode 失败 ' + (r.error ? r.error.message : 'exit ' + r.status))); continue; }
+        console.log('  ' + dest + (text.length > 2200 ? C.dim('  (内容较大, 扫码可能不完整)') : ''));
+      } else {
+        let dest;
+        if (out) dest = path.resolve(dir ? path.join(out, 'config.' + name + '.json') : (targets.length === 1 ? out : path.join(out, 'config.' + name + '.json')));
+        else dest = path.join(process.cwd(), 'config-' + name + '-' + stamp + '.json');
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.writeFileSync(dest, text);
+        fs.chmodSync(dest, 0o600);
+        console.log('  ' + dest);
+      }
+    }
+    if (enc) console.log(C.dim('已用 .agwkey 加密导出'));
+    return ok('导出完成');
+  }
+  if (sub === 'import') {
+    const src = argv[1];
+    if (!src) return usage();
+    if (src === 'camera') return console.log(C.yel('摄像头扫码导入暂不支持, 请先保存二维码内容为文件'));
+    const abs = path.resolve(src);
+    if (!fs.existsSync(abs)) return die('文件不存在: ' + abs);
+    let raw = fs.readFileSync(abs, 'utf8');
+    const dec = opt('--decrypt');
+    if (dec && dec !== 'none') {
+      try { raw = crypt.decryptText(raw, dec); } catch (e) { return die('解密失败: ' + e.message); }
+    } else if (crypt.isEncText(raw)) {
+      const p = crypt.loadPass();
+      if (!p) return die('源文件已加密: 用 --decrypt <口令> 或配置 .agwkey');
+      try { raw = crypt.decryptText(raw, p); } catch (e) { return die('解密失败: ' + e.message); }
+    }
+    let c; try { c = JSON.parse(raw); } catch (e) { return die('JSON 无效: ' + e.message); }
+    if (/^(true|1|on|yes)$/i.test(opt('--repair') || '')) {
+      c.listen = c.listen || {};
+      if (!c.listen.port) c.listen.port = 16384;
+      c.channels = c.channels || [];
+      c.users = c.users || [];
+      c.apiKeys = c.apiKeys || [];
+      console.log(C.dim('已修补缺失字段(listen/channels/users/apiKeys)'));
+    }
+    const base = path.basename(abs).replace(/^config\./, '').replace(/\.json$/i, '');
+    const name = listInsts().includes(base) ? base + '-' + Date.now().toString(36) : (base || 'imported');
+    fs.writeFileSync(cfgPathOf(name), JSON.stringify(c, null, 2) + '\n', { mode: 0o600 });
+    return ok('已导入为实例 ' + name + '; agw.sh restart 生效');
+  }
+  usage();
+}
+function cmdCrypt(argv) {
+  const scope = argv[0], op = (argv[1] || '').toLowerCase(), pass = argv[2];
+  if (!scope || !['en', 'de', 're'].includes(op)) return console.log(t(`用法:
+  agw crypt <all|config|实例> en <password>        加密
+  agw crypt <all|config|实例> de <password|none>   解密
+  agw crypt <all|config|实例> re <new-password>    换口令重加密`));
+  const sc = scope === 'config' ? 'all' : scope;
+  if (op === 'en') return cmdEncrypt([sc, pass]);
+  if (op === 'de') return cmdDecrypt([sc, pass === 'none' ? '' : pass]);
+  return cmdRecrypt([sc, pass]);
+}
+
 
 /* ==================== main dispatch ==================== */
 function help(sub) {
@@ -1621,26 +1972,18 @@ function help(sub) {
   agw card --register <on|off> | --length <8~128>
 
 交互 loop (空行刷新, help 看命令, exit 退出; 非 TTY 时打印一次性摘要)
-  agw inst [<inst>]                     实例管理 loop(list/use/status/start/stop/logs/new/del)
-  agw chan <inst>                       渠道管理 loop(list/add/rm/scope/proxy/fetch/balance)
-  agw router <inst>                     路由管理 loop(重试/超时/冷却/过滤/固定路由)
-  agw stat [<inst>]                     统计面板 loop(all/daily/weekly/monthly/models/dist/watch)
-  agw register [<inst>]                 用户注册 loop(注册开关/额度/人机验证/用户)
-  agw admin [<inst>]                    管理体系 loop(令牌/二次验证/告警/日志)
-  agw loop [实例]                       综合管理台(stat/inst/chan/card/logs/use/watch)
-  各 loop 内也可直接敲 -- 参数(计划通同款), 如 --status requests / --retry 3 / --apikey sk-x
-
-面板
-  agw web login [--inst <实例>]                 生成随机访问令牌, 打印面板链接并开浏览器
-  agw web --key <token> [--inst <实例>]         设定固定访问令牌(固定后 login 不轮换)
-  agw web --key clear [--inst <实例>]           清除固定访问令牌
-  agw web --expired [--inst <实例>]             清除面板认证状态(注销全部会话)
+  agw inst <inst>                       实例管理 loop(status/grep/dist/edit)
+  agw chan <inst>                       渠道管理 loop(fetch/edit/default/lock/unlock/delete/models/scope)
+  agw ctxp                              上下文上限 loop(stat/edit/delete)
+  agw register [<inst>]                 用户注册 loop(name/password/reconfirm/email/other)
+  agw admin [<inst>]                    管理体系 loop(login/expire/profile/logout)
+  agw cloudflared                       隧道管理 loop(log/grep/kill/start/stop)
 
 运维
   agw <start|stop|restart|status>               网关进程启停(agw.sh 同款)
   agw refresh ca                                重签 TLS 证书并重启
   agw record <on|off> [--server "user:pass@host:port"] [--max-length <n>] [实例]
-  agw cloudflared <start|stop|restart|clear|status>
+  agw cloudflared <start|stop|restart|clear>
   agw notice                                    告警汇总(空key/卡到期/余额/证书)
   agw stat <all|daily|weekly|monthly> [实例]
   agw stat --refresh <分钟> [实例]       统计落盘间隔(0=关; 写 config.statsFlushMin)
@@ -1650,16 +1993,18 @@ function help(sub) {
   agw encrypt|decrypr|recrypt <all|实例> [口令]
   agw export <all|实例> [--QRcode <true|false>]
   agw inport <文件> [口令]
+  agw config export|import ...               配置导出/导入(见 agw config)
+  agw crypt <all|config|实例> <en|de|re> [口令]
   agw lang <zh>
 
 细节: agw help <命令>    例: agw help chan`));
 }
 const CMDS = {
   inst: cmdInst, router: cmdRouter, chan: cmdChan, fetch: cmdFetch, ctxp: cmdCtxp,
-  card: cmdCard, refresh: cmdRefresh, record: cmdRecord, cloudflared: cmdCloudflared, web: cmdWeb,
-  lang: cmdLang, notice: cmdNotice, stat: cmdStat, loop: cmdLoop, register: cmdRegister, admin: cmdAdmin,
-  encrypt: cmdEncrypt, decrypr: cmdDecrypt, decrypt: cmdDecrypt, recrypt: cmdRecrypt,
-  export: cmdExport, inport: cmdInport,
+  card: cmdCard, refresh: cmdRefresh, record: cmdRecord, cloudflared: cmdCloudflared,
+  lang: cmdLang, notice: cmdNotice, stat: cmdStat, register: cmdRegister, admin: cmdAdmin,
+  encrypt: cmdEncrypt, decrypr: cmdDecrypt, recrypt: cmdRecrypt,
+  export: cmdExport, inport: cmdInport, config: cmdConfig, crypt: cmdCrypt,
 };
 
 /* agw restart / agw stop / agw start — 网关进程级操作(计划通未列, 保留 agw.sh 肌肉记忆) */
@@ -1670,7 +2015,7 @@ function cmdProc(argv) {
   try { execSync(`bash '${argsh}' ${a}`, { stdio: 'inherit' }); }
   catch (e) { die(`agw.sh ${a} 失败: ` + (e.status || e.message)); }
 }
-CMDS.start = cmdProc; CMDS.stop = cmdProc; CMDS.restart = cmdProc; CMDS['gw'] = cmdProc;
+CMDS.start = cmdProc; CMDS.stop = cmdProc; CMDS.restart = cmdProc;
 const cmd = process.argv[2];
 if (['start', 'stop', 'restart', 'gw', 'status'].includes(cmd)) return cmdProc([cmd]);
 if (!cmd || cmd === 'help' || cmd === '--help') return help(process.argv[3]);
