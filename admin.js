@@ -16,7 +16,7 @@ const ctxp = require('./ctxp');
 const { VERSION } = require('./util');
 
 // cloudflared 隧道全局状态
-let tunnelProc = null, tunnelUrl = '', tunnelLog = [];
+let tunnelProc = null, tunnelUrl = '', tunnelLog = [], tunnelTimer = null, tunnelNext = null;
 
 // DIR 优先用当前实例配置文件所在目录, 回落到 ~/ai-gateway
 let crypt = null; try { crypt = require('./crypt.js'); } catch (_) {}
@@ -229,6 +229,13 @@ function totpVerify(secretB32, code) {
 
 // 管理端认证: webToken(访问令牌, agw admin login 生成)主验证 + 可选第二验证(adminAuth.secondKey 第二密码 / adminAuth.totpSecret TOTP)
 function checkAdminAuth(cfg, req, query) {
+  // 面板会话到期(agw admin expire): 到时清空全部会话, 并落盘清零
+  if (cfg.adminExpireAt > 0 && Date.now() >= cfg.adminExpireAt) {
+    cfg.adminExpireAt = 0;
+    if (cfg._webSess) cfg._webSess.clear();
+    if (cfg._webSessPend) cfg._webSessPend.clear();
+    try { const nm = cfg._name || currentName(cfg); const disk = loadCfg(nm); if (disk) { disk.adminExpireAt = 0; saveCfg(nm, disk); } } catch (_) {}
+  }
   const h = req.headers;
   const auth = h.authorization || '';
   const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
@@ -808,9 +815,44 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
 
   // POST /admin/api/web-expired — 注销全部面板会话(agw admin expire)
   if (api === 'web-expired') {
+    let j = {}; try { j = JSON.parse(bodyStr || '{}'); } catch (_) {}
+    const sid = String(j.sid || '');
+    if (sid) {
+      if (cfg._webSess) cfg._webSess.delete(sid);
+      if (cfg._webSessPend) cfg._webSessPend.delete(sid);
+      return jsonRes(res, 200, { ok: true, sid });
+    }
     if (cfg._webSess) cfg._webSess.clear();
     if (cfg._webSessPend) cfg._webSessPend.clear();
     return jsonRes(res, 200, { ok: true, cleared: true });
+  }
+  // POST /admin/api/admin-expire {at|sid|0} — 定时/立即注销面板会话(agw admin expire -t/-w/-d)
+  if (api === 'admin-expire') {
+    let j = {}; try { j = JSON.parse(bodyStr || '{}'); } catch (_) {}
+    if (j.sid) {
+      if (cfg._webSess) cfg._webSess.delete(String(j.sid));
+      if (cfg._webSessPend) cfg._webSessPend.delete(String(j.sid));
+      return jsonRes(res, 200, { ok: true, sid: String(j.sid) });
+    }
+    const nm = cfg._name || currentName(cfg);
+    const at = Number(j.at) || 0;
+    if (cfg._expTimer) { clearTimeout(cfg._expTimer); cfg._expTimer = null; }
+    if (!at) {
+      cfg.adminExpireAt = 0;
+      try { const disk = loadCfg(nm); if (disk) { disk.adminExpireAt = 0; saveCfg(nm, disk); } } catch (_) {}
+      return jsonRes(res, 200, { ok: true, at: 0 });
+    }
+    const fire = () => {
+      cfg.adminExpireAt = 0;
+      if (cfg._webSess) cfg._webSess.clear();
+      if (cfg._webSessPend) cfg._webSessPend.clear();
+      try { const disk = loadCfg(nm); if (disk) { disk.adminExpireAt = 0; saveCfg(nm, disk); } } catch (_) {}
+    };
+    cfg.adminExpireAt = at;
+    if (at <= Date.now()) fire();
+    else cfg._expTimer = setTimeout(fire, at - Date.now());
+    try { const disk = loadCfg(nm); if (disk) { disk.adminExpireAt = at; saveCfg(nm, disk); } } catch (e) { return jsonRes(res, 500, { error: '保存失败: ' + e.message }); }
+    return jsonRes(res, 200, { ok: true, at });
   }
   // POST /admin/api/web-session {sid} — 注册一次性登录链接的会话UID(agw admin login, 15 分钟有效)
   if (api === 'web-session') {
@@ -1429,6 +1471,8 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       secondKeySet: !!aa.secondKey,
       totpEnabled: !!aa.totpSecret,
       totpSecret: aa.totpSecret || null, // 已设置才返回(供二维码展示)
+      profile: c.adminProfile || {},       // 管理端资料(agw admin profile)
+      expireAt: c.adminExpireAt || 0,      // 面板会话到期时间(agw admin expire)
     });
   }
 
@@ -1654,42 +1698,59 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
 
   // ============ cloudflared 公网隧道(免费临时域名) ============
   if (api === 'tunnel' || api.startsWith('tunnel?')) {
+    const mainPort = () => (POOL && POOL.mainPort) || (cfg.listen && cfg.listen.port) || 16384;
+    const doStart = () => {
+      if (tunnelProc) return { ok: true, url: tunnelUrl, running: true, already: true };
+      tunnelUrl = ''; tunnelLog = [];
+      try {
+        const { spawn } = require('child_process');
+        const originTls = !!(cfg.tls && cfg.tls.enable);
+        const origin = (originTls ? 'https://127.0.0.1:' : 'http://127.0.0.1:') + mainPort();
+        const cfArgs = ['tunnel', '--url', origin, '--no-autoupdate'];
+        if (originTls) cfArgs.push('--no-tls-verify');
+        tunnelProc = spawn('cloudflared', cfArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (e) { tunnelProc = null; return { error: 'cloudflared 启动失败(未安装?): ' + e.message }; }
+      const onData = (buf) => {
+        const line = buf.toString('utf8');
+        tunnelLog.push(line.trim().slice(0, 300)); if (tunnelLog.length > 60) tunnelLog.shift();
+        const m = line.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+        if (m && !tunnelUrl) tunnelUrl = m[0];
+      };
+      tunnelProc.stdout.on('data', onData);
+      tunnelProc.stderr.on('data', onData);
+      tunnelProc.on('exit', () => { tunnelProc = null; tunnelUrl = ''; });
+      tunnelProc.on('error', (e) => { tunnelLog.push('spawn error: ' + e.message); tunnelProc = null; });
+      return { ok: true, starting: true };
+    };
+    const doStop = () => {
+      if (tunnelProc) { try { tunnelProc.kill('SIGTERM'); } catch (_) {} tunnelProc = null; }
+      tunnelUrl = '';
+      return { ok: true };
+    };
     if (req.method === 'GET') {
-      return jsonRes(res, 200, { running: !!tunnelProc, url: tunnelUrl, log: tunnelLog.slice(-12) });
+      return jsonRes(res, 200, { running: !!tunnelProc, url: tunnelUrl, log: tunnelLog.slice(-12), next: tunnelNext });
     }
     if (req.method === 'POST') {
       let data; try { data = JSON.parse(bodyStr || '{}'); } catch (e) { return jsonRes(res, 400, { error: 'JSON 无效' }); }
-      if (data.action === 'start') {
-        if (tunnelProc) return jsonRes(res, 200, { ok: true, url: tunnelUrl, running: true, already: true });
-        const mainPort = (POOL && POOL.mainPort) || (cfg.listen && cfg.listen.port) || 16384;
-        tunnelUrl = ''; tunnelLog = [];
-        try {
-          const { spawn } = require('child_process');
-          // 回源: 开了 TLS 就走 https(私有 CA → --no-tls-verify), 否则退回 http
-          const originTls = !!(cfg.tls && cfg.tls.enable);
-          const origin = (originTls ? 'https://127.0.0.1:' : 'http://127.0.0.1:') + mainPort;
-          const cfArgs = ['tunnel', '--url', origin, '--no-autoupdate'];
-          if (originTls) cfArgs.push('--no-tls-verify');
-          tunnelProc = spawn('cloudflared', cfArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
-        } catch (e) { tunnelProc = null; return jsonRes(res, 500, { error: 'cloudflared 启动失败(未安装?): ' + e.message }); }
-        const onData = (buf) => {
-          const line = buf.toString('utf8');
-          tunnelLog.push(line.trim().slice(0, 300)); if (tunnelLog.length > 60) tunnelLog.shift();
-          const m = line.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-          if (m && !tunnelUrl) tunnelUrl = m[0];
-        };
-        tunnelProc.stdout.on('data', onData);
-        tunnelProc.stderr.on('data', onData);
-        tunnelProc.on('exit', () => { tunnelProc = null; tunnelUrl = ''; });
-        tunnelProc.on('error', (e) => { tunnelLog.push('spawn error: ' + e.message); tunnelProc = null; });
-        return jsonRes(res, 200, { ok: true, starting: true });
+      if (data.action === 'cancel') {
+        if (tunnelTimer) clearTimeout(tunnelTimer);
+        tunnelTimer = null; tunnelNext = null;
+        return jsonRes(res, 200, { ok: true, cancelled: true });
       }
-      if (data.action === 'stop') {
-        if (tunnelProc) { try { tunnelProc.kill('SIGTERM'); } catch (_) {} tunnelProc = null; }
-        tunnelUrl = '';
-        return jsonRes(res, 200, { ok: true });
+      if (data.action !== 'start' && data.action !== 'stop') return jsonRes(res, 400, { error: 'action 应为 start/stop/cancel' });
+      const at = Number(data.at) || 0;
+      if (at > Date.now()) {
+        if (tunnelTimer) clearTimeout(tunnelTimer);
+        tunnelNext = { action: data.action, at };
+        tunnelTimer = setTimeout(() => {
+          tunnelTimer = null; tunnelNext = null;
+          try { data.action === 'start' ? doStart() : doStop(); }
+          catch (e) { tunnelLog.push('scheduled ' + data.action + ' 失败: ' + e.message); }
+        }, at - Date.now());
+        return jsonRes(res, 200, { ok: true, scheduled: data.action, at });
       }
-      return jsonRes(res, 400, { error: 'action 应为 start/stop' });
+      const r = data.action === 'start' ? doStart() : doStop();
+      return jsonRes(res, r.error ? 500 : 200, r);
     }
   }
 

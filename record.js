@@ -12,7 +12,7 @@ const { logErr, rpCompile, log, hdrName, utf8, safeParse, rpWalk, randId } = req
 const { dsmlDiag, makeDirectPipe, wrapDsmlClean, dsmlExtractCall, dsmlCleanText, dsmlPickCall } = require('./dsml');
 const { ResponsesStreamParser, UpstreamStreamParser, SSEDecoder, responsesRespToCanonical, makeResponsesWriter, makeWriter, canonicalToResponsesResp, canonicalToOpenAIResp, canonicalToClaudeResp, canonicalToGeminiResp, responsesToCanonical } = require('./convert');
 const { UP_RESP, TO_CANON, buildRequestForChannel, SAME_RETRYABLE, BUILD_BODY } = require('./sync');
-const { tokOf, sendError, corsHeaders, estPromptAdj, matchContextWindow, pickChannels, forcedChannelName, analyzePrompt, calibRatio, calibUpdate, scaleDist, recordContext } = require('./router');
+const { tokOf, sendError, corsHeaders, estPromptAdj, matchContextWindow, pickChannels, globMatch, forcedChannelName, analyzePrompt, calibRatio, calibUpdate, scaleDist, recordContext } = require('./router');
 const { wrapThinkingSummary, summarizeReasoningText, truncateReasoning, upstreamRequest, joinUrl } = require('./upstream');
 const { respRedactOn, wrapRedactWriter, redactText, redactDeep } = require('./redact');
 const { isConnErr, makeFreshAgents } = require('./proxy');
@@ -378,29 +378,7 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
   }
   // 卡级隐私过滤覆盖在 redactDeep 前已应用(2250行附近), 此处不再重复
 
-  // 全局上下文上限(ctxp): 按模型名通配, max 拦截 / warn 走 TermuxBridge 通知(5分钟节流)
-  {
-    const __fresh = ctxp.loadRulesIfChanged();
-    if (__fresh !== undefined) cfg._ctxpRules = __fresh;
-    else if (!cfg._ctxpRules) cfg._ctxpRules = ctxp.loadRules();
-    if (cfg._ctxpRules && Object.keys(cfg._ctxpRules).length) {
-      const __hit = ctxp.matchRule(cfg._ctxpRules, canonical.model);
-      if (__hit) {
-        const __rule = __hit.rule;
-        const __mx = Math.max(0, Number(__rule.max) || 0), __wn = Math.max(0, Number(__rule.warn) || 0);
-        if ((__mx > 0 || __wn > 0) && (cfg.ctxpMode || 'force') !== 'none') {
-          const __estC = estPromptAdj(cfg, canonical.model, canonical).total;
-          if ((cfg.ctxpMode || 'force') === 'force' && __mx > 0 && __estC > __mx) {
-            log('[ctxp] 拒收超限请求 model=' + canonical.model + ' est=' + __estC + ' max=' + __mx + ' (rule ' + __hit.pattern + ')');
-            stats.errors++;
-            return sendError(clientFormat, res, 400,
-              '上下文超出全局上限: 估算 ' + __estC + ' tokens > max ' + __mx + ' (规则: ' + __hit.pattern + ')');
-          }
-          if (__wn > 0 && __estC > __wn) ctxp.fireWarn(__hit.pattern, __rule, canonical.model, __estC).catch(() => {});
-        }
-      }
-    }
-  }
+
   // 上下文硬上限: 按估算先卡住, 别白跑一趟上游(软上限只影响提示色, 不拦)
   const cl = cfg.contextLimit || { soft: 80, hard: 0, charsPerToken: 2 };
   if (cl.hard > 0) {
@@ -419,6 +397,36 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
 
   const candidates = pickChannels(cfg, canonical.model, forcedChannelName(cfg, req));
   if (!candidates.length) return sendError(clientFormat, res, 503, 'no channel configured in config.json');
+
+  // 全局上下文上限(ctxp): 按模型名通配, max 拦截 / warn 走 TermuxBridge 通知(5分钟节流)
+  // 渠道级 ch.ctxp 可覆盖模式(force/warn/none), 并用 models 限定生效范围(支持 * 通配)
+  {
+    const __cand = candidates[0] && candidates[0].ch;
+    const __cctx = __cand && __cand.ctxp;
+    const __mode = (__cctx && __cctx.mode) || cfg.ctxpMode || 'force';
+    const __scoped = !!(__cctx && Array.isArray(__cctx.models) && __cctx.models.length);
+    const __inScope = !__scoped || __cctx.models.some(p => p === '*' || globMatch(p, canonical.model));
+    const __fresh = ctxp.loadRulesIfChanged();
+    if (__fresh !== undefined) cfg._ctxpRules = __fresh;
+    else if (!cfg._ctxpRules) cfg._ctxpRules = ctxp.loadRules();
+    if (__inScope && __mode !== 'none' && cfg._ctxpRules && Object.keys(cfg._ctxpRules).length) {
+      const __hit = ctxp.matchRule(cfg._ctxpRules, canonical.model);
+      if (__hit) {
+        const __rule = __hit.rule;
+        const __mx = Math.max(0, Number(__rule.max) || 0), __wn = Math.max(0, Number(__rule.warn) || 0);
+        if (__mx > 0 || __wn > 0) {
+          const __estC = estPromptAdj(cfg, canonical.model, canonical).total;
+          if (__mode === 'force' && __mx > 0 && __estC > __mx) {
+            log('[ctxp] 拒收超限请求 model=' + canonical.model + ' est=' + __estC + ' max=' + __mx + ' (rule ' + __hit.pattern + ')');
+            stats.errors++;
+            return sendError(clientFormat, res, 400,
+              '上下文超出全局上限: 估算 ' + __estC + ' tokens > max ' + __mx + ' (规则: ' + __hit.pattern + ')');
+          }
+          if (__wn > 0 && __estC > __wn) ctxp.fireWarn(__hit.pattern, __rule, canonical.model, __estC).catch(() => {});
+        }
+      }
+    }
+  }
 
   stats.requests++;
   // 请求记录(可选, 默认关闭): 包一层 res.write/res.end 捕获实际发给客户端的响应正文

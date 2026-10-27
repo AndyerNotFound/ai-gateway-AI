@@ -403,7 +403,7 @@ function cmdChan(argv) {
     for (const ch of c.channels) {
       const lk = chanLockInfo(ch);
       console.log(`  ${C.cyn(pad(ch.name, 18))} ${pad(ch.type || 'openai', 8)} ${trunc(ch.baseUrl, 46)}${ch.default ? C.grn(' [默认]') : ''}${lk.locked ? C.red(' [锁定]') + C.dim(' 至 ' + fmtWhen(lk.until || 0)) : lk.scheduled ? C.yel(' [待锁定 ' + fmtWhen(lk.at) + ']') : ''}
-      models:${(ch.models || []).length || '-'} map:${Object.keys(ch.modelMap || {}).length} proxy:${ch.proxy || '-'} delay:${ch.delayMs || 0}ms dsml:${ch.transcreet || 'inherit'} bal:${ch.balanceUrl ? 'custom' : ''}${ch.balanceWarn ? C.yel(' warn<' + ch.balanceWarn + '>') : ''}`);
+      models:${(ch.models || []).length || '-'} map:${Object.keys(ch.modelMap || {}).length} proxy:${ch.proxy || '-'} delay:${ch.delayMs || 0}ms dsml:${ch.transcreet || 'inherit'} ctxp:${ch.ctxp ? (ch.ctxp.mode || 'force') : '-'} bal:${ch.balanceUrl ? 'custom' : ''}${ch.balanceWarn ? C.yel(' warn<' + ch.balanceWarn + '>') : ''}`);
     }
     return;
   }
@@ -744,8 +744,15 @@ const HELP_CF = t(`隧道管理 loop 命令:
   空行                                 刷新状态`);
 function loopCf() {
   const get = () => api('GET', '/admin/api/tunnel');
+  const opt = (a, ...fl) => { for (let i = 0; i < a.length; i++) if (fl.includes(a[i])) return a[i + 1]; return undefined; };
+  const cfWhen = a => {
+    const t = opt(a, '-t', '--time'), w = opt(a, '-w', '--wait');
+    if (t === undefined && w === undefined) return 0;
+    return parseWhen(w !== undefined ? w : t) || NaN;
+  };
   const view = () => get().then(d => {
     console.log(`  隧道 running=${d.running ? C.grn('on') : C.dim('off')}  url=${d.url || '-'}`);
+    if (d.next) console.log('  计划 ' + d.next.action + ' @ ' + fmtWhen(d.next.at));
     (d.log || []).slice(-8).forEach(l => console.log('  ' + trunc(l, 160)));
   }).catch(e => console.log(C.yel('隧道状态读取失败: ' + e.message)));
   const grep = a => {
@@ -785,11 +792,15 @@ function loopCf() {
     grep: grep,
     kill: () => api('POST', '/admin/api/tunnel', { action: 'stop' }).then(() => { ok('隧道已停止'); view(); }).catch(e => console.log(C.yel('停止失败: ' + e.message))),
     start: a => {
-      if (a.includes('-t') || a.includes('--time') || a.includes('-w') || a.includes('--wait')) return console.log(C.yel('定时启停需要网关常驻调度, 暂不支持'));
+      const at = cfWhen(a);
+      if (Number.isNaN(at)) return console.log(C.yel('时间格式: 30 / 10m / 2h / 22:30 / 2026-10-28 09:00'));
+      if (at) return api('POST', '/admin/api/tunnel', { action: 'start', at }).then(d => { ok('已计划启动: ' + fmtWhen(d.at)); view(); }).catch(e => console.log(C.yel('计划失败: ' + e.message)));
       return api('POST', '/admin/api/tunnel', { action: 'start' }).then(() => new Promise(r => setTimeout(r, 2500))).then(get).then(d => { ok('隧道启动: ' + (d.url || '(域名获取中)')); }).catch(e => console.log(C.yel('启动失败: ' + e.message)));
     },
     stop: a => {
-      if (a.includes('-t') || a.includes('--time') || a.includes('-w') || a.includes('--wait')) return console.log(C.yel('定时启停需要网关常驻调度, 暂不支持'));
+      const at = cfWhen(a);
+      if (Number.isNaN(at)) return console.log(C.yel('时间格式: 30 / 10m / 2h / 22:30 / 2026-10-28 09:00'));
+      if (at) return api('POST', '/admin/api/tunnel', { action: 'stop', at }).then(d => { ok('已计划停止: ' + fmtWhen(d.at)); view(); }).catch(e => console.log(C.yel('计划失败: ' + e.message)));
       return api('POST', '/admin/api/tunnel', { action: 'stop' }).then(() => { ok('隧道已停止'); view(); }).catch(e => console.log(C.yel('停止失败: ' + e.message)));
     },
   };
@@ -1404,6 +1415,7 @@ const HELP_CHAN = t(`渠道管理 loop 命令:
   unlock <渠道> [-t 时长/时间] [-w 时长/时间] [--cancel] 解锁/定时解锁
   delete <渠道>                 删除渠道(输入 y 二次确认)
   models <渠道>                 模型清单 loop(add <模型> / delete <模型|*> / list)
+  ctxp <渠道>                   渠道级上下文策略 loop(models=… / force|warn|none)
   scope <渠道> "请求模型=真实模型, …"   一次写入映射
   scope <渠道>                  映射/白名单 loop(models= / name= / override= / apply)
   空行                          刷新渠道列表`);
@@ -1537,6 +1549,22 @@ function loopChan(startName) {
     if (!ch) { mode = null; return console.log(C.yel('渠道不存在, 已退出')); }
     return post(Object.assign({}, ch, { models: ms })).then(() => { ok(label); modelsView(); }).catch(e => console.log(C.yel('保存失败: ' + e.message)));
   };
+  /* ---- ctxp 子 loop(渠道级上下文策略) ---- */
+  const ctxpView = () => {
+    const ch = chOf(mode.name);
+    if (!ch) { mode = null; return console.log(C.yel('渠道不存在, 已退出')); }
+    const x = ch.ctxp || { models: [], mode: 'force' };
+    console.log(C.bold('■ 渠道上下文策略 ' + ch.name) + C.dim('  (models=… / force|warn|none, 逐项生效, exit 返回)'));
+    console.log(`  models=${(x.models || []).join(', ') || C.dim('(全部模型)')}  mode=${x.mode || 'force'}`);
+  };
+  const saveCtxp = () => {
+    const ch = chOf(mode.name);
+    if (!ch) { mode = null; return console.log(C.yel('渠道不存在, 已退出')); }
+    const models = mode.models.split(/[,，]/).map(x => x.trim()).filter(Boolean);
+    return post(Object.assign({}, ch, { ctxp: { models, mode: mode.mode } }))
+      .then(() => { ok('上下文策略已保存'); ctxpView(); })
+      .catch(e => console.log(C.yel('保存失败: ' + e.message)));
+  };
   /* ---- lock / unlock ---- */
   const lockView = ch => {
     const lk = chanLockInfo(ch);
@@ -1606,6 +1634,18 @@ function loopChan(startName) {
       else console.log(C.yel('未知字段: ' + k));
       scopeView(); return true;
     }
+    if (mode.type === 'ctxp') {
+      if (!line) { ctxpView(); return true; }
+      if (/^(force|warn|none)$/i.test(line)) mode.mode = line.toLowerCase();
+      else {
+        const eq = line.indexOf('=');
+        if (eq < 0) { console.log(C.yel('ctxp: models=<通配> 或 force/warn/none, exit 返回')); return true; }
+        const k = line.slice(0, eq).trim().toLowerCase(), v = line.slice(eq + 1).trim();
+        if (k !== 'models') { console.log(C.yel('未知字段: ' + k)); return true; }
+        mode.models = v;
+      }
+      return saveCtxp();
+    }
     if (mode.type === 'models') {
       const p = splitArgs(line), c = (p[0] || '').toLowerCase(), arg = p.slice(1).join(' ');
       if ((c === 'add') && arg) return modelsSave([].concat((chOf(mode.name) || {}).models || [], arg), '已添加模型: ' + arg) || true;
@@ -1641,6 +1681,14 @@ function loopChan(startName) {
     },
     lock: a => setLock(a, true),
     unlock: a => setLock(a, false),
+    ctxp: a => {
+      if (!a[0]) return console.log('用法: ctxp <渠道>');
+      const ch = chOf(a[0]);
+      if (!ch) return console.log(C.yel('渠道不存在: ' + a[0]));
+      const x = ch.ctxp || {};
+      mode = { type: 'ctxp', name: ch.name, models: (x.models || []).join(', '), mode: x.mode || 'force' };
+      ctxpView();
+    },
     models: a => {
       if (!a[0]) return console.log('用法: models <渠道>');
       const ch = chOf(a[0]);
@@ -1776,6 +1824,7 @@ function loopAdmin(startName) {
     console.log('  面板令牌 ' + (c.webToken ? C.grn(maskKey(c.webToken)) + (c.webTokenFixed ? C.dim(' 固定') : C.dim(' 自动轮换')) : C.yel('未设')));
     console.log('  入口 ' + webBases(c).map(b => b + '/auth').join('  '));
     console.log('  资料 ' + (pf.name || C.dim('-')) + '  avatar=' + (pf.avatar || C.dim('-')) + '  profile=' + (pf.profile ? trunc(pf.profile, 40) : C.dim('-')) + '  other=' + (pf.other || C.dim('-')));
+    if (c.adminExpireAt > 0) console.log('  会话到期 ' + C.yel(fmtWhen(c.adminExpireAt)));
   };
   const opt = (a, ...fl) => { for (let i = 0; i < a.length; i++) if (fl.includes(a[i])) return a[i + 1]; return undefined; };
   const commands = {
@@ -1785,15 +1834,18 @@ function loopAdmin(startName) {
       return cmdWeb(['--inst', cur, 'login']);
     },
     expire: a => {
-      if (opt(a, '-t', '--time') !== undefined || opt(a, '-w', '--wait') !== undefined) return console.log(C.yel('定时注销需要网关常驻调度, 暂不支持; 去掉 -t/-w 可立即注销'));
-      const dev = opt(a, '-d', '--device') || 'all';
-      if (dev !== 'all') return console.log(C.yel('仅支持 --device all'));
-      return api('POST', '/admin/api/web-expired').then(() => ok('面板会话已全部注销')).catch(e => console.log(C.yel('注销失败: ' + e.message)));
+      const dev = opt(a, '-d', '--device');
+      if (dev && dev !== 'all') return api('POST', '/admin/api/admin-expire', { sid: dev }).then(() => { ok('已注销会话: ' + dev); show(); }).catch(e => console.log(C.yel('注销失败: ' + e.message)));
+      const tRaw = opt(a, '-t', '--time'), wRaw = opt(a, '-w', '--wait');
+      if (tRaw === undefined && wRaw === undefined) return api('POST', '/admin/api/web-expired').then(() => { ok('面板会话已全部注销'); show(); }).catch(e => console.log(C.yel('注销失败: ' + e.message)));
+      const at = parseWhen(wRaw !== undefined ? wRaw : tRaw);
+      if (!at) return console.log(C.yel('时间格式: 30(秒) / 10m / 2h / 22:30 / 2026-10-28 09:00'));
+      return api('POST', '/admin/api/admin-expire', { at: Math.max(at, Date.now() + 1000) }).then(d => { ok('面板会话将于 ' + fmtWhen(d.at) + ' 到期'); show(); }).catch(e => console.log(C.yel('设置失败: ' + e.message)));
     },
     logout: a => {
-      const dev = opt(a, '-d', '--device') || 'all';
-      if (dev !== 'all') return console.log(C.yel('仅支持 --device all'));
-      return api('POST', '/admin/api/web-expired').then(() => ok('已退出面板登录')).catch(e => console.log(C.yel('退出失败: ' + e.message)));
+      const dev = opt(a, '-d', '--device');
+      if (dev && dev !== 'all') return api('POST', '/admin/api/web-expired', { sid: dev }).then(() => { ok('已退出设备会话: ' + dev); show(); }).catch(e => console.log(C.yel('退出失败: ' + e.message)));
+      return api('POST', '/admin/api/web-expired').then(() => { ok('已退出面板登录'); show(); }).catch(e => console.log(C.yel('退出失败: ' + e.message)));
     },
     profile: a => {
       const sub = (a[0] || '').toLowerCase();
@@ -1841,12 +1893,18 @@ function cmdAdmin(argv) {
 }
 
 /* ---------- agw config / agw crypt ---------- */
+function qrDecode(file) {
+  const r = require('child_process').spawnSync('zbarimg', ['-q', '--raw', file], { timeout: 20000 });
+  if (r.error) return { error: '二维码解码需要 zbarimg (pkg install zbar)' };
+  if (r.status !== 0) return { error: '二维码识别失败: ' + trunc(String(r.stderr || ''), 120) };
+  return { text: String(r.stdout || '').trim() };
+}
 function cmdConfig(argv) {
   const sub = (argv[0] || '').toLowerCase();
   const opt = (...fl) => { for (let i = 0; i < argv.length; i++) if (fl.includes(argv[i])) return argv[i + 1]; return undefined; };
   const usage = () => console.log(t(`用法:
   agw config export <config|all|实例> [--output -p <路径>] [--type -t <0=JSON/1=QRcode>] [--encrypt <true/false>]
-  agw config import <文件> [--decrypt <password|none>] [--repair <true/false>]`));
+  agw config import <文件|二维码图片|camera> [--decrypt <password|none>] [--repair <true/false>]`));
   if (sub === 'export') {
     const scope = argv[1];
     if (!scope) return usage();
@@ -1889,10 +1947,25 @@ function cmdConfig(argv) {
   if (sub === 'import') {
     const src = argv[1];
     if (!src) return usage();
-    if (src === 'camera') return console.log(C.yel('摄像头扫码导入暂不支持, 请先保存二维码内容为文件'));
-    const abs = path.resolve(src);
-    if (!fs.existsSync(abs)) return die('文件不存在: ' + abs);
-    let raw = fs.readFileSync(abs, 'utf8');
+    const abs = src === 'camera' ? 'camera' : path.resolve(src);
+    let raw;
+    if (src === 'camera') {
+      const shot = path.join(DATA_DIR, '.run', 'qr-camera-' + Date.now() + '.jpg');
+      try { fs.mkdirSync(path.dirname(shot), { recursive: true }); } catch (_) {}
+      const r = require('child_process').spawnSync('termux-camera-photo', ['-c', '0', shot], { timeout: 20000 });
+      if (r.error || r.status !== 0) return die('拍照失败(需要 termux-api): ' + (r.error ? r.error.message : 'exit ' + r.status));
+      const d = qrDecode(shot);
+      try { fs.unlinkSync(shot); } catch (_) {}
+      if (d.error) return die(d.error);
+      raw = d.text;
+    } else {
+      if (!fs.existsSync(abs)) return die('文件不存在: ' + abs);
+      if (/\.(png|jpe?g|webp|gif|bmp)$/i.test(abs)) {
+        const d = qrDecode(abs);
+        if (d.error) return die(d.error);
+        raw = d.text;
+      } else raw = fs.readFileSync(abs, 'utf8');
+    }
     const dec = opt('--decrypt');
     if (dec && dec !== 'none') {
       try { raw = crypt.decryptText(raw, dec); } catch (e) { return die('解密失败: ' + e.message); }

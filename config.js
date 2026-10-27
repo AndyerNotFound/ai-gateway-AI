@@ -75,6 +75,7 @@ function applyDefaults(cfg) {
   const __ap = (cfg.adminProfile && typeof cfg.adminProfile === "object") ? cfg.adminProfile : {};
   cfg.adminProfile = { name: String(__ap.name || ""), avatar: String(__ap.avatar || ""), profile: String(__ap.profile || ""), other: String(__ap.other || "") };
   cfg.ctxpMode = ["force", "warn", "none"].includes(String(cfg.ctxpMode || "")) ? String(cfg.ctxpMode) : "force";
+  cfg.adminExpireAt = Number(cfg.adminExpireAt) > 0 ? Number(cfg.adminExpireAt) : 0; // 面板会话到期时间(agw admin expire)
   cfg.maxBodyBytes = Number(cfg.maxBodyBytes || 64 * 1024 * 1024);
   cfg.connectTimeout = Number(cfg.connectTimeout || 15000);
   cfg.responseTimeout = Number(cfg.responseTimeout || 180000);
@@ -181,6 +182,11 @@ function loadConfig(file) {
       lockAt: Number(ch.lockAt) > 0 ? Number(ch.lockAt) : null,   // 何时开始锁(ms epoch)
       lockUntil: Number(ch.lockUntil) > 0 ? Number(ch.lockUntil) : null, // 何时自动解锁(ms epoch, 空=手动解锁)
       transcreet: ['on', 'off', 'res-only'].includes(String(ch.transcreet || '').toLowerCase()) ? String(ch.transcreet).toLowerCase() : null,
+      // 渠道级上下文策略(loop: chan ctxp): models=生效的模型通配, mode=force/warn/none
+      ctxp: (ch.ctxp && typeof ch.ctxp === 'object') ? {
+        models: Array.isArray(ch.ctxp.models) ? ch.ctxp.models.map(String) : [],
+        mode: ['force', 'warn', 'none'].includes(String(ch.ctxp.mode || '').toLowerCase()) ? String(ch.ctxp.mode).toLowerCase() : 'force',
+      } : null,
       useResponses: ch.useResponses === undefined ? undefined : !!ch.useResponses,
       probe: !!ch.probe,
       addUsage: ch.addUsage !== false,
