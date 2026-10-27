@@ -888,7 +888,9 @@ function webURLs(cfg) {
   const mk = (host) => cfg.webToken ? `${scheme}://${host}:${port}/auth?key=${encodeURIComponent(cfg.webToken)}` : `${scheme}://${host}:${port}/auth`;
   const urls = [mk('127.0.0.1')];
   try {
-    const lan = Object.values(os.networkInterfaces()).flat().find(i => i && i.family === 'IPv4' && !i.internal);
+    const priv = i => i && i.family === 'IPv4' && !i.internal
+      && (/^10\./.test(i.address) || /^192\.168\./.test(i.address) || /^172\.(1[6-9]|2\d|3[01])\./.test(i.address));
+    const lan = Object.values(os.networkInterfaces()).flat().find(priv);
     if (lan) urls.push(mk(lan.address));
   } catch (_) {}
   return urls;
