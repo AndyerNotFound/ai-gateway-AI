@@ -395,11 +395,11 @@ md-list-item         {--md-list-item-label-text-size:14px;--md-list-item-label-t
 md-navigation-bar    {--md-navigation-bar-container-height:64px;--md-navigation-bar-icon-size:22px;
                       --md-navigation-bar-label-text-size:12px;--md-navigation-bar-label-text-line-height:16px}
 /* emoji 图标: md-icon 默认按 Material Symbols 字体渲染(外链不可达), 改用系统字体并允许 emoji 着色 */
-/* Material Symbols Outlined: 本地字体(/admin/m3/vendor/), 零 CDN 依赖 */
+/* Material Symbols Outlined: 本地字体(/auth/vendor/), 零 CDN 依赖 */
 @font-face{
   font-family:'Material Symbols Outlined';
   font-style:normal;font-weight:400;
-  src:url('/admin/m3/vendor/material-symbols-outlined.woff2') format('woff2');
+  src:url('/auth/vendor/material-symbols-outlined.woff2') format('woff2');
   font-display:block}
 /* 非 md-icon 场景(logo/头像/tag 内小图标)通用词形图标类 */
 .msym{font-family:'Material Symbols Outlined';font-weight:normal;font-style:normal;
@@ -847,7 +847,7 @@ md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wg
 <script type="module">
 // ============ Material Web 组件库(本地 vendor, 零外部依赖) ============
 // 说明: 该 bundle 已把 lit 完全内联, 无裸模块引用, 故浏览器可直接加载。
-const MW_OK = await import('/admin/m3/vendor/mw-v2.js').then(()=>true).catch(e=>{
+const MW_OK = await import('/auth/vendor/mw-v2.js').then(()=>true).catch(e=>{
   console.error('[MW] 组件库加载失败:', e); return false;
 });
 
@@ -2388,17 +2388,18 @@ window.addEventListener('offline',()=>{ Store.online=false; snack('网络已断�
 
 // ============ 启动 ============
 if(!MW_OK){
-  $('#compatBar').textContent='⚠ Material Web 组件库 (/admin/m3/vendor/mw-v2.js) 加载失败，页面将只有无样式内容。请确认文件已部署。';
+  $('#compatBar').textContent='⚠ Material Web 组件库 (/auth/vendor/mw-v2.js) 加载失败，页面将只有无样式内容。请确认文件已部署。';
   $('#compatBar').classList.add('show');
 }
 $('#keyBtn').addEventListener('click',openKeyDialog);
 $('#thBtn').addEventListener('click',openThemeDialog);
-// ?adminKey=xxx 一键带密码访问: 存入 localStorage 并从地址栏抹掉
+// ?key=<adminKey>(或 ?adminKey=xxx)一键带密码访问: 存入 localStorage 并从地址栏抹掉
 try{
-  const u=new URL(location.href); const k=u.searchParams.get('adminKey');
+  const u=new URL(location.href);
+  const k=u.searchParams.has('key')?u.searchParams.get('key'):u.searchParams.get('adminKey');
   if(k!=null){
     if(k) localStorage.setItem('agw-admin-key',k); else localStorage.removeItem('agw-admin-key');
-    u.searchParams.delete('adminKey'); history.replaceState(null,'',u);
+    u.searchParams.delete('key'); u.searchParams.delete('adminKey'); history.replaceState(null,'',u);
   }
 }catch(_){}
 upgradePwFields(document.body);

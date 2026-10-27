@@ -91,7 +91,7 @@ start_gw() {
   if [ "$port" != "?" ] && health_ok "$port"; then
     echo "✓ 网关启动成功: pid $(cat "$PIDFILE"), 主端口 $port, 日志 $LOGFILE"
     echo "  实例访问: http://127.0.0.1:$port/实例名/v1/... (无前缀=default)"
-    echo "  管理面板: http://127.0.0.1:$port/admin/m3"
+    echo "  管理面板: http://127.0.0.1:$port/auth?key=<adminKey>(未设密码时 /auth 直进)"
   else
     echo "△ 网关进程已启动(pid $(cat "$PIDFILE")) 但 $port/health 未就绪, 查看日志: $LOGFILE"
   fi
@@ -146,7 +146,7 @@ case "${1:-}" in
     echo "      ctxp: 全局上下文上限(按模型名通配, 所有实例生效), 例: $0 ctxp 'deepseek-*' max 200k warn 160k"
     echo ""
     echo "说明: 一个进程托管全部实例; 实例的增删/启停/改名/渠道管理"
-    echo "      都在 Web 面板内热生效: http://127.0.0.1:$(get_main_port)/admin/m3"
+    echo "      都在 Web 面板内热生效: http://127.0.0.1:$(get_main_port)/auth?key=<adminKey>"
     echo ""
     echo "加密访问(HTTPS):  agw-tls 看状态 | agw-tls setup 一键开启 | agw-tls use 给代码"
     ;;

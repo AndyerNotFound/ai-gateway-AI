@@ -697,22 +697,35 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return textRes(res, 200, adminHTML(cfg), 'text/html; charset=utf-8');
   }
 
-  // /admin/m3/ 静态文件(独立 M3 面板, 不鉴权, 密码在页面内输)
-  if (req.method === 'GET' && (p === '/admin/m3' || p === '/admin/m3/')) {
+  // /auth — M3 管理面板入口: /auth?key=<adminKey>(未设 adminKey 时免密直进)
+  // 令牌校验复用 checkAdminAuth: 兼容 ?key= / ?adminKey= / Bearer / x-admin-key / cookie
+  const m3KeyOk = () => {
+    const q2 = new URLSearchParams(u.searchParams);
+    if (!q2.has('adminKey') && q2.has('key')) q2.set('adminKey', q2.get('key'));
+    return checkAdminAuth(cfg, req, q2);
+  };
+  const authDeny = () => textRes(res, 401, '<!doctype html><meta charset="utf-8"><title>401</title>'
+    + '<body style="font-family:sans-serif;background:#1c1b1f;color:#e6e1e5;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">'
+    + '<div>⚠️ 需要管理令牌: 请访问 <code>/auth?key=<adminKey></code></div></body>', 'text/html; charset=utf-8');
+
+  // /auth(面板本体, 带 ?key=<adminKey> 访问; 页面内存入 localStorage 后从地址栏抹掉)
+  if (req.method === 'GET' && (p === '/auth' || p === '/auth/')) {
+    if (!m3KeyOk()) return authDeny();
     const f = path.join(CORE, 'm3', 'index.html');
     if (!fs.existsSync(f)) return textRes(res, 404, 'M3 面板未找到, 请把 index.html 放到 ' + path.join(CORE, 'm3'));
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0', 'Access-Control-Allow-Origin': '*' });
     return res.end(fs.readFileSync(f, 'utf8'));
   }
-  if (req.method === 'GET' && p === '/admin/m3/app.js') {
+  if (req.method === 'GET' && p === '/auth/app.js') {
     const f = path.join(CORE, 'm3', 'app.js');
     if (!fs.existsSync(f)) return textRes(res, 404, 'app.js 未找到');
     res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0', 'Access-Control-Allow-Origin': '*' });
     return res.end(fs.readFileSync(f, 'utf8'));
   }
 
-  // /admin/m3/v2 — Material Web 版面板(与手写版并存, 便于对比回退)
-  if (req.method === 'GET' && (p === '/admin/m3/v2' || p === '/admin/m3/v2/')) {
+  // /auth/v2 — Material Web 版面板(与手写版并存, 便于对比回退)
+  if (req.method === 'GET' && (p === '/auth/v2' || p === '/auth/v2/')) {
+    if (!m3KeyOk()) return authDeny();
     const f = path.join(CORE, 'm3', 'v2', 'index.html');
     if (!fs.existsSync(f)) return textRes(res, 404, 'M3 v2 面板未找到: ' + f);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0', 'Access-Control-Allow-Origin': '*' });
@@ -727,11 +740,11 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return res.end(fs.readFileSync(f, 'utf8'));
   }
 
-  // /admin/m3/<静态资源> — vendor JS / 字体等
+  // /auth/<静态资源> — vendor JS / 字体等(不含敏感信息, 不做令牌校验, 利于浏览器缓存)
   // 安全: 必须落在 m3 目录内(禁 .. 穿越), 且必须是文件
-  if (req.method === 'GET' && p.startsWith('/admin/m3/')) {
+  if (req.method === 'GET' && p.startsWith('/auth/')) {
     let rel;
-    try { rel = decodeURIComponent(p.slice('/admin/m3/'.length)); } catch (e) { rel = ''; }
+    try { rel = decodeURIComponent(p.slice('/auth/'.length)); } catch (e) { rel = ''; }
     const root = path.join(CORE, 'm3');
     const f = path.join(root, rel);
     if (rel && !rel.includes('\0') && f.startsWith(root + path.sep)

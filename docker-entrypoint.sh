@@ -5,7 +5,7 @@ DATA=/app/data
 mkdir -p "$DATA/log"
 if [ ! -f "$DATA/config.json" ]; then
   echo "[entrypoint] 首次启动, 初始化默认配置到 /app/data/config.json"
-  echo "[entrypoint] ⚠️ 公网部署请尽快到面板 /admin/m3 设置 gatewayKey 和 adminKey!"
+  echo "[entrypoint] ⚠️ 公网部署请尽快到面板 /auth?key=<adminKey> 设置 gatewayKey 和 adminKey!"
   cat > "$DATA/config.json" <<'EOF'
 {
   "listen": { "host": "0.0.0.0", "port": 16384 },
