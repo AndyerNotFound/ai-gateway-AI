@@ -300,7 +300,7 @@ function currentName(cfg) {
 }
 
 // 本机回环代理到目标实例获取 JSON (跨实例统计/请求)
-// 优先走 /admin/api/<path>(带目标 webToken); 目标没设 webToken 则回退 /status(仅需 gatewayKey)
+// 统一走 /admin/api/<path>(带目标 webToken)
 function proxyInstance(targetName, adminPath) {
   return new Promise(resolve => {
     const tc = loadCfg(targetName);
@@ -312,27 +312,13 @@ function proxyInstance(targetName, adminPath) {
     const mod = useTls ? https2 : http;
     const tlsOpt = useTls ? { rejectUnauthorized: false } : {}; // 回环目标为私有 CA 签发
     const webToken = tc.webToken || '';
-    const gwKey = tc.gatewayKey || '';
     const tryAdmin = () => {
       const opts = Object.assign({ host: '127.0.0.1', port, path: '/admin/api/' + adminPath, method: 'GET', timeout: 5000 }, tlsOpt);
       if (webToken) opts.headers = { 'x-agw-token': webToken };
       const r = mod.request(opts, resp => {
         let d = ''; resp.on('data', c => d += c); resp.on('end', () => {
           if (resp.statusCode === 200) { try { resolve(JSON.parse(d)); } catch (e) { resolve(null); } }
-          else if (!webToken) { tryStatus(); } else { resolve(null); }
-        });
-      });
-      r.on('error', () => { if (!webToken) tryStatus(); else resolve(null); });
-      r.on('timeout', () => { r.destroy(); if (!webToken) tryStatus(); else resolve(null); });
-      r.end();
-    };
-    const tryStatus = () => {
-      const opts = Object.assign({ host: '127.0.0.1', port, path: '/status', method: 'GET', timeout: 5000 }, tlsOpt);
-      if (gwKey) opts.headers = { 'authorization': 'Bearer ' + gwKey };
-      const r = mod.request(opts, resp => {
-        let d = ''; resp.on('data', c => d += c); resp.on('end', () => {
-          if (resp.statusCode === 200) { try { resolve(JSON.parse(d)); } catch (e) { resolve(null); } }
-          else { resolve(null); }
+          else resolve(null);
         });
       });
       r.on('error', () => resolve(null));

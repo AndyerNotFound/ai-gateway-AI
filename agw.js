@@ -984,6 +984,75 @@ async function cmdWeb(argv) {
 
 }
 
+/* ==================== agw loop — 交互式管理台(REPL) ==================== */
+function loopDash(inst) { // 单屏仪表: 实例列表 + 网关信息/渠道/探测 + 统计
+  return Promise.all([
+    api('GET', '/admin/api/instances').catch(() => null),
+    api('GET', '/status/loop').catch(() => null),
+    api('GET', '/admin/api/stats?instance=' + encodeURIComponent(inst)).catch(() => null),
+  ]).then(([il, st, ss]) => {
+    const W = Math.min(72, process.stdout.columns || 72);
+    const line = '─'.repeat(W);
+    console.log(C.cyn('┌' + line + '┐'));
+    if (il && (il.instances || il.length)) {
+      const its = il.instances || il;
+      console.log('│ 实例 ' + its.map(x => (x.running ? C.grn('●') : C.dim('○')) + (x.name === inst ? C.bold(x.name) : x.name)).join('  '));
+    } else console.log('│ 实例 ' + C.dim('(获取失败)'));
+    if (st) {
+      const up = st.uptime >= 3600 ? Math.floor(st.uptime / 3600) + 'h' + Math.floor((st.uptime % 3600) / 60) + 'm' : Math.floor(st.uptime / 60) + 'm';
+      console.log('│ 网关 v' + (st.version || '?') + '  uptime ' + up + '  监听 ' + (((st.listen || {}).host) || '?') + ':' + (((st.listen || {}).port) || '?'));
+      console.log('│ 渠道 ' + ((st.channels || []).map(c => c.name + '(' + (c.models || []).length + ')').join('  ') || C.dim('无')));
+      const prs = Object.entries(st.probe || {}).map(([k, v]) => k + ' ' + (v.rate == null ? C.dim('-') : (v.rate >= 90 ? C.grn(v.rate + '%') : C.yel(v.rate + '%')))).join('  ');
+      if (prs) console.log('│ 探测 ' + prs);
+    }
+    if (ss) {
+      console.log('│ 统计 请求 ' + (ss.requests || 0) + '  错误 ' + (ss.errors || 0) + '  重试 ' + (ss.retries || 0) + '  进行中 ' + (ss.inflight || 0));
+      const tops = Object.entries(ss.byChannel || {}).sort((a, b) => ((b[1] || {}).requests || 0) - ((a[1] || {}).requests || 0)).slice(0, 6)
+        .map(([k, v]) => k + ' ' + ((v || {}).requests || 0) + '次/' + ((v || {}).outputTokens || 0) + 'tok').join('  ');
+      if (tops) console.log('│ 用量 ' + tops);
+    } else console.log('│ ' + C.dim('统计获取失败(实例未运行?)'));
+    console.log(C.cyn('└' + line + '┘'));
+  });
+}
+function cmdLoop(argv) {
+  const has = f => argv.includes(f);
+  if (has('help') || has('--help')) { console.log(t('用法: agw loop [实例]\n  交互式管理台: 短命令连发; 空行或 stat 刷新仪表\n  命令: stat [daily|weekly|monthly|models|dist] inst [args] chan [args] card [args] logs [行数] use <实例> watch [秒|off] help exit')); return; }
+  const ii = argv.indexOf('--inst');
+  let cur = (ii >= 0 && argv[ii + 1]) ? argv[ii + 1] : (argv[0] && !argv[0].startsWith('-') ? argv[0] : 'default');
+  const rl = require('readline').createInterface({ input: process.stdin, output: process.stdout, prompt: '' });
+  let watchTimer = null;
+  const setPrompt = () => rl.setPrompt(C.cyn('agw·' + cur + '> '));
+  setPrompt();
+  const H = t('命令: stat 刷新仪表 | stat daily|weekly|monthly|models|dist [实例] | inst list/<名> [start|stop] | chan [args] | card list/--generate | logs [行数] | use <实例> 切换 | watch [秒|off] 定时刷新 | help | exit');
+  const run = (raw) => {
+    const args = String(raw || '').trim().split(/\s+/).filter(Boolean);
+    const c = (args[0] || '').toLowerCase();
+    if (!args.length || (c === 'stat' && args.length === 1)) return loopDash(cur);
+    if (c === 'stat') { const rest = args.slice(1); return cmdStat(rest.length ? rest : ['all', cur]); }
+    if (c === 'inst') { const rest = args.slice(1); if (!rest.length) return cmdInst(['list']); return cmdInst(rest[0] === 'list' || rest[0] === 'delete' ? rest : [rest[0]].concat(rest.slice(1))); }
+    if (c === 'chan') { const rest = args.slice(1); return cmdChan([cur].concat(rest)); }
+    if (c === 'card') { const rest = args.slice(1); return cmdCard(rest.length ? rest : ['list', '--inst', cur]); }
+    if (c === 'logs') { const n = Number(args[1]) || 30; return api('GET', '/admin/api/logs/' + encodeURIComponent(cur) + '?lines=' + n).then(d => console.log((d && (d.logs || d.text)) || JSON.stringify(d))).catch(e => console.log(C.red(e.message))); }
+    if (c === 'use') { if (!args[1]) { console.log('用法: use <实例名>'); return; } cur = args[1]; setPrompt(); return loopDash(cur); }
+    if (c === 'watch') {
+      if (watchTimer) { clearInterval(watchTimer); watchTimer = null; if (args[1] === 'off') { console.log(C.dim('(watch 已停)')); return; } }
+      if (args[1] === 'off') return;
+      const sec = Math.max(2, Number(args[1]) || 5);
+      watchTimer = setInterval(() => { console.log(C.dim('── 刷新 ' + new Date().toLocaleTimeString() + ' ──')); const r = loopDash(cur); if (r && r.catch) r.catch(() => {}); }, sec * 1000);
+      console.log(C.dim('(每 ' + sec + 's 自动刷新仪表; watch off 停止)'));
+      return;
+    }
+    if (['exit', 'quit', 'q', ':q'].includes(c)) return rl.close();
+    if (c === 'help' || c === '?') { console.log(H); return; }
+    console.log(C.yel('未知命令: ' + c + '  (help 查看)'));
+  };
+  console.log(C.dim('agw loop 交互台 — 空行刷新仪表, help 看命令, exit 退出'));
+  const first = loopDash(cur); if (first && first.catch) first.catch(e => console.log(C.red(e.message)));
+  first && first.then && first.then(() => rl.prompt());
+  rl.on('line', (l) => { try { const r = run(l); if (r && r.then) r.then(() => rl.prompt()).catch(e => { console.log(C.red(e.message)); rl.prompt(); }); else rl.prompt(); } catch (e) { console.log(C.red(e.message)); rl.prompt(); } });
+  rl.on('close', () => { if (watchTimer) clearInterval(watchTimer); console.log(C.dim('bye')); process.exit(0); });
+}
+
 /* ==================== main dispatch ==================== */
 function help(sub) {
   if (sub && CMDS[sub]) { console.log('agw ' + sub + ' —'); CMDS[sub](['help']); return; }
@@ -1025,6 +1094,9 @@ function help(sub) {
   agw card --charge <卡> --balance <n> | --delete <卡> | ban <卡>
   agw card --register <on|off> | --length <8~128>
 
+交互
+  agw loop [实例]                       交互式管理台(stat/inst/chan/card/logs/use/watch)
+
 面板
   agw web login [--inst <实例>]                 生成随机访问令牌, 打印面板链接并开浏览器
   agw web --key <token> [--inst <实例>]         设定固定访问令牌(固定后 login 不轮换)
@@ -1052,7 +1124,7 @@ function help(sub) {
 const CMDS = {
   inst: cmdInst, router: cmdRouter, chan: cmdChan, fetch: cmdFetch, ctxp: cmdCtxp,
   card: cmdCard, refresh: cmdRefresh, record: cmdRecord, cloudflared: cmdCloudflared, web: cmdWeb,
-  lang: cmdLang, notice: cmdNotice, stat: cmdStat,
+  lang: cmdLang, notice: cmdNotice, stat: cmdStat, loop: cmdLoop,
   encrypt: cmdEncrypt, decrypr: cmdDecrypt, decrypt: cmdDecrypt, recrypt: cmdRecrypt,
   export: cmdExport, inport: cmdInport,
 };

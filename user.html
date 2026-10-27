@@ -321,7 +321,7 @@ async function loadHome(){
   $('hmServer').textContent = S.srv.replace(/^https?:\/\//,'');
   // 并行: status + plugins + me
   const tasks=[];
-  tasks.push(api(S.srv+'/status').then(j=>{ $('hmVer').textContent=j.version||'-'; $('hmUp').textContent=fmtUp(j.uptime); renderProbe(j) }).catch(e=>{ $('hmVer').textContent='离线'; }));
+  tasks.push(api(S.srv+'/status/loop').then(j=>{ $('hmVer').textContent=j.version||'-'; $('hmUp').textContent=fmtUp(j.uptime); renderProbe(j) }).catch(e=>{ $('hmVer').textContent='离线'; }));
   if(S.me && S.me.key){ $('hmKey').textContent=(S.me.key.name||'卡密')+': '+S.token.slice(0,8)+'...'; }
   else $('hmKey').textContent=S.token.slice(0,12)+'...';
   tasks.push(api(S.srv+'/plugins').then(j=>renderPlugins(j.plugins||[])).catch(e=>$('pluginList').innerHTML='<div class="hint">插件加载失败</div>'));

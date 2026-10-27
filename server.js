@@ -10,6 +10,7 @@ const os = require('os');
 const zlib = require('zlib');
 const { poolRoute, BILLING_PATHS, GENERIC_BALANCE_PATHS, createInstancePool, poolLoadAll, setupModelSync, statsFlushFile, setupStatsFlush } = require('./pool');
 const { sendError, corsHeaders, jsonErr, checkAuth, keyCreditsJSON, verifyPassword, hashPassword, genApiKey, persistRuntimeCfg, availableBranches, collectJson, modelsResponse, sendJson, loadKeyUsage, makeGatewayApi } = require('./router');
+const { checkAdminAuth } = require('./admin');
 const { VERSION, utf8, log, logErr } = require('./util');
 const { balanceAggregate, pickBalanceChannel, fetchBalanceCached, fetchChannelBalance, setupProbe } = require('./upstream');
 const { openaiExtrasOn, fetchUpstreamModels, syncModels } = require('./sync');
@@ -63,9 +64,18 @@ async function handleHttp(cfg, req, res) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ ok: true, version: VERSION, uptime: Math.round(process.uptime()) }));
   }
-  if (req.method === 'GET' && p === '/status') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify({
+  // GET /status/loop — agw loop 模式专用数据源(带 admin 鉴权; 旧 /status 已删除: 泄漏渠道拓扑/统计/路径)
+  if (req.method === 'GET' && (p === '/status/loop' || p === '/status/loop/')) {
+    // 卡密用户 → 只回安全子集(版本/uptime/探测成功率, 无渠道拓扑/统计/路径)
+    if (!checkAdminAuth(cfg, req, u.searchParams)) {
+      const cr = checkAuth(cfg, req, u.searchParams);
+      if (!cr.ok) return sendJson(res, 401, { error: '需要访问令牌 (webToken) 或卡密' });
+      return sendJson(res, 200, {
+        ok: true, version: VERSION, startedAt: cfg._stats.startedAt, uptime: Math.round(process.uptime()),
+        probe: Object.fromEntries(Object.entries(cfg._stats.probe || {}).map(([k, v]) => [k, { rate: v.total ? Math.round(v.ok / v.total * 100) : null, total: v.total, lastOk: v.lastOk, lastErr: v.lastErr }])),
+      });
+    }
+    return sendJson(res, 200, Object.assign({
       ok: true, version: VERSION, startedAt: cfg._stats.startedAt, uptime: Math.round(process.uptime()),
       listen: cfg.listen, configFile: cfg._configFile,
       openaiExtras: cfg.openaiExtras || { enable: true, upstreamResponses: false },
@@ -76,7 +86,7 @@ async function handleHttp(cfg, req, res) {
       onceChannel: cfg._onceChannel || null,
       context: cfg._lastCtx ? Object.assign({}, cfg._lastCtx, { soft: (cfg.contextLimit||{}).soft || 80, hard: (cfg.contextLimit||{}).hard || 0, history: (cfg._ctxHist || []).slice(-24) }) : null,
       probe: Object.fromEntries(Object.entries(cfg._stats.probe || {}).map(([k, v]) => [k, { rate: v.total ? Math.round(v.ok / v.total * 100) : null, total: v.total, lastOk: v.lastOk, lastErr: v.lastErr }])),
-    }));
+    }, { inst: cfg._name || 'default' }));
   }
 
   // ===== Web 管理面板 (/admin + /admin/api/*) =====
