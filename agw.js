@@ -53,7 +53,8 @@ const C = process.stdout.isTTY ? {
   dim: s => `\x1b[2m${s}\x1b[0m`, red: s => `\x1b[31m${s}\x1b[0m`, grn: s => `\x1b[32m${s}\x1b[0m`,
   yel: s => `\x1b[33m${s}\x1b[0m`, cyn: s => `\x1b[36m${s}\x1b[0m`, bold: s => `\x1b[1m${s}\x1b[0m`,
 } : { dim: s => s, red: s => s, grn: s => s, yel: s => s, cyn: s => s, bold: s => s };
-const die = m => { console.error(C.red('✗ ' + t(m))); process.exit(1); };
+let LOOPING = false; // loop 内 die 改为抛错(不退出进程), 由 REPL 捕获后打印
+const die = m => { if (LOOPING) throw new Error(t(m)); console.error(C.red('✗ ' + t(m))); process.exit(1); };
 const ok = m => console.log(C.grn('✓ ' + t(m)));
 function parseNum(v) { // "200k" | "50%" 等宽松数字(ctxp 同款)
   if (v == null) return NaN;
@@ -204,6 +205,8 @@ function parseUserPass(s) { // user[:pass]@host[:port]
  * ================================================================ */
 function cmdInst(argv) {
   const a = argv[0];
+  if (canLoop() && a && !a.startsWith('-') && !['help', '--help', 'list', 'delete'].includes(a) && argv.length === 1 && listInsts().includes(a)) return loopInst(a);
+  if (canLoop() && !a) return loopInst('default');
   if (!a || a === 'help' || a === '--help') {
     console.log(t(`用法:
   agw inst list                     列出全部实例(端口/运行态/TLS)
@@ -299,6 +302,7 @@ function cmdInst(argv) {
     }
   };
   if (onlyStatus) return showStatus();
+  if (has('--status')) return Promise.all(touch.map(t => t())).then(showStatus); // --status 原先只被 onlyStatus 分支使用, 显式传参时无输出
   const valFlags = ['--apikey', '--webtoken', '--tls', '--cold', '--filter', '--filter-resp', '--transcreet', '--status'];
   const act = flags.find((f, i) => !f.startsWith('--') && !valFlags.includes(flags[i - 1]));
   if (act === 'start' || act === 'stop') {
@@ -313,6 +317,7 @@ function cmdInst(argv) {
  * ================================================================ */
 function cmdRouter(argv) {
   const name = argv[0];
+  if (canLoop() && name && !name.startsWith('-') && name !== 'help' && argv.length === 1 && listInsts().includes(name)) return loopRouter(name);
   if (!name || name === 'help' || /help/.test(argv[1] || '')) {
     console.log(t(`用法:
   agw router <inst>                          查看路由相关配置
@@ -358,6 +363,7 @@ function showRouter(c) {
  * ================================================================ */
 function cmdChan(argv) {
   const name = argv[0];
+  if (canLoop() && name && !name.startsWith('-') && name !== 'help' && argv.length === 1 && listInsts().includes(name)) return loopChan(name);
   if (!name || name === 'help' || /help/.test(argv[1] || '')) {
     console.log(t(`用法:
   agw chan <inst>                                   列出该实例全部渠道
@@ -401,7 +407,7 @@ function cmdChan(argv) {
   if (has('--remove')) {
     if (isNew) die(`渠道不存在: ${chName}`);
     c.channels = c.channels.filter(x => x.name !== chName);
-    saveCfg(name, c); return ok(`渠道 ${chName} 已删除`) & hotRestart(name);
+    saveCfg(name, c); ok(`渠道 ${chName} 已删除`); return hotRestart(name);
   }
   if (has('--scope')) {
     const s = get('--scope'); if (!s) die('--scope 需要 "请求模型=真实模型" 串');
@@ -439,7 +445,7 @@ function cmdChan(argv) {
   if (isNew && !ch.baseUrl) die('新渠道需要 url=…');
   saveCfg(name, c);
   ok(t('渠道 %s %s').replace('%s', chName).replace('%s', isNew ? t('新建') : t('已更新')));
-  hotRestart(name);
+  return hotRestart(name);
 }
 
 /* ================================================================
@@ -560,8 +566,8 @@ function cmdCard(argv) {
   if (has('--register')) {
     const v = (get('--register') || '').toLowerCase();
     if (!['on', 'off'].includes(v)) die('--register 需要 on/off');
-    const c = load(); c.registration = { enable: v === 'on' }; saveCfg(inst, c);
-    return ok(`自助注册 ${v === 'on' ? C.grn('开启') : C.dim('关闭')}`) & hotRestart(inst);
+    const c = load(); c.registration = Object.assign({}, c.registration || {}, { enable: v === 'on' }); saveCfg(inst, c);
+    ok(`自助注册 ${v === 'on' ? C.grn('开启') : C.dim('关闭')}`); return hotRestart(inst);
   }
   if (has('--length')) {
     const n = Number(get('--length'));
@@ -796,6 +802,7 @@ function cmdNotice(argv) {
   setTimeout(() => { if (!n) console.log('  一切正常'); }, 1500);
 }
 function cmdStat(argv) {
+  if (!argv.length && canLoop()) return loopStat('default');
   const ri = argv.indexOf('--refresh');
   if (ri >= 0) {
     const val = Number(argv[ri + 1]);
@@ -930,7 +937,7 @@ async function cmdWeb(argv) {
   const inst = (() => { const i = argv.indexOf('--inst'); return i >= 0 && argv[i + 1] ? argv[i + 1] : 'default'; })();
   const cfg = loadCfg(inst);
 
-  if (!argv.length) { // 状态视图
+  if (!argv.length || (argv.length === 2 && argv[0] === '--inst')) { // 状态视图
     console.log(cfg.webToken
       ? t('访问令牌: ') + C.grn('已设 ' + maskKey(cfg.webToken)) + (cfg.webTokenFixed ? C.dim('(固定, --key clear 可清除)') : C.dim('(自动生成, login 会轮换)'))
       : C.yel('访问令牌: 未设') + C.dim(' (agw web login 生成)'));
@@ -1018,6 +1025,7 @@ function cmdLoop(argv) {
   if (has('help') || has('--help')) { console.log(t('用法: agw loop [实例]\n  交互式管理台: 短命令连发; 空行或 stat 刷新仪表\n  命令: stat [daily|weekly|monthly|models|dist] inst [args] chan [args] card [args] logs [行数] use <实例> watch [秒|off] help exit')); return; }
   const ii = argv.indexOf('--inst');
   let cur = (ii >= 0 && argv[ii + 1]) ? argv[ii + 1] : (argv[0] && !argv[0].startsWith('-') ? argv[0] : 'default');
+  process.env.AGW_NO_LOOP = '1'; // 综合台内命令保持一次性输出, 不嵌套分域 loop
   const rl = require('readline').createInterface({ input: process.stdin, output: process.stdout, prompt: '' });
   let watchTimer = null, closing = false;
   const P = () => { if (!closing) { try { rl.prompt(); } catch (_) {} } };
@@ -1053,6 +1061,474 @@ function cmdLoop(argv) {
   rl.on('close', () => { closing = true; if (watchTimer) clearInterval(watchTimer); console.log(C.dim('bye')); setTimeout(() => process.exit(0), 400); }); // 留 400ms 让在途仪表输出落地
 }
 
+
+/* ==================== 分域 loop — agw inst/chan/router/stat/register/admin ==================== */
+const LOOP_HINT = '空行刷新 | help 看命令 | exit 退出';
+function canLoop() { return !process.env.AGW_NO_LOOP && !!(process.stdin.isTTY && process.stdout.isTTY); } // loop 内再调用 cmdXxx 时不再嵌套进 loop
+function pickInst(name) {
+  if (!name) { console.log(C.yel('缺少实例名')); return false; }
+  if (!listInsts().includes(name)) { console.log(C.yel('实例不存在: ' + name + '  (已有: ' + (listInsts().join(', ') || '无') + ')')); return false; }
+  return true;
+}
+function tailLog(name, n) {
+  const k = Math.max(1, Number(n) || 30);
+  return api('GET', `/admin/api/logs/${encodeURIComponent(name)}?lines=${k}`)
+    .then(d => {
+      const txt = typeof d === 'string' ? d : ((d && (d.logs || d.text)) || '');
+      console.log(String(txt || '(空)').split('\n').slice(-k).join('\n'));
+    }).catch(e => console.log(C.yel('日志读取失败: ' + e.message)));
+}
+function splitArgs(raw) { // 按空白分词, 但尊重 "…" / '…' (渠道 url=…, key=… 这类值含逗号空格)
+  const out = []; let cur = '', q = null;
+  for (const ch of String(raw || '')) {
+    if (q) { if (ch === q) q = null; else cur += ch; }
+    else if (ch === '"' || ch === "'") q = ch;
+    else if (/\s/.test(ch)) { if (cur) { out.push(cur); cur = ''; } }
+    else cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+/* 通用 REPL: 空行=刷新; help/exit; 其余交给各域 commands 表 */
+function startRepl(o) {
+  const rl = require('readline').createInterface({ input: process.stdin, output: process.stdout, prompt: '' });
+  let closing = false;
+  LOOPING = true;
+  process.env.AGW_NO_LOOP = '1'; // 防止 loop 内部委派 cmdChan/cmdRouter 等再次开 loop
+  const P = () => { if (!closing) { try { rl.setPrompt(C.cyn(typeof o.prompt === 'function' ? o.prompt() : o.prompt)); rl.prompt(); } catch (_) {} } };
+  const done = r => { if (r && r.then) r.then(P).catch(e => { console.log(C.red('✗ ' + e.message)); P(); }); else P(); };
+  const run = raw => {
+    const parts = splitArgs(raw);
+    if (!parts.length) return o.refresh && o.refresh();
+    const c = parts[0].toLowerCase();
+    if (['exit', 'quit', 'q', ':q'].includes(c)) { rl.close(); return; }
+    if (c === 'help' || c === '?') { console.log(o.help); return; }
+    const fn = o.commands[c];
+    if (fn) return fn(parts.slice(1), parts);
+    if (o.unknown) return o.unknown(parts);
+    console.log(C.yel('未知命令: ' + c + '  (help 查看)'));
+  };
+  console.log(C.dim(o.title + ' — ' + LOOP_HINT));
+  try { done(o.refresh && o.refresh()); } catch (e) { console.log(C.red('✗ ' + e.message)); P(); }
+  rl.on('line', l => { try { done(run(l)); } catch (e) { console.log(C.red('✗ ' + e.message)); P(); } });
+  rl.on('SIGINT', () => rl.close());
+  rl.on('close', () => {
+    closing = true; LOOPING = false;
+    if (o.onClose) { try { o.onClose(); } catch (_) {} }
+    console.log(C.dim('bye'));
+    setTimeout(() => process.exit(0), 300); // 留点时间让在途输出落地
+  });
+}
+
+/* ---------- 实例管理 ---------- */
+const HELP_INST = t(`实例管理 loop 命令:
+  list                          实例清单
+  show                          刷新(清单 + 当前实例状态)
+  use <实例>                    切换当前实例
+  status [all|requests|error|debug]  状态/日志摘要
+  start | stop | restart        启停/重启当前实例
+  logs [行数]                   日志尾部
+  new <实例> <端口> [监听地址]   新建实例
+  del <实例> -y                 删除实例(default 不可删)
+  stat | chan [参数] | router [参数]  转到对应命令
+  改配置: 直接输入 inst 参数, 如 --apikey sk-x / --tls 8443 / --cold 15 / --filter on`);
+function loopInst(startName) {
+  let cur = startName || 'default';
+  const show = () => {
+    console.log(C.bold('实例清单'));
+    cmdInst(['list']);
+    console.log(C.dim('── ' + cur + ' ──'));
+    return cmdInst([cur, '--status', 'all']);
+  };
+  const commands = {
+    list: () => cmdInst(['list']),
+    show: show,
+    use: a => { if (!pickInst(a[0])) return; cur = a[0]; return show(); },
+    status: a => cmdInst([cur, '--status', (a[0] || 'all').toLowerCase()]),
+    start: () => cmdInst([cur, 'start']),
+    stop: () => cmdInst([cur, 'stop']),
+    restart: () => api('POST', `/admin/api/action/${encodeURIComponent(cur)}/restart`).then(() => ok(`${cur} 已重启`)),
+    logs: a => tailLog(cur, a[0]),
+    new: a => {
+      if (!a[0] || !a[1]) return console.log('用法: new <实例> <端口> [监听地址]');
+      return api('POST', `/admin/api/instance-create/${encodeURIComponent(a[0])}`, { port: Number(a[1]), host: a[2] || '0.0.0.0' })
+        .then(() => { ok(`实例 ${a[0]} 已创建 (端口 ${a[1]})`); if (pickInst(a[0])) cur = a[0]; return show(); });
+    },
+    del: a => {
+      if (!a[0]) return console.log('用法: del <实例> -y');
+      if (!a.includes('-y')) return console.log(C.yel('删除不可撤销, 确认请加 -y: del ' + a[0] + ' -y'));
+      return Promise.resolve(cmdInst(['delete', a[0], '-y'])).then(() => { if (cur === a[0]) cur = 'default'; });
+    },
+    stat: () => cmdStat(['all', cur]),
+    chan: a => cmdChan([cur].concat(a)),
+    router: a => cmdRouter([cur].concat(a)),
+  };
+  return startRepl({
+    title: 'agw 实例管理 loop',
+    prompt: () => 'agw·inst ' + cur + '> ',
+    help: HELP_INST,
+    refresh: show,
+    commands,
+    unknown: parts => {
+      if (parts[0].startsWith('-')) return cmdInst([cur].concat(parts)); // 参数直通当前实例
+      console.log(C.yel('未知命令: ' + parts[0] + '  (help 查看)'));
+    },
+  });
+}
+
+/* ---------- 渠道管理 ---------- */
+const HELP_CHAN = t(`渠道管理 loop 命令:
+  list                          渠道列表
+  add <渠道> "url=…, key=…" [--sdk openai|gemini|claude]   新建/更新
+  rm <渠道> -y                  删除渠道
+  scope <渠道> "请求模型=真实模型, …"   模型映射/白名单
+  value <渠道> <BaseURL> <JSON-Key> [币种]  余额代查覆盖
+  proxy <渠道> "user:pass@host:port"     渠道代理
+  warn <渠道> <余额阈值>         余额告警
+  sdk <openai|gemini|claude>    缺省上游格式
+  fetch <渠道>                  拉取上游模型列表
+  balance <渠道>                代查余额
+  use <实例>                    切换实例
+  其它 --xxx 参数直通 agw chan`);
+function loopChan(startName) {
+  let cur = startName;
+  const show = () => cmdChan([cur]);
+  const pv = (a, rest) => { // <渠道名> + 其余参数 → cmdChan --provider
+    if (!a[0]) return console.log(C.yel('缺少渠道名'));
+    return cmdChan([cur, '--provider', a[0]].concat(rest));
+  };
+  const commands = {
+    list: () => cmdChan([cur]),
+    add: a => pv(a, a.slice(1)),
+    set: a => pv(a, a.slice(1)),
+    edit: a => pv(a, a.slice(1)),
+    rm: a => {
+      if (!a[0]) return console.log('用法: rm <渠道> -y');
+      if (!a.includes('-y')) return console.log(C.yel('删除渠道需确认: rm ' + a[0] + ' -y'));
+      return Promise.resolve(cmdChan([cur, '--provider', a[0], '--remove']));
+    },
+    remove: a => commands.rm(a),
+    scope: a => pv(a, ['--scope', a.slice(1).join(' ')]),
+    value: a => pv(a, ['--value'].concat(a.slice(1))),
+    proxy: a => a[1] ? pv(a, ['--proxy', a[1]]) : console.log('用法: proxy <渠道> "user:pass@host:port"'),
+    warn: a => a[1] ? pv(a, ['--warn', a[1]]) : console.log('用法: warn <渠道> <余额阈值>'),
+    sdk: a => cmdChan([cur, '--sdk', a[0]]),
+    fetch: a => { if (!a[0]) return console.log('用法: fetch <渠道>'); return cmdFetch(['chan', a[0], cur]); },
+    balance: a => {
+      if (!a[0]) return console.log('用法: balance <渠道>');
+      return api('GET', `/admin/api/balance/${encodeURIComponent(cur)}/${encodeURIComponent(a[0])}`)
+        .then(d => console.log('  ' + d.channel + ': ' + (d.balance != null ? d.balance + (d.unit || '') : JSON.stringify(d))))
+        .catch(e => console.log(C.yel('余额查询失败: ' + e.message)));
+    },
+    use: a => { if (!pickInst(a[0])) return; cur = a[0]; return show(); },
+    show: show,
+  };
+  return startRepl({
+    title: 'agw 渠道管理 loop (' + cur + ')',
+    prompt: () => 'agw·chan ' + cur + '> ',
+    help: HELP_CHAN,
+    refresh: show,
+    commands,
+    unknown: parts => {
+      if (parts[0].startsWith('-')) return cmdChan([cur].concat(parts));
+      console.log(C.yel('未知命令: ' + parts[0] + '  (help 查看)'));
+    },
+  });
+}
+
+/* ---------- 路由管理 ---------- */
+const HELP_ROUTER = t(`路由管理 loop 命令:
+  show                          路由配置 + 固定/一次性路由
+  retry <n>                     渠道故障重试次数
+  timeout <秒>                  上游响应超时
+  cold <秒>                     上游连接超时
+  models-fetch <小时|0=关>      模型自动同步
+  filter on|off                 隐私过滤
+  filter-resp on|off            响应方向打码
+  transcreet on|off|res-only    DSML 清洗
+  route <渠道|off>              固定路由到某渠道/恢复自动
+  once <渠道|off>               只作用于下一次请求的路由
+  sync                          同步上游模型覆盖本地
+  probe                         立即探测渠道
+  chans                         渠道名清单   use <实例>   日志: logs [n]`);
+function loopRouter(startName) {
+  let cur = startName;
+  const show = () => {
+    const c = loadCfg(cur);
+    showRouter(c);
+    console.log('  渠道: ' + ((c.channels || []).map(x => x.name).join('  ') || C.dim('无')));
+    return Promise.all([
+      api('GET', `/admin/api/route/${encodeURIComponent(cur)}`).then(d => console.log('  固定路由: ' + (d.channel || C.dim('自动')))).catch(() => {}),
+      api('GET', `/admin/api/route-once/${encodeURIComponent(cur)}`).then(d => console.log('  一次性路由: ' + (d.channel || C.dim('无')))).catch(() => {}),
+    ]);
+  };
+  const setFlag = (fl, a) => { if (a[0] == null) return console.log('用法: ' + fl.replace('--', '') + ' <值>'); return cmdRouter([cur, fl, a[0]]); };
+  const routeTo = (path, ch, label) => api('POST', `/admin/api/${path}/${encodeURIComponent(cur)}`, { channel: ch })
+    .then(d => { ok(label + (d.channel || '自动')); return show(); })
+    .catch(e => console.log(C.yel('设置失败: ' + e.message)));
+  const commands = {
+    show: show,
+    retry: a => setFlag('--retry', a),
+    timeout: a => setFlag('--timeout', a),
+    cold: a => setFlag('--cold', a),
+    'models-fetch': a => setFlag('--models-fetch', a),
+    'model-sync': a => setFlag('--models-fetch', a),
+    filter: a => setFlag('--filter', a),
+    'filter-resp': a => setFlag('--filter-resp', a),
+    transcreet: a => setFlag('--transcreet', a),
+    route: a => routeTo('route', (a[0] && a[0] !== 'off') ? a[0] : '', '固定路由: '),
+    once: a => routeTo('route-once', (a[0] && a[0] !== 'off') ? a[0] : '', '一次性路由: '),
+    sync: () => cmdFetch(['inst', cur, '-y']),
+    probe: () => api('POST', `/admin/api/probe/${encodeURIComponent(cur)}`).then(d => console.log('  探测: ' + JSON.stringify(d.probe || {}))).catch(e => console.log(C.yel('探测失败: ' + e.message))),
+    chans: () => { const c = loadCfg(cur); console.log('  ' + ((c.channels || []).map(x => x.name).join('  ') || '(无渠道)')); },
+    logs: a => tailLog(cur, a[0]),
+    use: a => { if (!pickInst(a[0])) return; cur = a[0]; return show(); },
+  };
+  return startRepl({
+    title: 'agw 路由管理 loop (' + cur + ')',
+    prompt: () => 'agw·router ' + cur + '> ',
+    help: HELP_ROUTER,
+    refresh: show,
+    commands,
+    unknown: parts => {
+      if (parts[0].startsWith('-')) return cmdRouter([cur].concat(parts));
+      console.log(C.yel('未知命令: ' + parts[0] + '  (help 查看)'));
+    },
+  });
+}
+
+/* ---------- 统计面板 ---------- */
+const HELP_STAT = t(`统计面板 loop 命令:
+  all | daily | weekly | monthly   请求量统计(内存 / 请求记录)
+  models                        按模型 Token 占用
+  dist                          Token 六分类分布
+  refresh <分钟>                统计落盘间隔(0=关)
+  use <实例>                    切换实例
+  watch [秒|off]                定时刷新仪表
+  空行                          刷新仪表`);
+function loopStat(startName) {
+  let cur = startName || 'default', timer = null;
+  const dash = () => loopDash(cur);
+  const commands = {
+    all: () => cmdStat(['all', cur]),
+    daily: () => cmdStat(['daily', cur]),
+    weekly: () => cmdStat(['weekly', cur]),
+    monthly: () => cmdStat(['monthly', cur]),
+    models: () => cmdStat(['models', cur]),
+    dist: () => cmdStat(['dist', cur]),
+    refresh: a => { if (a[0] == null) return console.log('用法: refresh <分钟>  (0=关)'); return cmdStat(['--refresh', a[0], cur]); },
+    use: a => { if (!pickInst(a[0])) return; cur = a[0]; return dash(); },
+    watch: a => {
+      if (timer) { clearInterval(timer); timer = null; }
+      if ((a[0] || '').toLowerCase() === 'off') { console.log(C.dim('自动刷新已停')); return; }
+      const sec = Math.max(2, Number(a[0]) || 5);
+      timer = setInterval(() => {
+        console.log(C.dim('── 刷新 ' + new Date().toLocaleTimeString() + ' ──'));
+        const r = dash(); if (r && r.catch) r.catch(() => {});
+      }, sec * 1000);
+      console.log(C.dim('每 ' + sec + 's 刷新仪表 (watch off 停止)'));
+    },
+  };
+  return startRepl({
+    title: 'agw 统计面板 loop',
+    prompt: () => 'agw·stat ' + cur + '> ',
+    help: HELP_STAT,
+    refresh: dash,
+    commands,
+    onClose: () => { if (timer) clearInterval(timer); },
+  });
+}
+
+/* ---------- 用户注册 ---------- */
+const HELP_REGISTER = t(`用户注册 loop 命令:
+  on | off                      开关公网自助注册
+  quota <tokens>                注册赠送额度(0=不送)
+  passlen <n>                   密码最小长度
+  captcha none | captcha turnstile <siteKey> <secret>   人机验证
+  email on|off                  注册邮箱必填
+  users                         用户列表
+  add <uid> <密码> [昵称]        新建用户
+  pass <uid> <新密码>            改密码
+  del <uid> -y                  删除用户(保留其卡密)
+  link                          注册接口地址
+  use <实例>                    切换实例`);
+function regView(inst) {
+  const c = loadCfg(inst);
+  const r = c.registration || {};
+  console.log(C.bold(`■ ${inst} 用户注册`) + '  ' + onoff(r.enable));
+  console.log(`  人机验证 ${r.captchaProvider || 'none'}${r.captchaSiteKey ? '(' + maskKey(r.captchaSiteKey) + ')' : ''}  密码≥${r.minPasswordLen || 8}  邮箱${(r.emailVerify && r.emailVerify.enable) ? '必填' : '可选'}  默认额度 ${r.defaultQuota ? fmtTok(r.defaultQuota) + ' tokens' : '0'}  卡长 ${c.keyLength || '-'}`);
+  const us = c.users || [];
+  console.log(`  用户 ${us.length} 个` + (us.length ? ':' : ''));
+  us.slice(0, 20).forEach(u => console.log(`    ${pad(u.uid, 18)} ${pad(trunc(u.name || '-', 16), 18)} 卡 ${(c.apiKeys || []).filter(k => k.uid === u.uid).length}  ${String(u.createdAt || '').slice(0, 10)}`));
+  if (us.length > 20) console.log(C.dim(`    … 共 ${us.length} 个`));
+}
+function loopRegister(startName) {
+  let cur = startName || 'default';
+  const show = () => regView(cur);
+  const saveReg = patch => {
+    const c = loadCfg(cur);
+    c.registration = Object.assign({}, c.registration || {}, patch);
+    saveCfg(cur, c);
+    ok('注册配置已保存');
+    show();
+    return hotRestart(cur);
+  };
+  const commands = {
+    show: show,
+    on: () => saveReg({ enable: true }),
+    off: () => saveReg({ enable: false }),
+    quota: a => { if (a[0] == null) return console.log('用法: quota <tokens>  (0=不送)'); return saveReg({ defaultQuota: Math.max(0, Math.round(parseNum(a[0]) || 0)) }); },
+    passlen: a => {
+      const n = Number(a[0]);
+      if (!(n >= 4 && n <= 128)) return console.log('用法: passlen <4~128>');
+      return saveReg({ minPasswordLen: Math.round(n) });
+    },
+    captcha: a => {
+      const p = (a[0] || 'none').toLowerCase();
+      if (!['none', 'turnstile'].includes(p)) return console.log('用法: captcha none | captcha turnstile <siteKey> <secret>');
+      if (p === 'none') return saveReg({ captchaProvider: 'none', captchaSiteKey: '', captchaSecret: '' });
+      return saveReg(Object.assign({ captchaProvider: 'turnstile' }, a[1] ? { captchaSiteKey: a[1] } : {}, a[2] ? { captchaSecret: a[2] } : {}));
+    },
+    email: a => saveReg({ emailVerify: Object.assign({}, (loadCfg(cur).registration || {}).emailVerify || {}, { enable: !/^off$/i.test(a[0] || 'on') }) }),
+    users: () => {
+      const c = loadCfg(cur);
+      const us = c.users || [];
+      console.log(`  用户 ${us.length} 个`);
+      us.forEach(u => console.log(`    ${pad(u.uid, 18)} ${pad(trunc(u.name || '-', 16), 18)} 卡 ${(c.apiKeys || []).filter(k => k.uid === u.uid).length}  密码${u.passwordHash ? '✓' : '✗'}  ${String(u.createdAt || '').slice(0, 10)}`));
+    },
+    add: a => {
+      if (!a[0] || !a[1]) return console.log('用法: add <uid> <密码> [昵称]');
+      return api('POST', `/admin/api/users/${encodeURIComponent(cur)}`, { uid: a[0], password: a[1], name: a[2] || '' })
+        .then(d => { ok(`用户 ${(d && d.uid) || a[0]} 已创建`); show(); });
+    },
+    pass: a => {
+      if (!a[0] || !a[1]) return console.log('用法: pass <uid> <新密码>');
+      return api('POST', `/admin/api/users-update/${encodeURIComponent(cur)}`, { uid: a[0], password: a[1] })
+        .then(() => ok(`用户 ${a[0]} 密码已更新`));
+    },
+    del: a => {
+      if (!a[0]) return console.log('用法: del <uid> -y');
+      if (!a.includes('-y')) return console.log(C.yel('删除用户需确认: del ' + a[0] + ' -y'));
+      return api('DELETE', `/admin/api/users/${encodeURIComponent(cur)}/${encodeURIComponent(a[0])}`)
+        .then(() => { ok(`用户 ${a[0]} 已删除`); show(); });
+    },
+    link: () => {
+      const c = loadCfg(cur);
+      webBases(c).forEach(b => console.log('  POST ' + b + '/auth/register'));
+      console.log(C.dim('  请求体: {"uid":"…","password":"…"}' + ((c.registration || {}).captchaProvider === 'turnstile' ? ' + captchaToken' : '')));
+    },
+    use: a => { if (!pickInst(a[0])) return; cur = a[0]; return show(); },
+  };
+  return startRepl({
+    title: 'agw 用户注册 loop',
+    prompt: () => 'agw·register ' + cur + '> ',
+    help: HELP_REGISTER,
+    refresh: show,
+    commands,
+  });
+}
+
+/* ---------- 管理体系 ---------- */
+const HELP_ADMIN = t(`管理体系 loop 命令:
+  token                         面板令牌状态
+  token login                   一次性登录链接 + 打开面板(自动令牌会轮换)
+  token set <令牌>              设定固定令牌
+  token clear                   清除令牌
+  token reset                   注销全部面板会话
+  auth                          二次验证状态(second-key/TOTP)
+  auth key <第二密钥>            设置 second-key
+  auth key clear                清除 second-key
+  auth totp on|off              开关 TOTP
+  notice                        告警汇总
+  insts                         实例清单    stat 统计面板    logs [n] 日志尾部
+  use <实例>                    切换实例`);
+function loopAdmin(startName) {
+  let cur = startName || 'default';
+  const show = () => {
+    const c = loadCfg(cur);
+    console.log(C.bold(`■ 管理体系 (${cur})`));
+    console.log('  面板令牌 ' + (c.webToken ? C.grn(maskKey(c.webToken)) + (c.webTokenFixed ? C.dim(' 固定') : C.dim(' 自动轮换')) : C.yel('未设')));
+    console.log('  入口 ' + webBases(c).map(b => b + '/auth').join('  '));
+    return Promise.all([
+      api('GET', '/admin/api/instances').then(d => {
+        const its = d.instances || [];
+        console.log('  实例 ' + (its.map(x => (x.running ? C.grn('●') : C.dim('○')) + x.name).join('  ') || '(无)'));
+      }).catch(e => console.log(C.dim('  实例: ' + e.message))),
+      api('GET', `/admin/api/admin-auth/${encodeURIComponent(cur)}`).then(d =>
+        console.log('  二次验证 second-key ' + (d.secondKeySet ? C.grn('已设') : C.dim('未设')) + '  TOTP ' + (d.totpEnabled ? C.grn('开') : C.dim('关')))
+      ).catch(e => console.log(C.dim('  二次验证: ' + e.message))),
+    ]);
+  };
+  const authPost = body => api('POST', `/admin/api/admin-auth/${encodeURIComponent(cur)}`, body);
+  const commands = {
+    show: show,
+    token: a => {
+      const act = (a[0] || '').toLowerCase();
+      if (!act) return cmdWeb(['--inst', cur]);
+      if (act === 'login' || act === 'rotate') return cmdWeb(['--inst', cur, 'login']);
+      if (act === 'set') { if (!a[1]) return console.log('用法: token set <令牌>'); return cmdWeb(['--inst', cur, '--key', a[1]]); }
+      if (act === 'clear') return cmdWeb(['--inst', cur, '--key', 'clear']);
+      if (act === 'reset' || act === 'expired') return cmdWeb(['--expired']);
+      return console.log('用法: token [login|rotate|set <令牌>|clear|reset]');
+    },
+    auth: a => {
+      const sub = (a[0] || '').toLowerCase();
+      if (!sub) return api('GET', `/admin/api/admin-auth/${encodeURIComponent(cur)}`)
+        .then(d => {
+          console.log('  second-key ' + (d.secondKeySet ? C.grn('已设') : C.dim('未设')) + '  TOTP ' + (d.totpEnabled ? C.grn('开') : C.dim('关')));
+          if (d.totpSecret) console.log('  TOTP 密钥: ' + d.totpSecret);
+        }).catch(e => console.log(C.yel('二次验证状态读取失败: ' + e.message)));
+      if (sub === 'key') {
+        if (a[1] === 'clear') return authPost({ secondKey: '' }).then(d => ok('second-key ' + (d.secondKeySet ? '已设置' : '已清除')));
+        const v = a.slice(1).join(' ');
+        if (!v) return console.log('用法: auth key <第二密钥> | auth key clear');
+        return authPost({ secondKey: v }).then(() => ok('second-key 已设置'));
+      }
+      if (sub === 'totp') {
+        const on = (a[1] || 'on').toLowerCase() !== 'off';
+        return authPost({ totpAction: on ? 'enable' : 'disable' }).then(d => {
+          ok('TOTP ' + (d.totpEnabled ? '已开启' : '已关闭'));
+          if (d.otpauthUrl) console.log('  ' + d.otpauthUrl);
+        });
+      }
+      console.log('用法: auth | auth key <第二密钥> | auth key clear | auth totp on|off');
+    },
+    notice: () => cmdNotice([]),
+    inst: () => cmdInst(['list']),
+    insts: () => cmdInst(['list']),
+    stat: () => loopDash(cur),
+    logs: a => tailLog(cur, a[0]),
+    use: a => { if (!pickInst(a[0])) return; cur = a[0]; return show(); },
+  };
+  return startRepl({
+    title: 'agw 管理体系 loop',
+    prompt: () => 'agw·admin ' + cur + '> ',
+    help: HELP_ADMIN,
+    refresh: show,
+    commands,
+  });
+}
+
+/* ---------- 命令入口(非 TTY 时打印一次性摘要, 交互终端进 loop) ---------- */
+function cmdRegister(argv) {
+  if (argv.includes('help') || argv.includes('--help')) { console.log(HELP_REGISTER); return; }
+  const inst = (argv[0] && !argv[0].startsWith('-')) ? argv[0] : 'default';
+  if (!listInsts().includes(inst)) die(`实例不存在: ${inst} (已有: ${listInsts().join(', ') || '无'})`);
+  if (canLoop()) return loopRegister(inst);
+  const c = loadCfg(inst); const r = c.registration || {};
+  console.log(`  ${inst}: 注册 ${onoff(r.enable)}  captcha ${r.captchaProvider || 'none'}  密码≥${r.minPasswordLen || 8}  用户 ${(c.users || []).length}`);
+  console.log(C.dim('  交互终端执行 agw register 进入管理 loop'));
+}
+function cmdAdmin(argv) {
+  if (argv.includes('help') || argv.includes('--help')) { console.log(HELP_ADMIN); return; }
+  const inst = (argv[0] && !argv[0].startsWith('-')) ? argv[0] : 'default';
+  if (!listInsts().includes(inst)) die(`实例不存在: ${inst} (已有: ${listInsts().join(', ') || '无'})`);
+  if (canLoop()) return loopAdmin(inst);
+  const c = loadCfg(inst);
+  console.log(`  ${inst}: 面板令牌 ${c.webToken ? '已设 ' + maskKey(c.webToken) : '未设'}  second-key ${(c.adminAuth || {}).secondKey ? '已设' : '未设'}  TOTP ${(c.adminAuth || {}).totpSecret ? '开' : '关'}`);
+  console.log(C.dim('  交互终端执行 agw admin 进入管理 loop'));
+}
+
 /* ==================== main dispatch ==================== */
 function help(sub) {
   if (sub && CMDS[sub]) { console.log('agw ' + sub + ' —'); CMDS[sub](['help']); return; }
@@ -1060,7 +1536,7 @@ function help(sub) {
 
 实例
   agw inst list                                 列出全部实例
-  agw inst <inst> [start|stop]                  启动/停止/看状态
+  agw inst <inst> [start|stop]                  启动/停止/看状态(无参数=进入实例管理 loop)
   agw inst delete <inst> [-y]                   删除实例(default 不可删)
   agw inst <inst> --status <all|requests|error|debug>
   agw inst <inst> --apikey <key> --webtoken <key> --tls <port|0=关>
@@ -1094,8 +1570,14 @@ function help(sub) {
   agw card --charge <卡> --balance <n> | --delete <卡> | ban <卡>
   agw card --register <on|off> | --length <8~128>
 
-交互
-  agw loop [实例]                       交互式管理台(stat/inst/chan/card/logs/use/watch)
+交互 loop (空行刷新, help 看命令, exit 退出; 非 TTY 时打印一次性摘要)
+  agw inst [<inst>]                     实例管理 loop(list/use/status/start/stop/logs/new/del)
+  agw chan <inst>                       渠道管理 loop(list/add/rm/scope/proxy/fetch/balance)
+  agw router <inst>                     路由管理 loop(重试/超时/冷却/过滤/固定路由)
+  agw stat [<inst>]                     统计面板 loop(all/daily/weekly/monthly/models/dist/watch)
+  agw register [<inst>]                 用户注册 loop(注册开关/额度/人机验证/用户)
+  agw admin [<inst>]                    管理体系 loop(令牌/二次验证/告警/日志)
+  agw loop [实例]                       综合管理台(stat/inst/chan/card/logs/use/watch)
 
 面板
   agw web login [--inst <实例>]                 生成随机访问令牌, 打印面板链接并开浏览器
@@ -1124,7 +1606,7 @@ function help(sub) {
 const CMDS = {
   inst: cmdInst, router: cmdRouter, chan: cmdChan, fetch: cmdFetch, ctxp: cmdCtxp,
   card: cmdCard, refresh: cmdRefresh, record: cmdRecord, cloudflared: cmdCloudflared, web: cmdWeb,
-  lang: cmdLang, notice: cmdNotice, stat: cmdStat, loop: cmdLoop,
+  lang: cmdLang, notice: cmdNotice, stat: cmdStat, loop: cmdLoop, register: cmdRegister, admin: cmdAdmin,
   encrypt: cmdEncrypt, decrypr: cmdDecrypt, decrypt: cmdDecrypt, recrypt: cmdRecrypt,
   export: cmdExport, inport: cmdInport,
 };
