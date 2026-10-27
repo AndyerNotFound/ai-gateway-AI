@@ -2,7 +2,7 @@
 /**
  * ai-gateway Web 管理面板 (Material Design 3 风格)
  * 被 gateway.js 引用, 在每个实例的 /admin 路径提供管理界面
- * 管理 API 需 adminKey 鉴权, 可跨实例管理所有 config.*.json
+ * 管理 API 需 webToken(访问令牌)鉴权, 可跨实例管理所有 config.*.json
  */
 const fs = require('fs');
 const path = require('path');
@@ -226,19 +226,19 @@ function totpVerify(secretB32, code) {
   return false;
 }
 
-// 管理端认证: adminKey 主验证 + 可选第二验证(adminAuth.secondKey 第二密码 / adminAuth.totpSecret TOTP)
+// 管理端认证: webToken(访问令牌, agw web 生成)主验证 + 可选第二验证(adminAuth.secondKey 第二密码 / adminAuth.totpSecret TOTP)
 function checkAdminAuth(cfg, req, query) {
   const h = req.headers;
   const auth = h.authorization || '';
   const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
-  // adminKey 与 webToken(访问令牌, agw web 生成)任一匹配即可; 都没设 = 免密管理(局域网自用)
-  const keys = [cfg.adminKey, cfg.webToken].filter(Boolean);
+  // 唯一管理凭据: webToken; 都没设 = 免密管理(局域网自用)
+  const keys = [cfg.webToken].filter(Boolean);
   let mainOk;
   if (!keys.length) mainOk = true;
   else {
-    const supplied = [bearer, h['x-admin-key'], query && query.get('adminKey'), query && query.get('key')].filter(Boolean);
+    const supplied = [bearer, h['x-agw-token'], query && query.get('key')].filter(Boolean);
     mainOk = keys.some(k => supplied.includes(k)
-      || (h.cookie || '').includes(`adminKey=${k}`) || (h.cookie || '').includes(`agwWeb=${k}`));
+      || (h.cookie || '').includes(`agwWeb=${k}`));
   }
   // 面板会话: /auth?key= 签发的 HttpOnly cookie(见 m3KeyOk), 有效期内浏览器免带令牌
   if (!mainOk && cfg._webSess) {
@@ -300,7 +300,7 @@ function currentName(cfg) {
 }
 
 // 本机回环代理到目标实例获取 JSON (跨实例统计/请求)
-// 优先走 /admin/api/<path>(带目标 adminKey); 目标没设 adminKey 则回退 /status(仅需 gatewayKey)
+// 优先走 /admin/api/<path>(带目标 webToken); 目标没设 webToken 则回退 /status(仅需 gatewayKey)
 function proxyInstance(targetName, adminPath) {
   return new Promise(resolve => {
     const tc = loadCfg(targetName);
@@ -311,19 +311,19 @@ function proxyInstance(targetName, adminPath) {
     const port = useTls && tcTls.port != null ? tcTls.port : ((tc.listen || {}).port || 16384);
     const mod = useTls ? https2 : http;
     const tlsOpt = useTls ? { rejectUnauthorized: false } : {}; // 回环目标为私有 CA 签发
-    const adminKey = tc.adminKey || '';
+    const webToken = tc.webToken || '';
     const gwKey = tc.gatewayKey || '';
     const tryAdmin = () => {
       const opts = Object.assign({ host: '127.0.0.1', port, path: '/admin/api/' + adminPath, method: 'GET', timeout: 5000 }, tlsOpt);
-      if (adminKey) opts.headers = { 'x-admin-key': adminKey };
+      if (webToken) opts.headers = { 'x-agw-token': webToken };
       const r = mod.request(opts, resp => {
         let d = ''; resp.on('data', c => d += c); resp.on('end', () => {
           if (resp.statusCode === 200) { try { resolve(JSON.parse(d)); } catch (e) { resolve(null); } }
-          else if (!adminKey) { tryStatus(); } else { resolve(null); }
+          else if (!webToken) { tryStatus(); } else { resolve(null); }
         });
       });
-      r.on('error', () => { if (!adminKey) tryStatus(); else resolve(null); });
-      r.on('timeout', () => { r.destroy(); if (!adminKey) tryStatus(); else resolve(null); });
+      r.on('error', () => { if (!webToken) tryStatus(); else resolve(null); });
+      r.on('timeout', () => { r.destroy(); if (!webToken) tryStatus(); else resolve(null); });
       r.end();
     };
     const tryStatus = () => {
@@ -704,8 +704,8 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return textRes(res, 200, adminHTML(cfg), 'text/html; charset=utf-8');
   }
 
-  // /auth — M3 管理面板入口: /auth?key=<访问令牌>(adminKey 或 webToken; 都未设时免密直进)
-  // 令牌校验复用 checkAdminAuth: 兼容 ?key= / ?adminKey= / Bearer / x-admin-key / cookie
+  // /auth — M3 管理面板入口: /auth?key=<访问令牌>(未设时免密直进)
+  // 令牌校验复用 checkAdminAuth: 兼容 ?key= / Bearer / x-agw-token / cookie(agwWeb=)
   const m3KeyOk = () => checkAdminAuth(cfg, req, u.searchParams);
   // 带令牌访问成功 → 签发面板会话(HttpOnly cookie, 7 天), 浏览器后续访问(含 /admin/api/*)免带令牌
   const issueWebSess = (fixedSid) => {
@@ -719,7 +719,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
   };
   const withSess = () => {
     const c = { 'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0', 'Access-Control-Allow-Origin': '*' };
-    if (u.searchParams.has('key') || u.searchParams.has('adminKey')) c['Set-Cookie'] = issueWebSess();
+    if (u.searchParams.has('key')) c['Set-Cookie'] = issueWebSess();
     return c;
   };
   const authDeny = () => textRes(res, 401, '<!doctype html><meta charset="utf-8"><title>401</title>'
@@ -731,7 +731,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
   const pm = (req.method === 'GET') && p.match(/^\/auth\/([A-Za-z0-9_-]{16,128})\/([A-Za-z0-9_-]{8,256})\/?$/);
   if (pm) {
     const [, sid, tok] = pm;
-    const keys = [cfg.adminKey, cfg.webToken].filter(Boolean);
+    const keys = [cfg.webToken].filter(Boolean);
     if (keys.length && !keys.includes(tok)) return authDeny();
     const pend = cfg._webSessPend && cfg._webSessPend.get(sid) > Date.now();
     if (!pend) return textRes(res, 401, '<!doctype html><meta charset="utf-8"><title>401</title>'
@@ -813,7 +813,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
   if (!p.startsWith('/admin/api/')) return null; // 不是管理路由, 交给后续
 
   if (!checkAdminAuth(cfg, req, u.searchParams)) {
-    return jsonRes(res, 401, { error: '需要管理密码 (adminKey)' });
+    return jsonRes(res, 401, { error: '需要访问令牌 (webToken, agw web login 生成)' });
   }
 
   const api = p.slice('/admin/api/'.length);
@@ -1066,7 +1066,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, {
       name, port: (c.listen || {}).port || 16384, host: (c.listen || {}).host || '0.0.0.0',
       gatewayKey: reveal ? (c.gatewayKey || '') : (c.gatewayKey ? '(已设)' : ''),
-      adminKey: reveal ? (c.adminKey || '') : (c.adminKey ? '(已设)' : ''),
+      webToken: reveal ? (c.webToken || '') : (c.webToken ? '(已设)' : ''),
       tls: c.tls || { enable: false },
       redact: maskRedactCfg(c),
       replace: c.replace || { out: [], inc: [] },
@@ -1096,7 +1096,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     if (data.port != null) { c.listen = c.listen || {}; c.listen.port = Number(data.port); }
     if (data.host != null) { c.listen = c.listen || {}; c.listen.host = data.host; }
     if (data.gatewayKey !== undefined) c.gatewayKey = data.gatewayKey;
-    if (data.adminKey !== undefined) c.adminKey = data.adminKey;
+    if (data.webToken !== undefined) c.webToken = data.webToken;
     if (data.tls !== undefined) c.tls = data.tls;
     if (data.redact !== undefined && data.redact && typeof data.redact === 'object') {
       /* 合并而不是整体替换: 老面板只发 {enable}, 不能把 extra 规则清空 */
@@ -1215,7 +1215,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     const cfg = {
       listen: { port, host: data.host || '0.0.0.0' },
       tls,
-      adminKey: typeof data.adminKey === 'string' ? data.adminKey : '',
+      webToken: typeof data.webToken === 'string' ? data.webToken : '',
       gatewayKey: '',
       channels: Array.isArray(data.channels) ? data.channels : [], proxies: {}, modelMap: {}, models: [],
       routing: { maxRetry: 2, timeoutSec: 120, cooldownSec: 30 },
@@ -1434,7 +1434,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     if (!c) return jsonRes(res, 404, { error: '实例不存在' });
     const aa = c.adminAuth || {};
     return jsonRes(res, 200, {
-      hasAdminKey: !!c.adminKey,
+      hasWebToken: !!c.webToken,
       secondKeySet: !!aa.secondKey,
       totpEnabled: !!aa.totpSecret,
       totpSecret: aa.totpSecret || null, // 已设置才返回(供二维码展示)
@@ -1915,7 +1915,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       return jsonRes(res, 200, { requests: tc._stats.requests, inflight: inflightOf(tc), errors: tc._stats.errors, retries: tc._stats.retries || 0, onceChannel: tc._onceChannel || null, context: tc._lastCtx ? Object.assign({}, tc._lastCtx, { soft: (tc.contextLimit||{}).soft || 80, hard: (tc.contextLimit||{}).hard || 0 }) : null, byChannel: tc._stats.byChannel, byKey: tc._stats.byKey || {}, startedAt: tc._stats.startedAt, uptime: Math.round(process.uptime()) });
     }
     const j = await proxyInstance(inst, 'stats');
-    if (!j) return jsonRes(res, 404, { error: '无法获取实例 ' + inst + ' 的统计(可能未运行或无adminKey)' });
+    if (!j) return jsonRes(res, 404, { error: '无法获取实例 ' + inst + ' 的统计(可能未运行或无webToken)' });
     const st = j.stats ? j.stats : j;
     return jsonRes(res, 200, { requests: st.requests || 0, errors: st.errors || 0, byChannel: st.byChannel || {}, startedAt: j.startedAt, uptime: j.uptime || 0 });
   }
@@ -2098,18 +2098,18 @@ a{color:var(--md-primary-container)}
 <div class="toast" id="toast"></div>
 
 <script>
-const adminKey = new URLSearchParams(location.search).get('adminKey') || (document.cookie.match(/adminKey=([^;]+)/)||[])[1] || '';
-const hdr = { 'x-admin-key': adminKey, 'Content-Type': 'application/json' };
+const adminKey = new URLSearchParams(location.search).get('key') || (document.cookie.match(/agwWeb=([^;]+)/)||[])[1] || '';
+const hdr = { 'x-agw-token': adminKey, 'Content-Type': 'application/json' };
 let curTab='instances', curInst='\${instName}';
 
 // 如果没密码, 弹框输入并写 cookie
 if(!adminKey){
-  const input = prompt('请输入管理密码 (adminKey):');
+  const input = prompt('请输入访问令牌 (webToken, agw web login 生成):');
   if(input){
-    document.cookie = 'adminKey='+input+';path=/;max-age=86400';
-    location.search = '?adminKey='+encodeURIComponent(input);
+    document.cookie = 'agwWeb='+input+';path=/;max-age=86400';
+    location.search = '?key='+encodeURIComponent(input);
   } else {
-    document.querySelector('.m3').innerHTML='<div class="card"><h2>需要管理密码</h2><p>请在 URL 加 ?adminKey=你的密码</p><p class="muted">或在 config.json 里设 "adminKey"</p></div>';
+    document.querySelector('.m3').innerHTML='<div class="card"><h2>需要访问令牌</h2><p>请在服务器执行 agw web login 获取登录链接</p></div>';
   }
 }
 
@@ -2168,7 +2168,7 @@ async function loadConfigEditor(){
     const c=await api('GET','config/'+curInst);
     let html='<div class="field row"><div class="f"><label>端口</label><input id="ed-port" type="number" value="'+c.port+'"></div>';
     html+='<div class="f"><label>网关密码</label><input id="ed-gwkey" type="text" value="'+(c.gatewayKey||'')+'" placeholder="空=不校验"></div></div>';
-    html+='<div class="field row"><div class="f"><label>管理密码 (adminKey)</label><input id="ed-adminkey" type="text" value="'+(c.adminKey||'')+'" placeholder="'+(c.adminKey?'(已设,留空不改)':'空=关闭管理面板')+'"></div></div>';
+    html+='<div class="field row"><div class="f"><label>访问令牌 (webToken)</label><input id="ed-webtoken" type="text" value="'+(c.webToken||'')+'" placeholder="'+(c.webToken?'(已设,留空不改)':'空=免密管理')+'"></div></div>';
     html+='<div class="flex" style="margin:8px 0"><button class="btn sm" onclick="saveSettings()">💾 保存设置</button><button class="btn sm outline" onclick="doAction(&#39;'+curInst+'&#39;,&#39;restart&#39;)">⟳ 保存后重启</button></div>';
     html+='<hr style="border:0;border-top:1px solid var(--md-outline);margin:16px 0">';
     html+='<h2 style="display:flex;align-items:center">渠道 <button class="btn sm" style="margin-left:auto" onclick="openChannelModal()">+ 添加渠道</button></h2>';
@@ -2189,8 +2189,8 @@ async function loadConfigEditor(){
 }
 async function saveSettings(){
   const data={port:Number(document.getElementById('ed-port').value),gatewayKey:document.getElementById('ed-gwkey').value};
-  const ak=document.getElementById('ed-adminkey').value;
-  if(ak&&!ak.includes('已设'))data.adminKey=ak;
+  const ak=document.getElementById('ed-webtoken').value;
+  if(ak&&!ak.includes('已设'))data.webToken=ak;
   try{await api('POST','config/'+curInst,data);toast('设置已保存, 建议重启生效')}
   catch(e){toast(e.message,true)}
 }
@@ -2293,7 +2293,7 @@ function initLogTab(){
 async function loadLog(){
   const name=document.getElementById('log-inst-select').value;
   const lines=document.getElementById('log-lines').value||80;
-  try{const r=await fetch('/admin/api/logs/'+name+'?lines='+lines+'&adminKey='+adminKey);
+  try{const r=await fetch('/admin/api/logs/'+name+'?lines='+lines+'&key='+encodeURIComponent(adminKey));
     document.getElementById('log-box').textContent=await r.text()}
   catch(e){toast(e.message,true)}
 }

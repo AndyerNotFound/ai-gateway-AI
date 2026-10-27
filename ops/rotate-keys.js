@@ -95,7 +95,7 @@ function api(inst, method, apiPath, body) {
   if (!cfg) return Promise.reject(new Error(`实例 ${inst} 不存在`));
   const port = Number((cfg.listen || {}).port || 16384);
   const headers = { 'Content-Type': 'application/json' };
-  if (cfg.adminKey) headers['x-admin-key'] = cfg.adminKey;
+  if (cfg.webToken) headers['x-agw-token'] = cfg.webToken;
   const payload = body ? Buffer.from(JSON.stringify(body)) : null;
   if (payload) headers['Content-Length'] = payload.length;
 

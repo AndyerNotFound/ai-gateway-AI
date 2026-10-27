@@ -53,7 +53,7 @@ else
 {
   "listen": { "host": "0.0.0.0", "port": $PORT },
   "gatewayKey": "$GWKEY",
-  "adminKey": "",
+  "webToken": "",
   "channels": [
     { "name": "default", "type": "$CHTYPE", "baseUrl": "$CHURL", "apiKey": "$CHKEY", "default": true }
   ]

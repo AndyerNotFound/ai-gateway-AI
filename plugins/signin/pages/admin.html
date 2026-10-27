@@ -18,8 +18,8 @@
 <body>
 <div class="card">
   <h2>⚙️ 每日签到 · 设置</h2>
-  <label>管理密码 (adminKey)</label>
-  <input id="ak" type="password" placeholder="管理端 adminKey">
+  <label>访问令牌 (webToken)</label>
+  <input id="ak" type="password" placeholder="管理端 webToken">
   <label>每次签到奖励额度 (tokens)</label>
   <input id="reward" type="number" min="0" placeholder="1000">
   <button id="save">保存设置</button>
@@ -36,15 +36,15 @@ $('ak').value = localStorage.getItem('signin_admin_key') || '';
 
 async function load() {
   const ak = $('ak').value.trim(); if (!ak) return;
-  const r = await fetch(API, { headers: { 'x-admin-key': ak } }).then(r => r.json()).catch(() => null);
+  const r = await fetch(API, { headers: { 'x-agw-token': ak } }).then(r => r.json()).catch(() => null);
   if (r && r.config) $('reward').value = r.config.rewardTokens ?? 1000;
 }
 $('save').onclick = async () => {
   const ak = $('ak').value.trim();
-  if (!ak) { $('msg').textContent = '请填 adminKey'; $('msg').className = 'err'; return; }
+  if (!ak) { $('msg').textContent = '请填 webToken'; $('msg').className = 'err'; return; }
   localStorage.setItem('signin_admin_key', ak);
   const body = { config: { rewardTokens: Math.max(0, parseInt($('reward').value) || 1000) } };
-  const r = await fetch(API, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-admin-key': ak }, body: JSON.stringify(body) }).then(r => r.json()).catch(() => null);
+  const r = await fetch(API, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-agw-token': ak }, body: JSON.stringify(body) }).then(r => r.json()).catch(() => null);
   if (r && r.ok) { $('msg').textContent = '✓ 已保存（实例热重载后生效）'; $('msg').className = 'ok'; }
   else { $('msg').textContent = '保存失败: ' + ((r && r.error) || '网络错误'); $('msg').className = 'err'; }
 };

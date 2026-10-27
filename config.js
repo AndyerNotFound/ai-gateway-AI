@@ -94,7 +94,10 @@ function applyDefaults(cfg) {
     cfg.tls.key = String(cfg.tls.key || 'key.pem');
     cfg.tls.port = cfg.tls.port != null ? Number(cfg.tls.port) : null; // null=与HTTP同端口(纯HTTPS)
   }
-  cfg.adminKey = cfg.adminKey ? String(cfg.adminKey) : '';
+  // 迁移: adminKey 已废弃, 自动并入 webToken(唯一管理凭据)
+  if (cfg.adminKey && !cfg.webToken) { cfg.webToken = String(cfg.adminKey); }
+  delete cfg.adminKey;
+  cfg.webToken = cfg.webToken ? String(cfg.webToken) : '';
   if (cfg.proxies && typeof cfg.proxies === 'object' && !Array.isArray(cfg.proxies)) {
     const norm = {};
     for (const [k, v] of Object.entries(cfg.proxies)) {

@@ -531,7 +531,7 @@ md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wg
         <div class="card-head"><div><div class="card-title">API 密钥</div><div class="card-sub">网关密码与渠道密钥</div></div></div>
         <div class="grid-form" style="margin-bottom:16px">
           <md-outlined-text-field id="ky-gatewayKey" label="网关密码 gatewayKey" type="password" helper="留空=不校验"></md-outlined-text-field>
-          <md-outlined-text-field id="ky-adminKey" label="管理密码 adminKey" type="password" helper="留空=免密管理(不设密码)"></md-outlined-text-field>
+          <md-outlined-text-field id="ky-webToken" label="访问令牌 webToken" type="password" helper="留空=免密管理(不设密码)"></md-outlined-text-field>
         </div>
         <div id="ky-channels" class="list-gap" style="margin-bottom:16px"></div>
         <md-filled-button id="ky-save">保存密钥</md-filled-button>
@@ -706,7 +706,7 @@ class MockAdapter extends BaseAdapter{
   }
   async getInstances(){ return {instances:this._insts.map(i=>({...i})), current:'default'}; }
   async getConfig(name){ return {name, port:this._insts.find(i=>i.name===name)?.port||16384,
-    gatewayKey:'', adminKey:'(已设)', channels:(this._chs[name]||[]).map(c=>({...c})),
+    gatewayKey:'', webToken:'(已设)', channels:(this._chs[name]||[]).map(c=>({...c})),
     proxies:this._pxs[name]||{},
     routing:{maxRetry:3,timeoutSec:60,cooldownSec:30}}; }
   async saveConfig(name,patch){ if(patch&&patch.proxies) this._pxs[name]=patch.proxies; return {ok:true,patch}; }
@@ -730,7 +730,7 @@ class MockAdapter extends BaseAdapter{
 }
 class HttpAdapter extends BaseAdapter{
   constructor(base){ super(); this.base=(base||localStorage.getItem('agw-base')||location.origin).replace(/\/$/,''); }
-  _hdr(){ const h={'Content-Type':'application/json'}; const k=localStorage.getItem('agw-admin-key'); if(k)h['x-admin-key']=k; return h; }
+  _hdr(){ const h={'Content-Type':'application/json'}; const k=localStorage.getItem('agw-admin-key'); if(k)h['x-agw-token']=k; return h; }
   async getInstances(signal){ return this._fetch(`${this.base}/admin/api/instances`,{headers:this._hdr()},signal); }
   async getConfig(name,signal){ return this._fetch(`${this.base}/admin/api/config/${encodeURIComponent(name)}?reveal=1`,{headers:this._hdr()},signal); }
   async saveConfig(name,patch,signal){ return this._fetch(`${this.base}/admin/api/config/${encodeURIComponent(name)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(patch)},signal); }
@@ -1025,8 +1025,8 @@ async function renderKeys(){
     const cfg=await adapter.getConfig(cur,signal);
     $('#ky-gatewayKey').value = cfg.gatewayKey && cfg.gatewayKey!=='(已设)' ? cfg.gatewayKey : '';
     $('#ky-gatewayKey').placeholder = cfg.gatewayKey==='(已设)' ? '(已设, 留空不改)' : '留空=不校验';
-    $('#ky-adminKey').value = cfg.adminKey && cfg.adminKey!=='(已设)' ? cfg.adminKey : '';
-    $('#ky-adminKey').placeholder = cfg.adminKey==='(已设)' ? '(已设, 留空不改)' : '留空=免密管理';
+    $('#ky-webToken').value = cfg.webToken && cfg.webToken!=='(已设)' ? cfg.webToken : '';
+    $('#ky-webToken').placeholder = cfg.webToken==='(已设)' ? '(已设, 留空不改)' : '留空=免密管理';
     $('#ky-channels').innerHTML=(cfg.channels||[]).map(ch=>
       `<md-outlined-text-field data-keyfor="${escAttr(ch.name)}" label="${esc(ch.name)} (${esc(ch.type)})" type="password" value="${esc(ch.apiKey||'')}" placeholder="${ch.hasKey?'(已设)':'API Key'}"></md-outlined-text-field>`
     ).join('');
@@ -1232,13 +1232,13 @@ function openThemeDialog(){
   const cu=$('#th-custom');if(cu)cu.addEventListener('input',e=>{applyTheme({mode:themeState.mode,seed:e.target.value});saveTheme();});
 }
 
-// ---- 管理密码(adminKey)输入: 顶栏钥匙按钮 / 接口 401 时自动弹出 ----
+// ---- 访问令牌(webToken)输入: 顶栏钥匙按钮 / 接口 401 时自动弹出 ----
 function keyDlgVisible(){ return !$('#dlgOverlay').hidden && $('#dlgTitle').textContent==='管理密码'; }
 function openKeyDialog(){
   if(keyDlgVisible()) return;
   openDialog('管理密码', `
     <div style="display:flex;flex-direction:column;gap:14px;padding-top:8px">
-      <md-outlined-text-field data-f="key" label="adminKey" type="password" value="${escAttr(localStorage.getItem('agw-admin-key')||'')}"
+      <md-outlined-text-field data-f="key" label="webToken 访问令牌" type="password" value="${escAttr(localStorage.getItem('agw-admin-key')||'')}"
         helper="实例设了管理密码就填它; 没设则免密无需填; 清空保存=清除记住的密码"></md-outlined-text-field>
     </div>`, {okText:'保存', onOk:saveKey});
 }
@@ -1398,7 +1398,7 @@ function openPortDialog(name){
       <md-outlined-text-field data-f="name" label="实例名" value="${escAttr(i.name||'')}" ${name?'disabled':''} required></md-outlined-text-field>
       <md-outlined-text-field data-f="port" label="HTTP 端口" type="number" value="${i.port||16390}"></md-outlined-text-field>
       <md-outlined-text-field data-f="tlsPort" label="HTTPS 端口" type="number" value="${(i.port||16390)+10}"></md-outlined-text-field>
-      <md-outlined-text-field data-f="adminKey" label="管理密码" type="password" value="" helper="留空保存=清除管理密码"></md-outlined-text-field>
+      <md-outlined-text-field data-f="webToken" label="访问令牌" type="password" value="" helper="留空保存=清除访问令牌"></md-outlined-text-field>
       <label style="display:flex;align-items:center;gap:8px;font-size:14px"><md-switch data-f="tls" ${i.tlsOn?'selected':''}></md-switch>启用 HTTPS</label>
       ${(name&&name!=='default'&&name!==Store.currentName)?`<md-text-button data-action="delInstance" data-name="${escAttr(name)}" style="color:var(--md-sys-color-error);align-self:flex-start;margin-top:2px">删除实例</md-text-button>`:''}
     </div>`, {onOk:()=>savePortSettings(name)});
@@ -1409,8 +1409,8 @@ function openPortDialog(name){
       if(q('port')) q('port').value=(c.port!=null?c.port:16384);
       if(q('tlsPort')) q('tlsPort').value=(c.tls&&c.tls.port)?c.tls.port:(Number(c.port||16384)+10);
       const sw=q('tls'); if(sw) sw.selected=!!(c.tls&&c.tls.enable);
-      portDlgOrigKey=c.adminKey||'';
-      if(q('adminKey')) q('adminKey').value=portDlgOrigKey;
+      portDlgOrigKey=c.webToken||'';
+      if(q('webToken')) q('webToken').value=portDlgOrigKey;
     }).catch(()=>{});
   }
 }
@@ -1421,7 +1421,7 @@ async function savePortSettings(editName){
   const v=dlgValue();
   const name=String(editName||v.name||'').trim();
   const port=Number(v.port), tlsPort=Number(v.tlsPort);
-  const adminKey=String(v.adminKey||'').trim();
+  const adminKey=String(v.webToken||'').trim();
   const tlsOn=!!($('#dlgBody [data-f=tls]')&&$('#dlgBody [data-f=tls]').selected);
   if(!/^[A-Za-z0-9_-]{1,32}$/.test(name)){ snack('实例名只能含字母/数字/中划线/下划线(最长32字符)',true); return false; }
   if(!port||port<1024||port>65535){ snack('HTTP 端口范围 1024-65535',true); return false; }
@@ -1432,7 +1432,7 @@ async function savePortSettings(editName){
       const patch={ port, host:(cur&&cur.host)||'0.0.0.0',
         tls:Object.assign({},(cur&&cur.tls)||{},{ enable:tlsOn, port:tlsPort||port+10 }) };
       // 管理密码: 与回填原值不同才提交(含清空=移除密码); 预填失败(unknown)则不动
-      if(portDlgOrigKey!==undefined && adminKey!==portDlgOrigKey) patch.adminKey=adminKey;
+      if(portDlgOrigKey!==undefined && adminKey!==portDlgOrigKey) patch.webToken=adminKey;
       await adapter.saveConfig(editName,patch);
       snack('已保存实例 '+editName);
       if(editName===Store.currentName&&cur&&cur.port&&Number(cur.port)!==port)
@@ -1455,7 +1455,7 @@ async function savePortSettings(editName){
           if(!tls.cert){ tls.enable=false; snack('没有找到可用证书, 已按纯 HTTP 创建',true); }
         }catch(_){ tls.enable=false; }
       }
-      await adapter.createInstance(name,{ port, host:'0.0.0.0', tls, adminKey });
+      await adapter.createInstance(name,{ port, host:'0.0.0.0', tls, webToken:adminKey });
       snack('实例 '+name+' 已创建, 正在启动…');
       try{ await adapter.action(name,'start'); }catch(_){}
       renderPorts();
@@ -1541,7 +1541,7 @@ async function saveProvider(){
 }
 async function saveKeys(){
   try{
-    const patch={gatewayKey:$('#ky-gatewayKey').value, adminKey:$('#ky-adminKey').value, channels:{}};
+    const patch={gatewayKey:$('#ky-gatewayKey').value, webToken:$('#ky-webToken').value, channels:{}};
     $$('#ky-channels [data-keyfor]').forEach(el=>{ patch.channels[el.dataset.keyfor]=el.value; });
     await adapter.saveConfig(Store.inst,patch); snack('密钥已保存'); await renderKeys();
   }catch(e){ snack(e.message,true); }
@@ -1675,12 +1675,12 @@ if(!MW_OK){
 }
 $('#keyBtn').addEventListener('click',openKeyDialog);
 $('#thBtn').addEventListener('click',openThemeDialog);
-// ?adminKey=xxx 一键带密码访问: 存入 localStorage 并从地址栏抹掉
+// ?key=<webToken> 一键带令牌访问: 存入 localStorage 并从地址栏抹掉
 try{
-  const u=new URL(location.href); const k=u.searchParams.get('adminKey');
+  const u=new URL(location.href); const k=u.searchParams.get('key');
   if(k!=null){
     if(k) localStorage.setItem('agw-admin-key',k); else localStorage.removeItem('agw-admin-key');
-    u.searchParams.delete('adminKey'); history.replaceState(null,'',u);
+    u.searchParams.delete('key'); history.replaceState(null,'',u);
   }
 }catch(_){}
 upgradePwFields(document.body);

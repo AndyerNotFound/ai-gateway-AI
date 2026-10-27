@@ -146,7 +146,7 @@ case "${1:-}" in
     echo "      ctxp: 全局上下文上限(按模型名通配, 所有实例生效), 例: $0 ctxp 'deepseek-*' max 200k warn 160k"
     echo ""
     echo "说明: 一个进程托管全部实例; 实例的增删/启停/改名/渠道管理"
-    echo "      都在 Web 面板内热生效: http://127.0.0.1:$(get_main_port)/auth?key=<adminKey>"
+    echo "      都在 Web 面板内热生效: http://127.0.0.1:$(get_main_port)/auth?key=<webToken>"
     echo ""
     echo "加密访问(HTTPS):  agw-tls 看状态 | agw-tls setup 一键开启 | agw-tls use 给代码"
     ;;

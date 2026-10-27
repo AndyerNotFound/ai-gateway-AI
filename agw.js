@@ -129,15 +129,15 @@ function needLive() {
   const tls = !!(c.tls && c.tls.enable);
   return { port, tls, pid };
 }
-function instLive(name) { // 实例是否在池里跑着(读 pool 端口表退化: 尝试 /health/<name>? 无此路由, 改用 admin instances)
-  return api('GET', '/admin/api/instances').then(d => {
+function instLive(name, tok) { // 实例是否在池里跑着(读 pool 端口表退化: 尝试 /health/<name>? 无此路由, 改用 admin instances)
+  return api('GET', '/admin/api/instances', null, tok).then(d => {
     const it = (d.instances || []).find(x => x.name === name);
     return it ? it : null;
   }).catch(() => null);
 }
-async function hotRestart(name) { // 在跑的实例改完配置后重启生效
-  const it = await instLive(name);
-  if (it && it.running) { await api('POST', `/admin/api/action/${name}/restart`); ok(t('实例 %s 已热重启生效').replace('%s', name)); }
+async function hotRestart(name, tok) { // 在跑的实例改完配置后重启生效; tok=显式令牌(令牌轮换时网关内存里还是旧令牌, 须用旧的调 API)
+  const it = await instLive(name, tok);
+  if (it && it.running) { await api('POST', `/admin/api/action/${name}/restart`, null, tok); ok(t('实例 %s 已热重启生效').replace('%s', name)); }
   else console.log(C.dim('实例未在运行, 下次启动生效'));
 }
 
@@ -145,17 +145,17 @@ async function hotRestart(name) { // 在跑的实例改完配置后重启生效
 let _adminKeyCache;
 function adminKey() {
   if (_adminKeyCache !== undefined) return _adminKeyCache;
-  try { const c = loadCfg('default'); _adminKeyCache = c.adminKey || c.webToken || ''; } catch (_) { _adminKeyCache = ''; }
+  try { const c = loadCfg('default'); _adminKeyCache = c.webToken || ''; } catch (_) { _adminKeyCache = ''; }
   return _adminKeyCache;
 }
-function api(method, p, body) {
+function api(method, p, body, tok) {
   return new Promise((resolve, reject) => {
     const st = needLive();
     const tls = !!st.tls;
     const opts = {
       host: '127.0.0.1', port: st.port, method,
       path: p, timeout: 30000,
-      headers: { 'x-admin-key': adminKey(), 'Content-Type': 'application/json' },
+      headers: { 'x-agw-token': tok || adminKey(), 'Content-Type': 'application/json' },
       ...(tls ? { rejectUnauthorized: false } : {}), // 自签 CA: 本机回环
     };
     const mod = tls ? https : http;
@@ -169,7 +169,7 @@ function api(method, p, body) {
     });
     req.on('timeout', () => { req.destroy(new Error('请求超时(30s)')); });
     req.on('error', reject);
-    if (body !== undefined) req.write(JSON.stringify(body));
+    if (body != null) req.write(JSON.stringify(body)); // null/undefined 都不发 body(GET 带 body 会被服务端提前断连)
     req.end();
   });
 }
@@ -211,7 +211,6 @@ function cmdInst(argv) {
   agw inst <name> [start|stop]      启动/停止(缺省=显示状态)
   agw inst <name> --status <kind>   日志/统计: all|requests|error|debug (默认 all, 50 行)
   agw inst <name> --apikey <key>    设置 Gateway-Key(空串=清除)
-  agw inst <name> --adminkey <key>  设置 Admin-Key(空串=清除)
   agw inst <name> --tls <port>      启用 TLS(<port>=主端口=纯 HTTPS); 0=关闭 TLS
   agw inst <name> --cold <sec>      上游连接超时秒数
   agw inst <name> --filter <on/off> 隐私过滤(密钥/敏感信息打码)
@@ -223,7 +222,7 @@ function cmdInst(argv) {
     let c; try { c = loadCfg(n); } catch (e) { return console.log(`  ${pad(n, 22)} ${C.red('(配置读取失败)')}`); }
     const port = (c.listen || {}).port || 16384;
     const tls = !!(c.tls && c.tls.enable);
-    console.log(`  ${pad(n, 22)} :${pad(port, 6)} ${tls ? 'HTTPS' : 'HTTP '}  key:${c.gatewayKey ? 'set' : '-'}  admin:${c.adminKey ? 'set' : '-'}`);
+    console.log(`  ${pad(n, 22)} :${pad(port, 6)} ${tls ? 'HTTPS' : 'HTTP '}  key:${c.gatewayKey ? 'set' : '-'}  web:${c.webToken ? 'set' : '-'}`);
   });
   if (a === 'delete') {
     const name = argv[1]; if (!name) die('用法: agw inst delete <name> [-y]');
@@ -246,7 +245,7 @@ function cmdInst(argv) {
   const onlyStatus = flags.length === 0;
   const touch = [];
   if (has('--apikey')) touch.push(() => { const c = loadCfg(name); c.gatewayKey = get('--apikey') || ''; saveCfg(name, c); ok(`gatewayKey ${c.gatewayKey ? '已设置(' + c.gatewayKey.length + ' 字符)' : '已清除'}`); });
-  if (has('--adminkey')) touch.push(() => { const c = loadCfg(name); c.adminKey = get('--adminkey') || ''; saveCfg(name, c); ok(`adminKey ${c.adminKey ? '已设置' : '已清除'}`); });
+  if (has('--webtoken')) touch.push(() => { const c = loadCfg(name); c.webToken = get('--webtoken') || ''; saveCfg(name, c); ok(`webToken ${c.webToken ? '已设置' : '已清除'}`); });
   if (has('--tls')) touch.push(() => {
     const c = loadCfg(name); const pv = get('--tls');
     if (!pv || pv === '0' || pv === 'off') { c.tls = { enable: false }; ok('TLS 已关闭'); }
@@ -300,7 +299,7 @@ function cmdInst(argv) {
     }
   };
   if (onlyStatus) return showStatus();
-  const valFlags = ['--apikey', '--adminkey', '--tls', '--cold', '--filter', '--filter-resp', '--transcreet', '--status'];
+  const valFlags = ['--apikey', '--webtoken', '--tls', '--cold', '--filter', '--filter-resp', '--transcreet', '--status'];
   const act = flags.find((f, i) => !f.startsWith('--') && !valFlags.includes(flags[i - 1]));
   if (act === 'start' || act === 'stop') {
     return api('POST', `/admin/api/action/${name}/${act}`).then(d => ok(`${name} ${act}${d && d.restarting ? '' : ''}`)).catch(e => die(e.message + ' (单进程池模式下或需 agw.sh restart)'));
@@ -880,7 +879,7 @@ function cmdStat(argv) {
 
 /* ================================================================
  *  agw web — 面板访问令牌(/auth?key=<token>)
- *  webToken: 面板入口与 /admin/api/* 通吃的访问令牌; adminKey 仍然有效(可只留其一)
+ *  webToken: 面板入口与 /admin/api/* 唯一的管理访问令牌
  * ================================================================ */
 function webBases(cfg) { // 面板基础地址(不含凭据)
   const port = (cfg.listen || {}).port || 16384;
@@ -902,12 +901,12 @@ function openBrowser(url) {
   }
   return null;
 }
-async function makeLoginLink(inst, cfg) { // 一次性登录链接: 随机会话UID + 令牌, 全走路径
+async function makeLoginLink(inst, cfg, apiTok) { // 一次性登录链接: 随机会话UID + 令牌, 全走路径
   const sid = crypto.randomBytes(24).toString('base64url');
   const bases = webBases(cfg);
   const tok = encodeURIComponent(cfg.webToken || '');
   try {
-    await api('POST', '/admin/api/web-session', { sid }); // 预注册一次性会话UID(15分钟内有效, 用一次即废)
+    await api('POST', '/admin/api/web-session', { sid }, apiTok); // 预注册一次性会话UID(15分钟内有效, 用一次即废)
     return { sid, urls: bases.map(b => `${b}/auth/${sid}/${tok}`) };
   } catch (e) {
     return { sid, urls: bases.map(b => `${b}/auth?key=${tok}`), fallback: true, err: e.message };
@@ -935,7 +934,7 @@ async function cmdWeb(argv) {
     console.log(cfg.webToken
       ? t('访问令牌: ') + C.grn('已设 ' + maskKey(cfg.webToken)) + (cfg.webTokenFixed ? C.dim('(固定, --key clear 可清除)') : C.dim('(自动生成, login 会轮换)'))
       : C.yel('访问令牌: 未设') + C.dim(' (agw web login 生成)'));
-    if (!cfg.adminKey && !cfg.webToken) console.log(C.yel('adminKey 也未设: 面板当前免密访问, 公网部署前务必 agw web login'));
+    if (!cfg.webToken) console.log(C.yel('webToken 未设: 面板当前免密访问, 公网部署前务必 agw web login'));
     console.log(t('面板地址(完整登录链接用 agw web login 生成):'));
     webBases(cfg).forEach(b => console.log('  ' + C.cyn(b + '/auth')));
     return;
@@ -947,7 +946,7 @@ async function cmdWeb(argv) {
     if (v === 'clear') {
       if (!cfg.webToken && !cfg.webTokenFixed) return console.log(t('未设置访问令牌, 无需清除'));
       delete cfg.webToken; delete cfg.webTokenFixed; saveCfg(inst, cfg);
-      ok('已清除访问令牌(旧链接全部失效; adminKey 未动, 仍可用)');
+      ok('已清除访问令牌(旧链接全部失效)');
       return hotRestart(inst);
     }
     if (!/^[A-Za-z0-9_-]{8,128}$/.test(v)) die('令牌需为 8~128 位 URL 安全字符([A-Za-z0-9_-]); 建议直接 agw web login 随机生成');
@@ -967,7 +966,7 @@ async function cmdWeb(argv) {
   if (argv.length && !has('login')) return webHelp();
 
   // login: 固定令牌 → 直接用; 自动令牌 → 每次轮换(旧令牌+旧链接失效)
-  let rotated = false;
+  let rotated = false, prevTok = cfg.webToken || '';
   if (!cfg.webTokenFixed) {
     cfg.webToken = crypto.randomBytes(24).toString('base64url');
     delete cfg.webTokenFixed; saveCfg(inst, cfg); rotated = true;
@@ -975,14 +974,14 @@ async function cmdWeb(argv) {
   } else {
     console.log(C.dim('使用固定访问令牌(--key 设定, login 不轮换)'));
   }
-  if (rotated) await hotRestart(inst); // 旧进程内存里的待用链接/会话一并清空
-  const r = await makeLoginLink(inst, cfg);
+  if (rotated) await hotRestart(inst, prevTok); // 用旧令牌调重启(网关内存里还是旧令牌); 重启后新令牌生效, 待用链接/会话一并清空
+  const r = await makeLoginLink(inst, cfg, rotated ? undefined : prevTok);
   printLinks('登录链接(一次性: 打开即绑定会话, 链接作废; 勿外传):', r.urls);
   if (r.fallback) console.log(C.dim('一次性链接注册失败(网关未在运行?), 已退回 ?key= 形式: ' + r.err));
   if (rotated) console.log(C.dim('旧令牌/旧链接已失效'));
   const opened = openBrowser(r.urls[0]);
   console.log(opened ? C.dim(`已尝试用 ${opened} 打开浏览器`) : C.dim('未找到可用的开浏览器命令, 请手动复制链接'));
-  if (!cfg.adminKey && !cfg.webTokenFixed) console.log(C.dim('提示: 面板与 /admin/api/* 均已接受 webToken, 可不再使用 adminKey'));
+
 }
 
 /* ==================== main dispatch ==================== */
@@ -995,7 +994,7 @@ function help(sub) {
   agw inst <inst> [start|stop]                  启动/停止/看状态
   agw inst delete <inst> [-y]                   删除实例(default 不可删)
   agw inst <inst> --status <all|requests|error|debug>
-  agw inst <inst> --apikey <key> --adminkey <key> --tls <port|0=关>
+  agw inst <inst> --apikey <key> --webtoken <key> --tls <port|0=关>
   agw inst <inst> --cold <秒> --filter <on|off> --transcreet <on|off|res-only>
 
 路由

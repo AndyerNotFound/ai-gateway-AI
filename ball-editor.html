@@ -67,8 +67,8 @@
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 
-let key = new URLSearchParams(location.search).get('adminKey')
-  || ((document.cookie.match(/adminKey=([^;]+)/) || [])[1] || '');
+let key = new URLSearchParams(location.search).get('key')
+  || ((document.cookie.match(/agwWeb=([^;]+)/) || [])[1] || '');
 let inst = new URLSearchParams(location.search).get('inst') || localStorage.getItem('ballInst') || '';
 let cfg = {};
 let dirty = false;
@@ -87,7 +87,7 @@ async function api(path, opt) {
   opt = opt || {};
   const r = await fetch(path, {
     method: opt.method || 'GET',
-    headers: { 'content-type': 'application/json', 'x-admin-key': key },
+    headers: { 'content-type': 'application/json', 'x-agw-token': key },
     body: opt.body
   });
   const txt = await r.text();
@@ -362,18 +362,18 @@ async function save(quiet) {
 
 $('#btnKey').addEventListener('click', askKey);
 function askKey() {
-  const k = prompt('管理密码 adminKey（存本地，只发给 127.0.0.1）');
+  const k = prompt('访问令牌 webToken（存本地，只发给 127.0.0.1）');
   if (!k) return;
   key = k.trim();
   localStorage.setItem('ballKey', key);
-  document.cookie = 'adminKey=' + encodeURIComponent(key) + ';path=/;max-age=86400';
-  msg('密码已记住', 'ok');
+  document.cookie = 'agwWeb=' + encodeURIComponent(key) + ';path=/;max-age=86400';
+  msg('令牌已记住', 'ok');
 }
 if (!key) { const k = localStorage.getItem('ballKey'); if (k) key = k; }
-else { localStorage.setItem('ballKey', key); document.cookie = 'adminKey=' + encodeURIComponent(key) + ';path=/;max-age=86400'; }
+else { localStorage.setItem('ballKey', key); document.cookie = 'agwWeb=' + encodeURIComponent(key) + ';path=/;max-age=86400'; }
 if (inst && key) { setTimeout(() => $('#btnLoad').click(), 60); }
 if (!inst) {
-  fetch('/admin/api/instances', { headers: { 'x-admin-key': key } }).then(r => r.json()).then(j => {
+  fetch('/admin/api/instances', { headers: { 'x-agw-token': key } }).then(r => r.json()).then(j => {
     const name = (j && (j.active || (j.instances && j.instances[0]))) || '';
     if (name && !$('#inst').value) { $('#inst').value = typeof name === 'string' ? name : (name.name || ''); }
   }).catch(() => {});

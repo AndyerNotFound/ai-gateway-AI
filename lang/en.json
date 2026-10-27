@@ -15,7 +15,7 @@
 "agw inst <name> [start|stop] 启动/停止(缺省=显示状态)": "agw inst <name> [start|stop]        Start/stop (bare = show status)",
 "agw inst <name> --status <kind> 日志/统计: all|requests|error|debug (默认 all, 50 行)": "agw inst <name> --status <kind>     Log/stats: all|requests|error|debug (default all, 50 lines)",
 "agw inst <name> --apikey <key> 设置 Gateway-Key(空串=清除)": "agw inst <name> --apikey <key>      Set Gateway-Key (empty = clear)",
-"agw inst <name> --adminkey <key> 设置 Admin-Key(空串=清除)": "agw inst <name> --adminkey <key>    Set Admin-Key (empty = clear)",
+"agw inst <name> --webtoken <key> 设置访问令牌(空串=清除)": "agw inst <name> --webtoken <key>    Set web access token (empty = clear)",
 "agw inst <name> --tls <port> 启用 TLS(<port>=主端口=纯 HTTPS); 0=关闭 TLS": "agw inst <name> --tls <port>        Enable TLS (<port> = main port = HTTPS-only); 0 = disable",
 "agw inst <name> --cold <sec> 上游连接超时秒数": "agw inst <name> --cold <sec>        Upstream connect timeout (seconds)",
 "agw inst <name> --filter <on/off> 隐私过滤(密钥/敏感信息打码)": "agw inst <name> --filter <on/off>   Privacy filter (mask keys/secrets)",
@@ -178,7 +178,7 @@
 "agw inst list 列出全部实例": "agw inst list                                 List all instances",
 "agw inst <inst> [start|stop] 启动/停止/看状态": "agw inst <inst> [start|stop]                  Start/stop/show status",
 "agw inst delete <inst> [-y] 删除实例(default 不可删)": "agw inst delete <inst> [-y]                   Delete instance (default protected)",
-"agw inst <inst> --apikey <key> --adminkey <key> --tls <port|0=关>": "agw inst <inst> --apikey <key> --adminkey <key> --tls <port|0=off>",
+"agw inst <inst> --apikey <key> --webtoken <key> --tls <port|0=关>": "agw inst <inst> --apikey <key> --webtoken <key> --tls <port|0=off>",
 "agw inst <inst> --cold <秒> --filter <on|off> --transcreet <on|off|res-only>": "agw inst <inst> --cold <sec> --filter <on|off> --transcreet <on|off|res-only>",
 "路由": "Routing",
 "agw router <inst> 查看当前路由配置": "agw router <inst>                             Show routing config",
@@ -218,7 +218,7 @@
 "(配置读取失败)": "(config read failed)",
 "gatewayKey 已设置(%s 字符)": "gatewayKey set (%s chars)",
 "gatewayKey 已清除": "gatewayKey cleared",
-"adminKey 已设置(%s 字符)": "adminKey set (%s chars)",
-"adminKey 已清除": "adminKey cleared",
+"webToken 已设置(%s 字符)": "webToken set (%s chars)",
+"webToken 已清除": "webToken cleared",
 "%s次": "%s reqs"
 }

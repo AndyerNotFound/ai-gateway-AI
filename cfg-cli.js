@@ -282,7 +282,7 @@ function apiBase() {
   const c = readMainCfg() || {};
   const port = (c.listen && c.listen.port) || 16384;
   const tls = !!(c.tls && c.tls.enable);
-  return { url: (tls ? 'https://' : 'http://') + '127.0.0.1:' + port, key: c.adminKey || '' };
+  return { url: (tls ? 'https://' : 'http://') + '127.0.0.1:' + port, key: c.webToken || '' };
 }
 
 function apiReq(method, pathname, body) {
@@ -292,7 +292,7 @@ function apiReq(method, pathname, body) {
   return new Promise((resolve, reject) => {
     const data = body ? Buffer.from(JSON.stringify(body)) : null;
     const headers = {};
-    if (key) headers['x-admin-key'] = key;
+    if (key) headers['x-agw-token'] = key;
     if (data) { headers['content-type'] = 'application/json'; headers['content-length'] = data.length; }
     const req = mod.request({
       host: u.hostname,
@@ -586,13 +586,13 @@ function main() {
     if (!cfg) { console.log(`✗ 实例 [${name}] 配置不存在`); process.exit(1); }
     cfg.gatewayKey = rest[0] || '';
     saveCfg(name, cfg); console.log(rest[0] ? `✓ 网关密码已设, 重启: agw.sh restart ${name}` : `✓ 已取消密码, 重启: agw.sh restart ${name}`);
-  } else if (cmd === 'set-admin-key') {
+  } else if (cmd === 'set-web-token') {
     let cfg = loadCfg(name);
     if (!cfg) { console.log(`✗ 实例 [${name}] 配置不存在`); process.exit(1); }
-    cfg.adminKey = rest[0] || '';
+    cfg.webToken = rest[0] || '';
     saveCfg(name, cfg);
-    if (rest[0]) { console.log(`✓ 管理密码已设, 重启后访问: http://127.0.0.1:${(cfg.listen||{}).port}/admin?adminKey=${rest[0]}`); console.log(`  重启: agw.sh restart ${name}`); }
-    else { console.log(`✓ 已关闭管理面板, 重启: agw.sh restart ${name}`); }
+    if (rest[0]) { console.log(`✓ 访问令牌已设, 面板: http://127.0.0.1:${(cfg.listen||{}).port}/auth?key=${rest[0]}`); console.log(`  重启: agw.sh restart ${name}`); }
+    else { console.log(`✓ 已清除访问令牌, 重启: agw.sh restart ${name}`); }
   } else if (cmd === 'enable-tls') {
     let cfg = loadCfg(name);
     if (!cfg) { console.log(`✗ 实例 [${name}] 配置不存在`); process.exit(1); }

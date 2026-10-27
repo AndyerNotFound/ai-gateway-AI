@@ -10,7 +10,7 @@ if [ ! -f "$DATA/config.json" ]; then
 {
   "listen": { "host": "0.0.0.0", "port": 16384 },
   "gatewayKey": "",
-  "adminKey": "",
+  "webToken": "",
   "channels": [
     { "name": "default", "type": "openai", "baseUrl": "https://api.deepseek.com", "apiKey": "把这里改成你的API-Key", "default": true }
   ]
