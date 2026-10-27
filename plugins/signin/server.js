@@ -1,5 +1,5 @@
 'use strict';
-// 每日签到插件：用户凭卡密签到领额度（grantQuota），记录连续天数与累计奖励
+//// daily check-in plugin: users check in with a key card to earn quota (grantQuota); tracks streaks and cumulative rewards
 const crypto = require('crypto');
 
 function json(res, code, obj) {
@@ -8,14 +8,14 @@ function json(res, code, obj) {
 }
 function today() { return new Date().toISOString().slice(0, 10); }
 function yesterday() { return new Date(Date.now() - 86400000).toISOString().slice(0, 10); }
-// 卡密不明文落盘，用 hash 作 key
+// Key cards are never stored in plaintext; the hash is the key
 function uk(token) { return 'u_' + crypto.createHash('sha256').update(String(token)).digest('hex').slice(0, 16); }
 
 module.exports = {
   activate(ctx) {
     const reward = () => Math.max(0, Number(ctx.config.rewardTokens) || 1000);
 
-    // POST /plugins/signin/checkin  {token} 或 ?token=
+// POST /plugins/signin/checkin  {token} or ?token=
     ctx.registerRoute('POST', '/checkin', async (req, res, params) => {
       const token = (params.body && params.body.token) || params.query.token || params.token || '';
       if (!token) return json(res, 400, { error: '缺少卡密 token' });
@@ -36,7 +36,7 @@ module.exports = {
       json(res, 200, { ok: true, reward: rw, streak: rec.streak, total: rec.total, granted });
     });
 
-    // GET /plugins/signin/summary?token=  (原 /status, 改名避免与网关级 status 撞名)
+// GET /plugins/signin/summary?token=  (formerly /status, renamed to avoid clashing with the gateway-level status)
     ctx.registerRoute('GET', '/summary', async (req, res, params) => {
       const token = params.query.token || params.token || '';
       if (!token) return json(res, 400, { error: '缺少卡密 token' });

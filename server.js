@@ -21,27 +21,27 @@ const admin = require('./admin');
 const { handleAdmin } = admin;
 const state = require('./state');
 
-// ================= HTTP 服务 =================
-/* ================= HTTP 服务 ================= */
+// ================= HTTP service =================
+/* ================= HTTP service ================= */
 const GEMINI_RE = /^\/v1(?:beta|alpha)?\/models\/([^:]+):(generateContent|streamGenerateContent|countTokens)$/;
-// 注: 旧的 EXTRA_OPENAI_ENDPOINTS 固定白名单(9 个端点)已废弃。
-//     2026-10-16 起改为「/v1/* 兜底透传」: 任意未命中转换入口的 /v1/* 路径都原样转发到 openai 渠道
-//     (覆盖 files/batches/vector_stores/fine_tuning/images/embeddings/audio/completions/moderations 等),
-//     由 handleHttp 中的 isPassthru 判定 + handleExtraEndpoint 执行。
+//// Note: the old EXTRA_OPENAI_ENDPOINTS fixed whitelist (9 endpoints) is deprecated.
+//     since 2026-10-16 replaced by "/v1/* fallback passthrough": any /v1/* path not handled by a conversion entry forwards verbatim to the openai channel
+//     (covers files/batches/vector_stores/fine_tuning/images/embeddings/audio/completions/moderations etc.),
+//     decided by isPassthru in handleHttp + executed by handleExtraEndpoint.
 
 async function handleHttp(cfg, req, res) {
   const u = new URL(req.url, 'http://localhost');
   let p = u.pathname;
 
-  // ===== 多实例路由(单进程模式): 兼容端口直达 / 主端口 /实例名/ 前缀 / default =====
+// ===== Multi-instance routing (single-process mode): compat-port direct / main-port /<inst>/ prefix / default =====
   if (state.CUR_POOL) {
     const r = poolRoute(state.CUR_POOL, req, p);
     if (r.error) { sendError('openai', res, r.status || 404, r.error); return; }
     cfg = r.cfg;
     p = r.path;
     if (r.name) req._branchName = r.name;
-    // 全局分支白名单: 卡在任何实例注册过且 branches 非空, 只能访问白名单内的实例
-    // (在目标实例认证前拦截, 防止目标实例免密时绕过)
+// Global branch whitelist: if a card is registered on any instance with non-empty branches, it may only reach those instances
+// (intercepts before the target instance authenticates, so keyless target instances cannot be bypassed)
     if (req._branchName) {
       const h = req.headers;
       const auth = h.authorization || '';
@@ -59,8 +59,8 @@ async function handleHttp(cfg, req, res) {
 
   if (cfg.cors && req.method === 'OPTIONS') { res.writeHead(204, corsHeaders()); return res.end(); }
 
-  // ===== 公开路由白名单(2026-10-27): 仅放行 /v1 /v1beta /auth /profile /admin(面板, webToken 鉴权) =====
-  // 其余一律 404: /health /status* /user /plugins /credits 等全部关闭, 需要时再加回
+// ===== Public route whitelist (2026-10-27): only /v1 /v1beta /auth /profile /admin pass (panel uses webToken auth) =====
+// Everything else 404s: /health /status* /user /plugins /credits are all closed; re-add when needed
   const allowed = p === '/v1' || p.startsWith('/v1/')
     || p === '/v1beta' || p.startsWith('/v1beta/')
     || p === '/auth' || p.startsWith('/auth/')
@@ -68,17 +68,17 @@ async function handleHttp(cfg, req, res) {
     || p === '/admin' || p.startsWith('/admin/');
   if (!allowed) return sendError('openai', res, 404, 'not found: ' + req.method + ' ' + p);
 
-  // ===== Web 管理面板 (/admin + /admin/api/*) =====
-  // /auth/* 里登录/注册是用户端接口, 必须留给下面的分支, 其余都归面板(HTML/CSS/JS/vendor 静态资源)
+// ===== Web admin panel (/admin + /admin/api/*) =====
+// /auth/* login/register are user-side endpoints and must be left to the branches below; everything else belongs to the panel (HTML/CSS/JS/vendor static)
   const isAuthFile = p.startsWith('/auth/') && p !== '/auth/login' && p !== '/auth/register';
   if (p === '/admin' || p === '/admin/' || p === '/admin/ball' || p.startsWith('/admin/api/')
       || p === '/auth' || p === '/auth/' || isAuthFile
       || /^\/auth\/[A-Za-z0-9_-]{16,128}\/[A-Za-z0-9_-]{8,256}\/?$/.test(p)) {
-    // 管理页面不需要收集 body 前置处理, handleAdmin 内部自行处理
-    // 但 POST/DELETE 的 body 需要先收集
+    // admin pages need no upfront body collection; handleAdmin handles it internally
+// but POST/DELETE bodies must be collected first
     if (req.method === 'POST' || req.method === 'DELETE') {
       let adminBody = '';
-      const u8 = utf8();   /* ★跨分块安全解码(2026-09-18) */
+const u8 = utf8();   /* *chunk-safe decoding (2026-09-18) */
       req.on('data', c => { adminBody += u8(c); if (adminBody.length > 4 * 1024 * 1024) req.destroy(); });
       req.on('end', () => { handleAdmin(cfg, req, res, u, p, adminBody).catch(e => jsonErr(res, e)); });
       req.on('error', () => {});
@@ -87,10 +87,10 @@ async function handleHttp(cfg, req, res) {
     }
     return;
   }
-  // ===== 账密登录(用户端): POST /auth/login {uid, password} → 返回该用户卡密+余额 =====
+// ===== Credential login (user side): POST /auth/login {uid, password} -> that user's key cards + balances =====
   if (req.method === 'POST' && p === '/auth/login') {
     let body = '';
-    const u8 = utf8();   /* ★跨分块安全解码(2026-09-18) */
+const u8 = utf8();   /* *chunk-safe decoding (2026-09-18) */
     req.on('data', c => { body += u8(c); if (body.length > 65536) req.destroy(); });
     req.on('end', () => {
       try {
@@ -111,10 +111,10 @@ async function handleHttp(cfg, req, res) {
     return;
   }
 
-  // ===== 注册(用户端, 管理端可开关): POST /auth/register {uid, password, captchaToken?, email?} =====
+// ===== Registration (user side; admin-gated): POST /auth/register {uid, password, captchaToken?, email?} =====
   if (req.method === 'POST' && p === '/auth/register') {
     let body = '';
-    const u8 = utf8();   /* ★跨分块安全解码(2026-09-18) */
+const u8 = utf8();   /* *chunk-safe decoding (2026-09-18) */
     req.on('data', c => { body += u8(c); if (body.length > 65536) req.destroy(); });
     req.on('end', async () => {
       try {
@@ -126,7 +126,7 @@ async function handleHttp(cfg, req, res) {
         if (!/^[A-Za-z0-9_-]{3,32}$/.test(uid)) return sendError('openai', res, 400, 'UID 需 3-32 位字母/数字/下划线');
         if (pw.length < (reg.minPasswordLen || 8)) return sendError('openai', res, 400, '密码至少 ' + (reg.minPasswordLen || 8) + ' 位');
         if ((cfg.users || []).some(x => x.uid === uid)) return sendError('openai', res, 409, 'UID 已被注册');
-        // 人机验证(turnstile)
+// CAPTCHA (turnstile)
         if (reg.captchaProvider === 'turnstile') {
           if (!reg.captchaSecret) return sendError('openai', res, 500, '管理端未配置 captchaSecret');
           const token = String(j.captchaToken || '');
@@ -148,16 +148,16 @@ async function handleHttp(cfg, req, res) {
           });
           if (!okT) return sendError('openai', res, 403, '人机验证失败');
         }
-        // 邮箱字段(验证逻辑: 开 emailVerify 时先存 unverified, 简化版先只记录)
+// Email field (validation: stored as unverified when emailVerify is on; the simplified version only records it)
         const email = String(j.email || '').trim();
         if (reg.emailVerify && reg.emailVerify.enable && !email) return sendError('openai', res, 400, '需要邮箱');
-        // 创建用户
+// Create a user
         cfg.users = cfg.users || [];
         cfg.users.push({
           uid, name: uid, passwordHash: hashPassword(pw),
           note: email ? ('email:' + email) : '', createdAt: new Date().toISOString(),
         });
-        // 自动发一张默认卡
+// Auto-issue a default card
         cfg.apiKeys = cfg.apiKeys || [];
         const nk = {
           key: genApiKey(cfg.keyLength), name: uid, enable: true,
@@ -175,7 +175,7 @@ async function handleHttp(cfg, req, res) {
     return;
   }
 
-  // ===== 用户端自助(主卡认证): /auth/me /auth/profile /auth/mykeys =====
+// ===== User self-service (primary card auth): /auth/me /auth/profile /auth/mykeys =====
   if (p === '/auth/me' && req.method === 'GET') {
     const authR = checkAuth(cfg, req, u.searchParams);
     if (!authR.ok) return sendError('openai', res, authR.status || 401, authR.error);
@@ -207,14 +207,14 @@ async function handleHttp(cfg, req, res) {
           persistRuntimeCfg(cfg);
         }
       }
-      // 卡的显示名也可改
+// A card's display name is editable too
       if (j.cardName !== undefined) { uk.name = String(j.cardName).slice(0, 64); persistRuntimeCfg(cfg); }
       res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders() });
       res.end(JSON.stringify({ ok: true }));
     });
     return;
   }
-  // 我的卡密: GET列表 / POST新建子卡 / DELETE删子卡 / POST update改子卡
+  // my cards: GET list / POST create sub-card / DELETE sub-card / POST update sub-card
   if (p === '/auth/mykeys') {
     const authR = checkAuth(cfg, req, u.searchParams);
     if (!authR.ok) return sendError('openai', res, authR.status || 401, authR.error);
@@ -227,14 +227,14 @@ async function handleHttp(cfg, req, res) {
     }
     if (req.method === 'POST') {
       collectJson(req, res, (j) => {
-        // 子卡: 父卡的子集(模型/分支白名单不能超过父卡; 额度不能超过父卡剩余)
+// Sub-card: a subset of its parent (model/branch whitelists cannot exceed the parent; quota cannot exceed the parent's remainder)
         const parentModels = uk.models || [], parentBranches = uk.branches || [];
         const models = Array.isArray(j.models) ? j.models.map(String).filter(m => !parentModels.length || parentModels.includes(m)) : [];
         const branches = Array.isArray(j.branches) ? j.branches.map(String).filter(b => !parentBranches.length || parentBranches.includes(b)) : [];
         let quota = Math.max(0, Number(j.quotaTokens) || 0);
         if (uk.quotaTokens > 0) {
           const remaining = uk.quotaTokens - (uk.usedTokens || 0);
-          if (quota <= 0 || quota > remaining) quota = remaining; // 不超过父卡剩余
+if (quota <= 0 || quota > remaining) quota = remaining; // never exceed the parent's remainder
         }
         const nk = {
           key: genApiKey(cfg.keyLength), name: String(j.name || uk.name || '子卡').slice(0, 64),
@@ -296,7 +296,7 @@ async function handleHttp(cfg, req, res) {
     return;
   }
 
-  // ===== 可访问分支列表(卡密认证, 按 branches 过滤) =====
+// ===== Accessible branch list (card auth, filtered by branches) =====
   if (p === '/v1/branches' && req.method === 'GET') {
     const authR = checkAuth(cfg, req, u.searchParams);
     if (!authR.ok) return sendError('openai', res, authR.status || 401, authR.error);
@@ -304,7 +304,7 @@ async function handleHttp(cfg, req, res) {
     return res.end(JSON.stringify({ branches: availableBranches(cfg, authR.userKey) }));
   }
 
-  // ===== 注册开关状态(用户端查询, 决定是否显示注册入口) =====
+// ===== Registration switch state (user-side query; decides whether to show the sign-up entry) =====
   if (req.method === 'GET' && p === '/auth/register') {
     const reg = cfg.registration || {};
     res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders() });
@@ -325,10 +325,10 @@ async function handleHttp(cfg, req, res) {
     return res.end(JSON.stringify(modelsResponse(cfg, fmt)));
   }
 
-  // ===== 上游余额透传(OpenAI 语义, 第三方客户端可直接识别) =====
-  //   GET /v1/dashboard/billing/credit_grants → credit_summary(total_available=上游余额)
-  //   GET /v1/dashboard/billing/subscription  → billing_subscription(hard/soft_limit_usd=上游余额)
-  //   ?ch=<渠道名> 指定渠道(不传=默认渠道); 卡密只能用自己 channels 白名单里的渠道指定
+// ===== Upstream balance passthrough (OpenAI semantics, recognizable by third-party clients) =====
+//   GET /v1/dashboard/billing/credit_grants -> credit_summary (total_available = upstream balance)
+//   GET /v1/dashboard/billing/subscription  -> billing_subscription (hard/soft_limit_usd = upstream balance)
+//   ?ch=<channel> picks a channel (default when omitted); key cards may only pick channels from their own channels whitelist
   if (req.method === 'GET' && BILLING_PATHS.has(p)) {
     const t0 = Date.now();
     const authR = checkAuth(cfg, req, u.searchParams);
@@ -344,7 +344,7 @@ async function handleHttp(cfg, req, res) {
       const allowed = !!authR.admin || !cardWl || cardWl.includes(want);
       if (!allowed) return sendError('openai', res, 403, '此卡密不允许查询渠道余额: ' + want);
     } else if (GENERIC_BALANCE_PATHS.has(p)) {
-      // 多渠道聚合(通用余额别名): 全部「可见且有余额目标」渠道并发查 → 按汇率折算到 base 币种求和
+// Multi-channel aggregation (generic balance alias): concurrently query every visible channel with a balance target -> convert to base currency and sum
       return balanceAggregate(cfg, uk, (agg) => {
         if (!agg.ok) return sendError('openai', res, agg.status || 503, agg.error);
         return sendJson(res, 200, {
@@ -365,7 +365,7 @@ async function handleHttp(cfg, req, res) {
       const num = Number(r.balance);
       const avail = isFinite(num) ? num : null;
       const common = { channel: ch.name, balance: r.balance, unit: r.unit || '', upstream_url: r.url };
-      // 通用余额形态: 兼容各家客户端「余额获取路径 + JSON 键」配置(键名 total_remain / balance / remaining / total_available 都给)
+// Generic balance shape: compatible with any client's "balance path + JSON key" config (provides total_remain / balance / remaining / total_available)
       if (GENERIC_BALANCE_PATHS.has(p)) {
         const generic = { total_remain: avail, balance: r.balance, total_available: avail, total_granted: avail, total_used: 0, remaining: avail, unit: r.unit || '', channel: ch.name };
         return sendJson(res, 200, { ...generic, data: { ...generic, upstream_url: r.url } });
@@ -387,8 +387,8 @@ async function handleHttp(cfg, req, res) {
     return;
   }
 
-  // 兜底透传路径判定: 任意 /v1/* 且不属于转换中枢接管的入口 → 原样转发到 openai 渠道
-  // (2026-10-16 新增: 默认开启, 覆盖 files/batches/vector_stores/images/embeddings/audio/completions/moderations 等)
+// Fallback passthrough decision: any /v1/* not owned by a conversion entry -> forwards verbatim to the openai channel
+// (added 2026-10-16: on by default; covers files/batches/vector_stores/images/embeddings/audio/completions/moderations etc.)
   const isConvEndpoint = (q) => (
     q === '/v1/chat/completions' || q === '/chat/completions' ||
     q === '/v1/messages' || q === '/messages' ||
@@ -396,7 +396,7 @@ async function handleHttp(cfg, req, res) {
   );
   const isPassthru = openaiExtrasOn(cfg) && p.startsWith('/v1/') && !isConvEndpoint(p);
 
-  // 未知非 POST 端点: 若是「看起来像查余额/用量」的路径, 记一行日志(方便将来补齐别名); 透传路径放行
+  // unknown non-POST endpoint: if the path looks like a balance/usage query, log one line (to add aliases later); passthrough paths go through
   if (req.method !== 'POST' && !isPassthru) {
     if (/balance|quota|credit|billing|usage|wallet|cost|spend|money/i.test(p)) {
       log('[balance] 未命中的余额系路径:', req.method, p, '(可补进 BILLING_PATHS 别名)');
@@ -423,8 +423,8 @@ async function handleHttp(cfg, req, res) {
       if (m[2] === 'countTokens') return sendError('gemini', res, 501, 'countTokens is not supported by this gateway');
     }
   }
-  // OpenAI 兜底透传: 任意 /v1/* (未命中上面的转换入口) 原样转发到 openai 渠道
-  // 保留方法(GET/POST/PUT/PATCH/DELETE)、query、multipart、二进制/流式
+// OpenAI fallback passthrough: any /v1/* (not handled by the conversion entries above) forwards verbatim to the openai channel
+// Preserves method (GET/POST/PUT/PATCH/DELETE), query, multipart, binary/streaming
   if (!clientFormat && isPassthru) {
     const authR = checkAuth(cfg, req, u.searchParams);
     if (!authR.ok) return sendError('openai', res, authR.status || 401, authR.error || 'invalid key');
@@ -480,7 +480,7 @@ function startServer(cfg, opts = {}) {
   admin.setDir(cfgDir);
   if (rt.PLUGINS) admin.setPlugins(rt.PLUGINS);
 
-  // ===== 多实例模式: 单进程托管目录下全部 config*.json, 主端口路径路由 + 实例原端口兼容监听 =====
+// ===== Multi-instance mode: one process hosts all config*.json in the dir; main-port path routing + compatibility listening on instance ports =====
   if (opts.multi) {
     const pool = createInstancePool(cfgDir);
     state.CUR_POOL = pool;
@@ -501,7 +501,7 @@ function startServer(cfg, opts = {}) {
     return Promise.resolve({ pool, port: pool.mainPort, host: pool.mainHost, cfg });
   }
 
-  // ===== 单实例模式(独立运行/测试) =====
+// ===== Single-instance mode (standalone run / testing) =====
   admin.setUpstreamModels(ch => fetchUpstreamModels(cfg, ch));
   admin.setSyncFn(() => syncModels(cfg));
   admin.setBalanceFn((c, ch, cb) => fetchChannelBalance(c, ch, cb));
@@ -510,7 +510,7 @@ function startServer(cfg, opts = {}) {
   setupProbe(cfg);
   if (rt.PLUGINS) { try { rt.PLUGINS.activateInstance(cfg._name || 'default', cfg, makeGatewayApi(cfg)); } catch (e) { logErr('[plugins] 激活失败: ' + e.message); } }
   cfg._stats = { startedAt: new Date().toISOString(), requests: 0, errors: 0, retries: 0, byChannel: {}, recent: [] };
-  try { // 冷启动恢复(单实例模式)
+try { // cold-start restore (single-instance mode)
     const sf = statsFlushFile(cfg);
     if (fs.existsSync(sf)) {
       const j = JSON.parse(fs.readFileSync(sf, 'utf8'));
@@ -530,7 +530,7 @@ function startServer(cfg, opts = {}) {
   const host = opts.host || cfg.listen.host;
   const port = opts.port != null ? opts.port : cfg.listen.port;
 
-  // 检查 TLS 证书是否可用
+  // check whether a TLS certificate is usable
   let tlsCfg = null;
   if (cfg.tls && cfg.tls.enable) {
     const certPath = path.isAbsolute(cfg.tls.cert) ? cfg.tls.cert : path.join(path.dirname(cfg._configFile || process.cwd()), cfg.tls.cert);
@@ -551,7 +551,7 @@ function startServer(cfg, opts = {}) {
   }
 
   if (!tlsCfg) {
-    // 纯 HTTP 模式
+    // pure HTTP mode
     const server = http.createServer(handler);
     return new Promise((resolve, reject) => {
       server.once('error', reject);
@@ -566,7 +566,7 @@ function startServer(cfg, opts = {}) {
     });
   }
 
-  // TLS 模式: 如果 tls.port 独立指定 → HTTP + HTTPS 双开; 否则纯 HTTPS
+// TLS mode: a separate tls.port -> HTTP + HTTPS dual-stack; otherwise pure HTTPS
   const httpsPort = tlsCfg.port != null ? tlsCfg.port : port;
   const dualMode = tlsCfg.port != null && tlsCfg.port !== port;
 
@@ -590,7 +590,7 @@ function startServer(cfg, opts = {}) {
     };
     const onErr = (e) => reject(e);
 
-    // HTTPS 服务器
+// HTTPS server
     const httpsServer = https.createServer({ cert: tlsCfg.cert, key: tlsCfg.key }, handler);
     httpsServer.once('error', onErr);
     httpsServer.on('tlsClientError', (err) => log('[tls] 握手失败 :' + httpsPort + ' ' + (err.code || err.reason || '') + ' ' + String(err.message || '').slice(0, 120)));
@@ -599,7 +599,7 @@ function startServer(cfg, opts = {}) {
       onReady(httpsServer, httpsServer.address().port, 'https');
     });
 
-    // HTTP 服务器(双开模式)
+// HTTP server (dual-stack mode)
     if (dualMode) {
       const httpServer = http.createServer(handler);
       httpServer.once('error', onErr);

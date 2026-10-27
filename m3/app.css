@@ -1,6 +1,6 @@
-/* ============ Material Design 3 设计令牌 ============
-   Material Web 组件原生读取 --md-sys-color-* / --md-sys-typescale-* / --md-sys-shape-*,
-   所以这里定义的令牌会同时作用于组件与本页自定义结构, 保证视觉一致。 */
+/* ============ Material Design 3 design tokens ============
+Material Web components natively read --md-sys-color-* / --md-sys-typescale-* / --md-sys-shape-*,
+so tokens defined here style both the components and this page's custom structure, keeping the look consistent. */
 :root{
   /* === Material Design 3 Color Tokens (Dark) === */
   --md-sys-color-primary:#D0BCFF; --md-sys-color-on-primary:#381E72;
@@ -31,12 +31,12 @@
   --md-sys-color-tertiary-fixed-dim:#EFB8C8; --md-sys-color-on-tertiary-fixed-variant:#633B48;
   --md-sys-color-error-fixed:#F9DEDC; --md-sys-color-on-error-fixed:#410E0B;
   --md-sys-color-error-fixed-dim:#F2B8B5; --md-sys-color-on-error-fixed-variant:#8B1A1A;
-  
+
   /* === Typography Tokens ===
-     注意: Material Web 组件读取的是「分量」令牌
+Note: Material Web components read the component tokens
      (--md-sys-typescale-<role>-size / -weight / -line-height / -font),
-     只定义 font 简写组件读不到, 会退回内置默认(按钮 40px 高 / 14px 字 / Roboto),
-     与本页 12~13px 的说明文字比例失调。故两套都写: 简写给本页自定义结构, 分量给组件。 */
+defining only the font shorthand is invisible to components; they fall back to built-ins (40px buttons / 14px text / Roboto),
+out of proportion with this page's 12-13px explanatory text. So both sets are defined: shorthand for this page's custom structure, components for the library. */
   --md-ref-typeface-plain:system-ui,-apple-system,'Segoe UI',Roboto,'Noto Sans SC',sans-serif;
   --md-ref-typeface-brand:system-ui,-apple-system,'Segoe UI',Roboto,'Noto Sans SC',sans-serif;
   --md-ref-typeface-weight-regular:400;
@@ -55,7 +55,7 @@
   --md-sys-typescale-label-large:500 14px/20px sans-serif;
   --md-sys-typescale-label-medium:500 12px/16px sans-serif;
   --md-sys-typescale-label-small:500 11px/16px sans-serif;
-  /* 分量令牌 (组件实际读取) */
+/* Component tokens (what the components actually read) */
   --md-sys-typescale-title-large-font:var(--md-ref-typeface-plain);      --md-sys-typescale-title-large-size:22px;      --md-sys-typescale-title-large-line-height:28px;      --md-sys-typescale-title-large-weight:400;
   --md-sys-typescale-title-medium-font:var(--md-ref-typeface-plain);     --md-sys-typescale-title-medium-size:16px;     --md-sys-typescale-title-medium-line-height:24px;     --md-sys-typescale-title-medium-weight:500;
   --md-sys-typescale-title-small-font:var(--md-ref-typeface-plain);      --md-sys-typescale-title-small-size:14px;      --md-sys-typescale-title-small-line-height:20px;      --md-sys-typescale-title-small-weight:500;
@@ -65,13 +65,13 @@
   --md-sys-typescale-label-large-font:var(--md-ref-typeface-plain);      --md-sys-typescale-label-large-size:14px;      --md-sys-typescale-label-large-line-height:20px;      --md-sys-typescale-label-large-weight:500;
   --md-sys-typescale-label-medium-font:var(--md-ref-typeface-plain);     --md-sys-typescale-label-medium-size:12px;     --md-sys-typescale-label-medium-line-height:16px;     --md-sys-typescale-label-medium-weight:500;
   --md-sys-typescale-label-small-font:var(--md-ref-typeface-plain);      --md-sys-typescale-label-small-size:11px;      --md-sys-typescale-label-small-line-height:16px;      --md-sys-typescale-label-small-weight:500;
-  /* headline-small: md-dialog 标题读取(缺 -font 会退回 Roboto, 中文标题字形与全站不一致) */
+/* headline-small: md-dialog title reads this (without the -font token it falls back to Roboto, making CJK title glyphs inconsistent with the rest) */
   --md-sys-typescale-headline-small-font:var(--md-ref-typeface-brand);   --md-sys-typescale-headline-small-size:24px;   --md-sys-typescale-headline-small-line-height:32px;  --md-sys-typescale-headline-small-weight:400;
-  /* md-icon: 默认字体族是 Material Symbols Outlined(CDN 外链, 本机不可达)。
-     改为跟随页面字体, 图标一律用 emoji 字形, 零外部依赖。 */
+/* md-icon: the default font family is Material Symbols Outlined (a CDN link, unreachable offline).
+switched to following the page font, icons always use emoji glyphs, zero external dependencies. */
   --md-icon-font:'Material Symbols Outlined';
   --md-icon-size:22px;
-  
+
   /* === Shape Tokens === */
   --md-sys-shape-corner-none:0px;
   --md-sys-shape-corner-tiny:2px;
@@ -80,16 +80,16 @@
   --md-sys-shape-corner-large:12px;
   --md-sys-shape-corner-extra-large:16px;
   --md-sys-shape-corner-full:9999px;
-  
+
   /* === Elevation Tokens === */
   --md-sys-elevation-level1:0 1px 3px 1px rgba(0,0,0,.15),0 1px 2px rgba(0,0,0,.3);
   --md-sys-elevation-level2:0 2px 6px 2px rgba(0,0,0,.15),0 1px 2px rgba(0,0,0,.3);
   --md-sys-elevation-level3:0 4px 8px 3px rgba(0,0,0,.15),0 1px 3px rgba(0,0,0,.3);
-  
-  /* 暗色专属补充: body 背景用的 surface-dim 必须在暗色下定义,
-     否则 body{background:var(--md-sys-color-surface-dim)} 整条声明失效 */
+
+/* Dark-mode addition: surface-dim used for the body background must be defined in dark scheme,
+otherwise the whole body{background:var(--md-sys-color-surface-dim)} declaration stops working */
   --md-sys-color-surface-dim:#141218; --md-sys-color-surface-bright:#3B383E;
-  /* 卡片圆角加深(覆盖上面的基础值) */
+/* Deeper card radius (overrides the base value above) */
   --md-sys-shape-corner-medium:12px; --md-sys-shape-corner-large:16px;
 
   color-scheme:dark;
@@ -121,12 +121,12 @@ body{
 }
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 
-/* ============ 兼容性提示条 ============ */
+/* ============ Compatibility notice bar ============ */
 .compat-bar{position:fixed;top:0;left:0;right:0;z-index:9999;padding:10px 16px;font-size:13px;
   background:var(--md-sys-color-error-container);color:var(--md-sys-color-on-error-container);display:none}
 .compat-bar.show{display:block}
 
-/* ============ 桌面侧栏 ============ */
+/* ============ Desktop sidebar ============ */
 .rail{display:none;width:264px;flex-shrink:0;flex-direction:column;gap:4px;padding:12px 8px;
   background:var(--md-sys-color-surface-container);border-right:1px solid var(--md-sys-color-outline-variant);overflow-y:auto}
 .rail-brand{display:flex;align-items:center;gap:12px;padding:12px 16px 16px}
@@ -143,13 +143,13 @@ body{
 .rail-item .msym{font-size:22px;width:24px;text-align:center;flex:none}
 .rail-item[active]{background:var(--md-sys-color-secondary-container);color:var(--md-sys-color-on-secondary-container);font-weight:600}
 
-/* ============ 主区 ============ */
+/* ============ Main area ============ */
 .shell{flex:1;display:flex;flex-direction:column;min-width:0}
 .topbar{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;
   padding:10px 16px;background:var(--md-sys-color-surface);border-bottom:1px solid var(--md-sys-color-outline-variant);flex-shrink:0}
 .topbar h1{font-size:20px;font-weight:500;letter-spacing:.1px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .topbar .tools{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
-/* 顶栏控件紧凑化: 选择器去浮标签缩高度、芯片图标不贴字、刷新按钮同高 */
+/* Compact top-bar controls: selectors lose the floating label to shrink height, chip icons get breathing room, refresh button matches height */
 #topInst{--md-outlined-field-top-space:8px;--md-outlined-field-bottom-space:8px;
   --md-sys-typescale-body-large-size:14px;--md-sys-typescale-body-large-line-height:20px;
   width:118px;min-width:118px;max-width:118px}
@@ -159,10 +159,10 @@ body{
 .main{flex:1;display:flex;flex-direction:column;overflow-y:auto;-webkit-overflow-scrolling:touch;
   overscroll-behavior:contain;padding:20px;padding-bottom:calc(20px + env(safe-area-inset-bottom))}
 .page{flex:0 0 auto}
-/* 页面切换动画 */
+/* Page transition animations */
 .page.anim-in{animation:pageIn .28s cubic-bezier(.2,0,0,1)}
 @keyframes pageIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-/* 页面左右滑: 按导航顺序判断方向, 向后=从右进, 向前=从左进 */
+/* Horizontal page slides: direction decided by nav order; backward = enters from the right, forward = from the left */
 .page.anim-slide-r{animation:pageSlideR .26s cubic-bezier(.2,0,0,1)}
 .page.anim-slide-l{animation:pageSlideL .26s cubic-bezier(.2,0,0,1)}
 @keyframes pageSlideR{from{opacity:0;transform:translateX(30px)}to{opacity:1;transform:translateX(0)}}
@@ -170,16 +170,16 @@ body{
 @media(prefers-reduced-motion:reduce){.page.anim-in,.page.anim-slide-r,.page.anim-slide-l{animation:none}}
 @media(min-width:840px){ .rail{display:flex} .navbar{display:none!important} .main{padding:24px 28px} }
 @media(max-width:839px){ .main{padding:16px;padding-bottom:calc(96px + env(safe-area-inset-bottom))} }
-/* 宽屏/大屏: 内容限宽居中, 不摊满整个显示器 */
+/* Wide/large screens: cap content width and center instead of filling the monitor */
 @media(min-width:1200px){ .page{max-width:1080px;width:100%;margin:0 auto} .main{padding:28px 32px} }
 @media(min-width:1800px){ .page{max-width:1280px} }
 
-/* ============ 移动底部导航 ============ */
+/* ============ Mobile bottom navigation ============ */
 .navbar{position:fixed;bottom:0;left:0;right:0;z-index:100;padding-bottom:env(safe-area-inset-bottom)}
 md-navigation-bar.navbar{background:var(--md-sys-color-surface-container);border-top:1px solid var(--md-sys-color-outline-variant)}
 
-/* ============ Material Web 未提供的结构件 ============ */
-/* 统计卡 */
+/* ============ Structural parts Material Web does not provide ============ */
+/* Stat cards */
 .stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px}
 .stat-box{background:var(--md-sys-color-surface-container);border-radius:var(--md-sys-shape-corner-large);
   padding:16px;border:1px solid var(--md-sys-color-outline-variant);min-width:0}
@@ -188,7 +188,7 @@ md-navigation-bar.navbar{background:var(--md-sys-color-surface-container);border
 .stat-box .lbl{font-size:12px;color:var(--md-sys-color-on-surface-variant);margin-top:2px}
 @media(max-width:600px){ .stat-row{grid-template-columns:repeat(2,1fr)} .stat-box .num{font-size:22px} }
 
-/* 表格: Material Web 无表格组件, 保留手写。定宽 + 截断, 机制上禁止横向拖动 */
+/* Tables: Material Web has no table component; hand-written stays. Fixed widths + truncation; horizontal scrolling is impossible by design */
 .tbl-wrap{border-radius:var(--md-sys-shape-corner-medium);border:1px solid var(--md-sys-color-outline-variant);overflow:hidden}
 table.tbl{width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px}
 .tbl th,.tbl td{padding:12px 16px;text-align:left;border-bottom:1px solid var(--md-sys-color-outline-variant);
@@ -204,20 +204,20 @@ table.tbl{width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px}
   .tbl{font-size:12px}
   .tbl .mono{font-size:11px}
   .row-acts{flex-direction:row;gap:6px;flex-wrap:nowrap;justify-content:flex-end}
-  /* 提供商表(6列)手机上收起 类型/代理/模型, 只留 名称/BaseURL/操作 */
+/* Provider table (6 cols): on phones collapse Type/Proxy/Models, keep Name/BaseURL/Actions */
   #pv-table th:nth-child(2),#pv-table td:nth-child(2),
   #pv-table th:nth-child(4),#pv-table td:nth-child(4),
   #pv-table th:nth-child(5),#pv-table td:nth-child(5){display:none}
-  /* !important: th 上有内联宽度, 内联样式优先级高于普通 CSS, 不加会被忽略 */
+/* !important: the th has inline width; inline styles beat normal CSS, so without this it is ignored */
   #pv-table th:nth-child(1),#pv-table td:nth-child(1){width:44%!important}
   #pv-table th:nth-child(3),#pv-table td:nth-child(3){width:26%!important}
   #pv-table th:nth-child(6),#pv-table td:nth-child(6){width:30%!important}
-  /* 代理表: 收窄前三列, 给操作列留足空间 */
+/* Proxy table: narrow the first three columns to leave room for actions */
   #px-table th:nth-child(1),#px-table td:nth-child(1){width:18%!important}
   #px-table th:nth-child(2),#px-table td:nth-child(2){width:12%!important}
   #px-table th:nth-child(3),#px-table td:nth-child(3){width:40%!important}
   #px-table th:nth-child(4),#px-table td:nth-child(4){width:30%!important}
-  /* 表格内操作按钮紧凑化: 默认 min-width:64px 的按钮在窄列里放不下会被裁 */
+/* Compact table action buttons: the default min-width:64px overflows narrow columns and gets clipped */
   .tbl .row-acts md-outlined-button,.tbl .row-acts md-text-button{
     min-width:0!important;padding:0 8px!important;font-size:12px!important;
     --md-outlined-button-container-height:32px;--md-text-button-container-height:32px;
@@ -226,12 +226,12 @@ table.tbl{width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px}
     --md-sys-typescale-label-large-size:12px;--md-sys-typescale-label-large-line-height:16px}
   .tbl .row-acts{gap:4px}
   #ov-ch-table th:nth-child(2),#ov-ch-table td:nth-child(2){display:none}
-  /* 请求记录表: 手机隐藏日期只留时分秒, 状态码紧贴勾叉 */
+/* Request table: hide the date on phones (time only); status code sits tight against the check/cross */
   .rq-date{display:none}
   #rq-table th,#rq-table td{padding:8px 6px}
 }
 
-/* 日志 */
+/* Logs */
 .log-box{background:var(--md-sys-color-surface-container-lowest);border:1px solid var(--md-sys-color-outline-variant);
   border-radius:var(--md-sys-shape-corner-large);padding:16px;font-family:ui-monospace,Menlo,Consolas,monospace;
   font-size:12px;max-height:400px;overflow-y:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal;
@@ -241,7 +241,7 @@ table.tbl{width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px}
 #page-logs .card-head{flex-shrink:0}
 #lg-box{flex:1 1 auto;min-height:0;max-height:none;border:none;background:transparent;padding:0 4px}
 
-/* 聊天 */
+/* Chat */
 #page-chat{position:relative;flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
 #page-chat md-filled-card{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden}
 #page-chat .card-head{flex-shrink:0}
@@ -269,7 +269,7 @@ table.tbl{width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px}
 .chat-input-row md-outlined-text-field{flex:1 1 auto;min-width:0}
 @media(max-width:600px){ .chat-msgs{padding:12px 0} .chat-input-row{padding:10px 0 0} }
 
-/* 卡片内通用 */
+/* Shared inside cards */
 .card-head{display:flex;align-items:center;justify-content:space-between;gap:8px 12px;flex-wrap:wrap;margin-bottom:12px}
 .card-title{font-size:16px;font-weight:500}
 .card-sub{font-size:13px;color:var(--md-sys-color-on-surface-variant)}
@@ -307,15 +307,15 @@ md-list-item{--md-list-container-color:transparent}
 .grid-form > *{flex:1 1 180px;min-width:0}
 .hidden{display:none!important}
 
-/* Snackbar (Material Web v2 已移除 md-snackbar, 保留原生实现) */
+/* Snackbar (Material Web v2 removed md-snackbar; keeping a native implementation) */
 #snackbar{position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom,0px));transform:translateX(-50%) translateY(20px);
   background:var(--md-sys-color-inverse-surface);color:var(--md-sys-color-inverse-on-surface);
   padding:14px 24px;border-radius:8px;font-size:14px;font-weight:500;box-shadow:0 4px 12px rgba(0,0,0,.4);
   z-index:6000;opacity:0;transition:opacity .3s,transform .3s;max-width:90vw;pointer-events:none}
 #snackbar.show{opacity:1;transform:translateX(-50%) translateY(0)}
 #snackbar.err{background:var(--md-sys-color-error-container);color:var(--md-sys-color-on-error-container)}
-/* ============ Dialog 样式 ============ */
-/* ============ 对话框(纯 HTML/CSS, 不依赖 shadow DOM) ============ */
+/* ============ Dialog styles ============ */
+/* ============ Dialogs (plain HTML/CSS, no shadow DOM dependency) ============ */
 .dlg-overlay{position:fixed;inset:0;z-index:5000;display:flex;align-items:center;justify-content:center;
   background:rgba(0,0,0,.5);backdrop-filter:blur(2px);padding:16px;
   animation:dlgFade .18s ease-out}
@@ -334,7 +334,7 @@ md-list-item{--md-list-container-color:transparent}
 .dlg-x:hover{background:var(--md-sys-color-surface-container-highest)}
 .dlg-body{padding:16px 24px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:14px}
 .dlg-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 24px 20px;flex-shrink:0}
-/* 纯 HTML 按钮(对话框内用) */
+/* Plain HTML buttons (used inside dialogs) */
 .pbtn{border:none;cursor:pointer;font-size:13px;font-weight:500;border-radius:20px;
   height:34px;padding:0 20px;display:inline-flex;align-items:center;justify-content:center;gap:6px;
   transition:background .15s,box-shadow .15s;font-family:inherit}
@@ -343,7 +343,7 @@ md-list-item{--md-list-container-color:transparent}
 .pbtn-text{background:transparent;color:var(--md-sys-color-primary)}
 .pbtn-text:hover{background:var(--md-sys-color-surface-container-highest)}
 .pbtn[hidden]{display:none}
-/* 模型改名标签编辑器 */
+/* Model rename tag editor */
 .mm-row{display:grid;grid-template-columns:1fr 1fr 48px;gap:8px;align-items:stretch}
 .mm-row md-outlined-text-field{width:100%;--md-outlined-field-top-space:12px;--md-outlined-field-bottom-space:12px;--md-sys-typescale-body-large-size:13px}
 .mm-add-btn{width:48px;border:none;border-radius:12px;cursor:pointer;background:var(--md-sys-color-primary);color:var(--md-sys-color-on-primary);display:flex;align-items:center;justify-content:center}
@@ -358,10 +358,10 @@ md-list-item{--md-list-container-color:transparent}
   width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;padding:0;flex-shrink:0}
 .mm-x:hover{color:var(--md-sys-color-error);background:var(--md-sys-color-error-container)}
 
-/* ============ 组件尺寸与页面文字比例协调 ============
-   Material Web 按钮默认 40px 高 / 14px 字, 而本页表格与列表正文是 12~13px,
-   视觉上按钮明显偏大。这里统一到 MD3「小按钮」档(32px / 13px), 并让文字层级明确。 */
-/* 按钮尺寸: 不压缩高度(避免文字溢出), 只控字号+加水平内边距让文字有呼吸空间 */
+/* ============ Keep component sizing in proportion with page text ============
+Material Web buttons default to 40px tall / 14px text, while this page's tables and list bodies are 12-13px,
+so buttons look visibly oversized. This aligns everything to the MD3 "small button" tier (32px / 13px) with clear text hierarchy. */
+/* Button sizing: do not compress height (avoid text overflow); control font size + horizontal padding instead */
 md-text-button,md-outlined-button,md-filled-button,md-filled-tonal-button{min-width:64px!important;
   border-radius:16px!important;padding:0 16px!important;
   --md-text-button-container-shape:16px;--md-outlined-button-container-shape:16px;
@@ -384,14 +384,14 @@ md-list-item         {--md-list-item-label-text-size:14px;--md-list-item-label-t
                       --md-list-item-one-line-container-height:56px;--md-list-item-two-line-container-height:64px}
 md-navigation-bar    {--md-navigation-bar-container-height:64px;--md-navigation-bar-icon-size:22px;
                       --md-navigation-bar-label-text-size:12px;--md-navigation-bar-label-text-line-height:16px}
-/* emoji 图标: md-icon 默认按 Material Symbols 字体渲染(外链不可达), 改用系统字体并允许 emoji 着色 */
-/* Material Symbols Outlined: 本地字体(/auth/vendor/), 零 CDN 依赖 */
+/* Emoji icons: md-icon renders via the Material Symbols font by default (external font unreachable); switch to the system font and allow colored emoji */
+/* Material Symbols Outlined: local font (/auth/vendor/), zero CDN dependency */
 @font-face{
   font-family:'Material Symbols Outlined';
   font-style:normal;font-weight:400;
   src:url('/auth/vendor/material-symbols-outlined.woff2') format('woff2');
   font-display:block}
-/* 非 md-icon 场景(logo/头像/tag 内小图标)通用词形图标类 */
+/* Word-form icon classes for non-md-icon cases (logo/avatar/small icons inside tags) */
 .msym{font-family:'Material Symbols Outlined';font-weight:normal;font-style:normal;
   display:inline-block;line-height:1;letter-spacing:normal;text-transform:none;white-space:nowrap;
   direction:ltr;font-feature-settings:'liga';-webkit-font-smoothing:antialiased;
@@ -403,14 +403,14 @@ md-icon{font-feature-settings:'liga';letter-spacing:normal;line-height:1;
   font-variation-settings:'FILL' 0,'wght' 400,'GRAD' 0,'opsz' 24}
 md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wght' 400,'GRAD' 0,'opsz' 24}
 
-/* ============ 补丁: 键盘可达性 / 手机底栏 / 弹窗内页面选择 ============ */
-/* 统一焦点环: 自绘按钮(侧栏/悬浮操作/页面网格)本身没有 focus 样式, 键盘操作时看不到焦点 */
+/* ============ Patches: keyboard accessibility / mobile bottom bar / in-dialog page picker ============ */
+/* Unified focus ring: custom-drawn buttons (sidebar/FAB/page grid) have no focus style of their own, so keyboard focus was invisible */
 .rail-item:focus-visible,.icon-act:focus-visible,.ov-nav-btn:focus-visible,.pbtn:focus-visible,
 .md-btn:focus-visible,.th-swatch:focus-visible{outline:2px solid var(--md-sys-color-primary);outline-offset:2px}
-/* 「全部页面」弹窗的九宫格(手机底栏第 6 项入口) */
+/* Nine-patch grid of the "All pages" dialog (entry: 6th item of the mobile bottom bar) */
 .vs-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 @media(max-width:400px){ .vs-grid{grid-template-columns:repeat(2,1fr)} }
-/* 手机: 弹窗接近全屏, 键盘弹起时正文区仍可滚动 */
+/* Mobile: dialog is nearly fullscreen; the body area stays scrollable when the keyboard is up */
 @media(max-width:600px){
   .dlg-overlay{padding:12px;align-items:flex-end}
   .dlg-box{width:100%;max-height:92dvh;border-radius:24px}
@@ -419,6 +419,6 @@ md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wg
   .dlg-foot{padding:8px 16px 16px}
 }
 
-/* ============ 统计图表(canvas) ============ */
+/* ============ Statistics charts (canvas) ============ */
 .chart-box{padding:8px 12px 4px}
 .chart-box canvas{display:block;width:100%;min-height:120px}

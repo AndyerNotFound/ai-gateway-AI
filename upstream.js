@@ -11,7 +11,7 @@ const zlib = require('zlib');
 const { logErr, VERSION, log } = require('./util');
 const { getAgents } = require('./proxy');
 
-// ================= 上游请求 / 思考链精简 / 余额透传 =================
+// ================= Upstream request / thinking-chain condensing / balance passthrough =================
 function truncateReasoning(text, maxChars) {
   if (!text) return '';
   const out = [];
@@ -27,7 +27,7 @@ function truncateReasoning(text, maxChars) {
   return out.join('\n');
 }
 
-// 规整 summarize 端点 URL 为完整 chat completions 路径(支持填 base / 带 /v1 / 完整路径)
+// Normalize the summarize endpoint URL into a full chat-completions path (accepts base / with /v1 / full path)
 function normalizeSummarizeUrl(baseUrl) {
   let u = String(baseUrl || '').trim().replace(/\/+$/, '');
   if (!u) return '';
@@ -36,16 +36,16 @@ function normalizeSummarizeUrl(baseUrl) {
   return u + '/v1/chat/completions';
 }
 
-// 调用一个 OpenAI 兼容端点做单轮文本生成(供 summarize 用); 返回文本或 null
+// Call an OpenAI-compatible endpoint for single-turn text generation (used by summarize); returns text or null
 function callUpstreamText(cfg, baseUrl, apiKey, model, prompt, timeoutMs) {
   return new Promise((resolve) => {
     const url = normalizeSummarizeUrl(baseUrl);
     if (!url || !model || !prompt) return resolve(null);
-    if (apiKey && !/^[\x09\x20-\x7e]*$/.test(apiKey)) return resolve(null); // 非 ASCII key 拒绝
+if (apiKey && !/^[\x09\x20-\x7e]*$/.test(apiKey)) return resolve(null); // reject non-ASCII keys
     const headers = { authorization: 'Bearer ' + (apiKey || '') };
     const bodyBuf = Buffer.from(JSON.stringify({ model, stream: false, messages: [{ role: 'user', content: prompt }] }));
     const sub = { ...cfg, responseTimeout: Math.min(timeoutMs || 30000, 60000) };
-    const tmpCh = { proxy: null, insecure: false }; // 直连, 不走渠道代理
+const tmpCh = { proxy: null, insecure: false }; // direct connection, no channel proxy
     let done = false;
     const finish = (v) => { if (!done) { done = true; resolve(v); } };
     try {
@@ -65,15 +65,15 @@ function callUpstreamText(cfg, baseUrl, apiKey, model, prompt, timeoutMs) {
   });
 }
 
-// 思考链总结(异步): 按段拆分后用配置的 OpenAI 兼容端点逐段总结成一句, 拼成精简链
+//// thinking-chain summarization (async): split into segments, summarize each into one line with the configured OpenAI-compatible endpoint, and join into a condensed chain
 async function summarizeReasoningText(reasoning, tsCfg, ch, cfg) {
   if (!reasoning) return '';
   const baseUrl = String(tsCfg.summarizeBaseUrl || '').trim();
   const apiKey = String(tsCfg.summarizeApiKey || '').trim();
   const model = String(tsCfg.summarizeModel || '').trim();
-  if (!baseUrl || !model) return truncateReasoning(reasoning, Number(tsCfg.maxCharsPerSegment) || 80); // 未配端点则降级截断
+if (!baseUrl || !model) return truncateReasoning(reasoning, Number(tsCfg.maxCharsPerSegment) || 80); // degrade to truncation when no endpoint is configured
   const segs = reasoning.split('\n').map(s => s.trim()).filter(Boolean);
-  // 合并过短的相邻段, 减少调用次数(累计约 200 字一段)
+// Merge adjacent too-short segments to cut call count (about 200 chars each)
   const merged = [];
   let cur = '';
   for (const s of segs) {
@@ -90,15 +90,15 @@ async function summarizeReasoningText(reasoning, tsCfg, ch, cfg) {
   return results.filter(Boolean).map(s => '• ' + String(s).trim()).join('\n');
 }
 
-// 思考链精简中间件: 包在 makeWriter 产出的 writer 外, 拦截 reasoning 事件
-// truncate=实时行缓冲截取(零延迟); summarize=缓冲整段后异步总结(promise chain 串行, end 事件会等总结完)
+//// thinking-chain condensing middleware: wraps the writer from makeWriter and intercepts reasoning events
+// truncate = real-time line-buffered truncation (zero latency); summarize = buffer whole segments then summarize async (serialized promise chain; the end event waits for summaries)
 function wrapThinkingSummary(writer, tsCfg, ch, cfg) {
   if (!tsCfg || !tsCfg.enable) return writer;
   const mode = tsCfg.mode === 'summarize' ? 'summarize' : 'truncate';
   const maxChars = Math.max(10, Number(tsCfg.maxCharsPerSegment) || 80);
 
   if (mode === 'truncate') {
-  // truncate 模式: 实时行缓冲截取(零延迟), 每个输出块之间用双换行分隔
+// truncate mode: real-time line-buffered truncation (zero latency); output chunks separated by double newlines
     let lineBuf = '', saw = false, done = false, needSep = false;
     const emit = (t) => { if (needSep) writer.onEvent({ type: 'reasoning', t: '\n\n' }); writer.onEvent({ type: 'reasoning', t }); needSep = true; };
     const emitSeg = (line) => {
@@ -117,7 +117,7 @@ function wrapThinkingSummary(writer, tsCfg, ch, cfg) {
           saw = true;
           lineBuf += ev.t;
           const lines = lineBuf.split('\n');
-          lineBuf = lines.pop(); // 末行可能不完整, 留缓冲
+lineBuf = lines.pop(); // the last line may be incomplete; keep it buffered
           for (const ln of lines) emitSeg(ln);
         } else {
           if (saw && !done) { done = true; if (lineBuf) emitSeg(lineBuf); lineBuf = ''; }
@@ -127,13 +127,13 @@ function wrapThinkingSummary(writer, tsCfg, ch, cfg) {
     };
   }
 
-  // summarize 模式: 边收思考边分段总结边流式输出(每段独立 promise, 谁回来谁先 flush)
-  // 顺序保证: 所有 reasoning 必须在第一个 text 前 flush——正文到达时若还有总结在飞, hold 住正文等完成(超时10s兜底强制放行, 迟到总结丢弃)
-  // 防护: 思考阶段结束后再有 reasoning 不再当思考喂给总结(防正文混入)
+// summarize mode: summarize segments while streaming thinking (each segment its own promise; whoever resolves flushes first)
+// Ordering guarantee: all reasoning must flush before the first text -- when content arrives while a summary is still in flight, hold the content (a 10s timeout force-releases, late summaries are dropped)
+// Guard: after thinking ends, further reasoning events are no longer fed to the summarizer (keeps content out)
   let buf = '', saw = false, closed = false, reasoningClosed = false, textFlushed = false;
   let pending = 0;
-  let pendingEnd = null; // pending 为 0 时需发出的 end 事件
-  let textQ = null;      // 正文 hold 队列(非 null = 正在等总结)
+let pendingEnd = null; // end event to emit when pending reaches 0
+let textQ = null;      // content hold queue (non-null = waiting on a summary)
   const flushEnd = () => { if (pendingEnd && pending === 0) { const e = pendingEnd; pendingEnd = null; closed = true; writer.onEvent(e); } };
   const releaseText = () => {
     if (!textQ) return;
@@ -153,21 +153,21 @@ function wrapThinkingSummary(writer, tsCfg, ch, cfg) {
   return {
     onEvent(ev) {
       if (ev.type === 'reasoning') {
-        if (reasoningClosed) { if (textQ) textQ.push(ev); else writer.onEvent(ev); return; } // 思考已结束, 后续 reasoning 当正文透传(正文在 hold 则排队保持顺序)
+if (reasoningClosed) { if (textQ) textQ.push(ev); else writer.onEvent(ev); return; } // thinking already ended; later reasoning passes through as content (queued while content is held, preserving order)
         saw = true;
         buf += ev.t;
         while (buf.length >= 200) { const seg = buf.slice(0, 200); buf = buf.slice(200); dispatch(seg); }
       } else if (ev.type === 'text') {
-        // 第一个 text: 思考阶段结束, 剩余尾巴派最后一段总结, 然后 hold 正文等总结齐
+        // first text: thinking phase is over; dispatch the remaining tail as the final summary segment, then hold content until summaries catch up
         if (saw && buf && !reasoningClosed) { const tail = buf; buf = ''; reasoningClosed = true; dispatch(tail); }
         else if (!saw) reasoningClosed = true;
         if (textQ) { textQ.push(ev); }
         else if (pending > 0 && !textFlushed) {
           textQ = [ev];
-          setTimeout(releaseText, 10000); // 超时兜底: 总结模型挂了也最多等 10s
+setTimeout(releaseText, 10000); // timeout fallback: even a hung summarizer holds content for at most 10s
         } else writer.onEvent(ev);
       } else if (ev.type === 'end') {
-        // end 可能早于总结到达: 若正文在 hold, end 也排队(必须排在正文后)
+// end may arrive before the summary: if content is held, queue end too (it must come after the content)
         if (textQ) { textQ.push(ev); }
         else { pendingEnd = ev; flushEnd(); }
       } else {
@@ -177,7 +177,7 @@ function wrapThinkingSummary(writer, tsCfg, ch, cfg) {
   };
 }
 
-// 流式总结: 单段异步调模型总结, 返回 "• 总结结果\n"; 模型失败/返回空时回退截断(保底不丢思考内容, 不带省略号保持格式统一)
+//// streaming summary: summarize one segment async via the model, returning "- summary\n"; on failure/empty response, fall back to truncation (thinking is never lost; no ellipsis keeps formatting uniform)
 async function summarizeOneSegment(text, tsCfg, cfg) {
   const baseUrl = String(tsCfg.summarizeBaseUrl || '').trim();
   const apiKey = String(tsCfg.summarizeApiKey || '').trim();
@@ -185,13 +185,13 @@ async function summarizeOneSegment(text, tsCfg, cfg) {
   const maxChars = Math.max(10, Number(tsCfg.maxCharsPerSegment) || 80);
   if (!baseUrl || !model || !text) return null;
   const prompt = String(tsCfg.summarizePrompt || '用一句话中文概括以下思考片段:');
-  // 回退: 简单截取开头(单块, 无省略号), 保持 "• " 格式与正常总结一致
+// Fallback: simple head truncation (single chunk, no ellipsis), keeping the "- " format consistent with real summaries
   const fallbackText = text.slice(0, maxChars).replace(/\n+/g, ' ').trim();
   const fallback = fallbackText ? '• ' + fallbackText + '\n' : null;
   try {
     const s = await callUpstreamText(cfg, baseUrl, apiKey, model, prompt + '\n\n' + text, 30000);
     if (s && String(s).trim()) return '• ' + String(s).trim() + '\n';
-    // 模型返回空 → 回退截断, 不吞思考(记日志方便排查哪些段没总结成功)
+    // empty model response -> fall back to truncation, never drop thinking (logged so failed segments are easy to find)
     logErr('[thinkingSummary] 模型返回空, 回退截断(' + text.length + '字)');
     return fallback || null;
   } catch (e) {
@@ -200,7 +200,7 @@ async function summarizeOneSegment(text, tsCfg, cfg) {
   }
 }
 
-/* ================= 上游请求 ================= */
+/* ================= Upstream request ================= */
 function joinUrl(base, suffix) {
   const b = String(base || '').replace(/\/+$/, '');
   if (suffix.startsWith('/v1beta/') && /\/v1beta$/.test(b)) return b + suffix.slice(7);
@@ -236,12 +236,12 @@ function upstreamRequest(cfg, ch, urlStr, headers, bodyBuf, cb, method, agentsOv
   return req;
 }
 
-/* ================= 上游余额透传(balance) =================
- * 目标解析(渠道级覆盖优先): ch.balanceUrl(相对路径按 baseUrl 拼接) + ch.balancePath(点路径) + ch.balanceUnit
- *                          未配则按 baseUrl/渠道名 命中内置预设
- * 查询实现: 复用 upstreamRequest → 走渠道 proxy / insecure / 超时; 认证头按渠道类型(claude/gemini/openai)
- * 使用方: ① 管理端 GET /admin/api/balance/:inst/:ch (admin.js 注入调用, 见 setBalanceFn)
- *         ② 客户端 GET /v1/dashboard/billing/{credit_grants,subscription} (OpenAI 语义)
+/* ================= Upstream balance passthrough (balance) =================
+ * Target resolution (channel overrides win): ch.balanceUrl (relative paths joined to baseUrl) + ch.balancePath (dot path) + ch.balanceUnit
+ *                          when unset, built-in presets are matched by baseUrl/channel name
+ * Lookup implementation: reuses upstreamRequest -> channel proxy / insecure / timeouts; auth headers follow the channel type (claude/gemini/openai)
+ * Consumers: (1) admin GET /admin/api/balance/:inst/:ch (invoked via admin.js injection, see setBalanceFn)
+ *         (2) client GET /v1/dashboard/billing/{credit_grants,subscription} (OpenAI semantics)
  */
 const BALANCE_PRESETS = [
   { keys: ['api.deepseek.com', 'deepseek'], url: '/user/balance', path: 'balance_infos.0.total_balance', unit: 'CNY' },
@@ -255,7 +255,7 @@ function presetForChannel(ch) {
   const name = String(ch.name || '').toLowerCase();
   return BALANCE_PRESETS.find(p => p.keys.some(k => base.includes(k) || name.includes(k))) || null;
 }
-// 渠道的余额目标: {url, path, unit} — 无(未配且无预设) 返回 null
+//// a channel's balance target: {url, path, unit} -- null when none (not configured and no preset)
 function balanceTarget(ch) {
   const p = presetForChannel(ch);
   const url = ch.balanceUrl || (p && p.url);
@@ -271,7 +271,7 @@ function balanceAuthHeaders(ch) {
 }
 function digPath(obj, dotPath) {
   let cur = obj;
-  /* 兼容 balance_infos[1].total_balance 这种带下标写法 */
+/* Support indexed paths like balance_infos[1].total_balance */
   const keys = String(dotPath || '').replace(/\[(\d+)\]/g, '.$1').split('.');
   for (const k of keys) {
     if (cur == null) return undefined;
@@ -287,7 +287,7 @@ function resolveBalanceUrl(ch, t) {
   if (!base) throw new Error('渠道 ' + ch.name + ' 未配置 baseUrl, 无法拼接相对余额接口地址: ' + raw);
   return base + (raw.startsWith('/') ? raw : '/' + raw);
 }
-// 查渠道余额 → cb({ok, balance, unit, url, status, error, raw?}); 永不抛(内部异常转 500 结果)
+//// look up a channel balance -> cb({ok, balance, unit, url, status, error, raw?}); never throws (internal errors become a 500-shaped result)
 function fetchChannelBalance(cfg, ch, cb) {
   let done = false;
   const fin = (o) => { if (!done) { done = true; cb(o); } };
@@ -307,7 +307,7 @@ function fetchChannelBalance(cfg, ch, cb) {
         if (upRes.statusCode >= 400) return fin({ ok: false, status: 502, upstream: upRes.statusCode, error: '上游返回 ' + upRes.statusCode + ': ' + txt.slice(0, 200) });
         let j; try { j = JSON.parse(txt); } catch (e) { return fin({ ok: false, status: 502, error: '上游响应非 JSON', raw: txt.slice(0, 300) }); }
         const v = digPath(j, t.path);
-        /* 多币种: 上游返回 balance_infos 时一并带出(DeepSeek 同时有 CNY/USD) */
+/* Multi-currency: surfaced when the upstream returns balance_infos (DeepSeek carries both CNY/USD) */
         let amounts;
         if (Array.isArray(j.balance_infos)) {
           const list = j.balance_infos
@@ -315,7 +315,7 @@ function fetchChannelBalance(cfg, ch, cb) {
             .filter(x => x.value !== '');
           if (list.length > 1) amounts = list;
         }
-        /* 取值路径没命中但上游带 balance_infos 时兜底, 不至于直接失败 */
+/* Fallback when the value path misses but the upstream carries balance_infos, so it does not fail outright */
         if (v === undefined && !amounts) return fin({ ok: false, status: 502, error: '余额路径 ' + t.path + ' 在上游响应中不存在', raw: txt.slice(0, 300) });
         fin({
           ok: true,
@@ -331,7 +331,7 @@ function fetchChannelBalance(cfg, ch, cb) {
     fin({ ok: false, status: 500, error: '余额查询异常: ' + e.message });
   }
 }
-// 客户端端点用: 短缓存(默认 30s) 抵消客户端轮询; 只缓存成功结果
+// Client endpoints: a short cache (default 30s) absorbs client polling; only successful results are cached
 const _balanceCache = new Map();
 function balanceCacheTtl(cfg) {
   const v = Number(cfg.balanceCacheSec);
@@ -356,7 +356,7 @@ function fetchBalanceCached(cfg, ch, cb) {
     cb(r, false);
   });
 }
-// 客户端端点选渠道: 卡密 channels 白名单(有才过滤) → 有余额目标的优先 → default 优先
+// Client endpoint channel pick: card channels whitelist (filters only when set) -> balance-target channels first -> default first
 function balanceChannelList(cfg, uk) {
   const wl = uk && Array.isArray(uk.channels) && uk.channels.length ? uk.channels : null;
   const list = (cfg.channels || []).filter(c => !c._disabled && (!wl || wl.includes(c.name)));
@@ -367,7 +367,7 @@ function pickBalanceChannel(cfg, uk) {
   const pool2 = usable.length ? usable : all;
   return pool2.find(c => c.default) || pool2[0] || null;
 }
-// 汇率: 1 <unit> = ? <base>; 基准币种恒为 1; 未配置 → null(不计入合计)
+//// FX: 1 <unit> = ? <base>; the base currency is always 1; unset -> null (excluded from totals)
 function balanceFxRate(cfg, unit) {
   const fx = cfg.balanceFx || {};
   const base = fx.base || 'CNY';
@@ -376,9 +376,9 @@ function balanceFxRate(cfg, unit) {
   const r = Number((fx.rates || {})[u]);
   return isFinite(r) && r > 0 ? r : null;
 }
-// 多渠道聚合: 并发查全部「可见」渠道(没配余额接口的标 ok:false 不发请求) → 按汇率折算到 base 币种求和
+// Multi-channel aggregation: concurrently query all visible channels (those without a balance endpoint report ok:false, no request) -> convert to base currency and sum
 //   channels: [{channel, total_remain, unit, ok, error?, remain_base?, no_rate?}]
-//   total_remain = Σ remain_base(只计有汇率的); partial=有渠道失败/未配; unit=fx.base
+//   total_remain = sum of remain_base (only channels with an FX rate); partial = some channel failed/unconfigured; unit = fx.base
 function balanceAggregate(cfg, uk, cb) {
   const { all, usable } = balanceChannelList(cfg, uk);
   if (!usable.length) return cb({ ok: false, status: 503, error: '本实例没有可查询余额的渠道(可在渠道配置里填 balanceUrl + balancePath)' });
@@ -427,9 +427,9 @@ function balanceAggregate(cfg, uk, cb) {
   });
 }
 
-/* ================= 成功率探测(probe) =================
- * cfg.probe = { enable:false, intervalMin:10, mode:'models'|'chat' }; 渠道级: ch.probe=true
- * mode=models 免费探活; mode=chat 花token; 结果在 cfg._stats.probe */
+/*/* ================= Success-rate probing (probe) =================
+ * cfg.probe = { enable:false, intervalMin:10, mode:'models'|'chat' }; channel-level: ch.probe=true
+ * mode=models probes for free; mode=chat spends tokens; results in cfg._stats.probe */
 function probeOnce(cfg, ch) {
   const st = cfg._stats.probe = cfg._stats.probe || {};
   const rec = st[ch.name] = st[ch.name] || { total: 0, ok: 0, lastAt: '', lastOk: '', lastErr: '' };
@@ -471,7 +471,7 @@ function setupProbe(cfg) {
   const iv = Math.max(1, Number(cfg.probe.intervalMin) || 10) * 60000;
   cfg._probeTimer = setInterval(() => probeRound(cfg), iv);
   cfg._probeTimer.unref();
-  // 启动后 20 秒先探一轮(不等首个周期)
+// Probe once 20s after boot (no waiting for the first period)
   setTimeout(() => probeRound(cfg), 20000).unref();
   log('[probe] 成功率探测已开启: 间隔', Math.max(1, Number(cfg.probe.intervalMin) || 10), '分钟, 模式', cfg.probe.mode || 'models');
 }

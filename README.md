@@ -1,52 +1,52 @@
-# ai-gateway — 通用 AI 本地网关
+# ai-gateway — Universal Local AI Gateway
 
-一个跑在 Termux 上的**零依赖** Node.js 网关：给本地和局域网设备提供统一的 AI 接口入口，
-自动在 **OpenAI / Gemini / Claude** 三种 API 格式之间互转，出站可走 **SOCKS5 / HTTP 代理**。
+A **zero-dependency** Node.js gateway running on Termux: one unified AI endpoint for local and LAN devices that
+automatically converts between the **OpenAI / Gemini / Claude** API formats, with outbound traffic over **SOCKS5 / HTTP proxies**.
 
 ```
-客户端(任意格式)                    上游(任意格式)
-OpenAI 格式 ──┐                 ┌──▶ OpenAI 官方 / DeepSeek / 各类中转站
-Claude 格式 ──┼──▶ ai-gateway ──┼──▶ Gemini 官方
-Gemini 格式 ──┘   (自动互转)     └──▶ Claude 官方
-      本机 127.0.0.1 + 局域网IP        直连 或 SOCKS5/HTTP 代理(按渠道)
+Client (any format)                     Upstream (any format)
+OpenAI format ──┐                 ┌──▶ OpenAI official / DeepSeek / relays
+Claude format ──┼──▶ ai-gateway ──┼──▶ Gemini official
+Gemini format ──┘  (auto-convert) └──▶ Claude official
+      localhost 127.0.0.1 + LAN IP        direct or SOCKS5/HTTP proxy (per channel)
 ```
 
-- **同一个模型名，三种姿势都能调**：客户端用 OpenAI 格式也能打到 Gemini/Claude 上游，网关自动转换请求/响应（含流式打字机效果、工具调用、图片、思考内容、token 统计）
-- **同格式直通**：格式一致时请求体原样转发，零损耗
-- **多渠道轮询 + 故障切换**：同一模型配在多个渠道里，请求自动轮流分发；某渠道报错（限流/鉴权失败/服务端错误）自动切下一个重试
-- **多开**：一份配置一个实例，互不干扰
-- 模块化拆分（`gateway.js` 入口 + `convert/record/server/pool` 等职责模块），仍为**零 npm 依赖**，有 Node.js 就能跑
+- **One model name, callable three ways**: an OpenAI-format client can hit a Gemini/Claude upstream; the gateway converts requests/responses automatically (including streaming typewriter output, tool calls, images, thinking content, and token accounting)
+- **Same-format passthrough**: when formats match, the request body is forwarded verbatim with zero loss
+- **Multi-channel round-robin + failover**: configure the same model on several channels; requests rotate automatically, and a failing channel (rate limit / auth failure / server error) retries on the next one
+- **Multiple instances**: one config file per instance, fully isolated
+- Modular split (`gateway.js` entry + focused modules such as `convert/record/server/pool`), still **zero npm dependencies** — if Node.js runs, it runs
 
 ---
 
-## 一、快速开始（3 步）
+## 1. Quick start (3 steps)
 
 ```bash
-# 1. 编辑配置, 填入你的 API Key
+# 1. Edit the config and fill in your API key
 nano ~/ai-gateway/config.json
 
-# 2. 启动
+# 2. Start
 ~/ai-gateway/agw.sh start
 
-# 3. 测试
+# 3. Test
 curl http://127.0.0.1:16384/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"你好"}]}'
+  -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-管理命令：
+Management commands:
 
 ```bash
-~/ai-gateway/agw.sh start     # 启动（全部实例）
-~/ai-gateway/agw.sh stop      # 停止
-~/ai-gateway/agw.sh restart   # 改完配置后重启
-~/ai-gateway/agw.sh status    # 看状态
-~/ai-gateway/agw.sh logs      # 看最近 50 行日志
+~/ai-gateway/agw.sh start     # start (all instances)
+~/ai-gateway/agw.sh stop      # stop
+~/ai-gateway/agw.sh restart   # restart after config changes
+~/ai-gateway/agw.sh status    # show status
+~/ai-gateway/agw.sh logs      # last 50 log lines
 ```
 
 ---
 
-## 二、配置说明（config.json）
+## 2. Configuration (config.json)
 
 ```jsonc
 {
@@ -58,7 +58,7 @@ curl http://127.0.0.1:16384/v1/chat/completions \
   "proxies": {
     "clash": { "type": "socks5", "host": "127.0.0.1", "port": 7890 }
   },
-  "redact": { "enable": true, "response": false, "extra": ["工号[0-9]+"] },
+  "redact": { "enable": true, "response": false, "extra": ["badge[0-9]+"] },
   "channels": [
     {
       "name": "gemini-official",
@@ -80,37 +80,37 @@ curl http://127.0.0.1:16384/v1/chat/completions \
 }
 ```
 
-| 字段 | 说明 |
+| Field | Description |
 |---|---|
-| `listen.host` | `127.0.0.1`=仅本机；`0.0.0.0`=本机+局域网（默认） |
-| `listen.port` | 监听端口 |
-| `gatewayKey` | 给网关自己设密码（空=不校验）。设了之后，请求带上它即可：`Authorization: Bearer xxx`、`x-api-key: xxx`、`?key=xxx` 任选一种 |
-| `proxies` | 代理列表。`type` 支持 `socks5` / `http`，可选 `username`/`password`。也支持字符串写法 `"clash": "socks5://127.0.0.1:7890"` |
-| `channels[].type` | 上游格式：`openai`（OpenAI/DeepSeek/中转站）、`gemini`、`claude` |
-| `channels[].baseUrl` | 官方或中转站地址（写到 `/v1` 之前，如 `https://api.deepseek.com`；写了 `/v1` 结尾也能自动识别） |
-| `channels[].apiKey` | 上游的 Key |
-| `channels[].proxy` | 填 `proxies` 里的名字走代理；`null` 或不填=直连 |
-| `channels[].models` | 该渠道支持的模型名（客户端请求的 model 匹配到这里就路由过去） |
-| `channels[].modelMap` | 改名映射：`{"gpt-4o": "gemini-2.0-flash"}` 客户端发 gpt-4o 实际用 gemini |
-| `channels[].default` | `true`=兜底渠道（没匹配到 models 的请求都发这里，模型名原样透传） |
-| `channels[].insecure` | `true`=跳过 HTTPS 证书校验（自签名中转站用） |
-| `redact.enable` | 隐私过滤总开关（默认 `true`）。卡密可再设 `redact=false` 单卡关闭，实例开关是上限 |
-| `redact.response` | 响应方向也打码（默认 `false`）：上游返回的正文/思考/工具参数同样替换为 `***` |
-| `redact.extra` | 自定义正则数组，在内置规则之外追加打码规则（面板「路由」页可直接编辑） |
+| `listen.host` | `127.0.0.1` = localhost only; `0.0.0.0` = localhost + LAN (default) |
+| `listen.port` | Listening port |
+| `gatewayKey` | Password for the gateway itself (empty = no check). Once set, attach it anywhere: `Authorization: Bearer xxx`, `x-api-key: xxx`, or `?key=xxx` |
+| `proxies` | Proxy list. `type` supports `socks5` / `http`, optional `username`/`password`. String form also works: `"clash": "socks5://127.0.0.1:7890"` |
+| `channels[].type` | Upstream format: `openai` (OpenAI/DeepSeek/relays), `gemini`, `claude` |
+| `channels[].baseUrl` | Official or relay address (write it without the trailing `/v1`, e.g. `https://api.deepseek.com`; a trailing `/v1` is also detected) |
+| `channels[].apiKey` | The upstream key |
+| `channels[].proxy` | Name of an entry in `proxies` to route through; `null` or omitted = direct |
+| `channels[].models` | Model names this channel serves (a client's `model` matching here routes to it) |
+| `channels[].modelMap` | Rename map: `{"gpt-4o": "gemini-2.0-flash"}` — a client asking for gpt-4o actually uses Gemini |
+| `channels[].default` | `true` = fallback channel (requests that match no `models` go here, model name passed through untouched) |
+| `channels[].insecure` | `true` = skip HTTPS certificate verification (for self-signed relays) |
+| `redact.enable` | Privacy filter master switch (default `true`). A key card can set `redact=false` to opt out; the instance switch is the ceiling |
+| `redact.response` | Also mask the response direction (default `false`): upstream content/thinking/tool args are replaced with `***` too |
+| `redact.extra` | Custom regex array layered on top of the built-in rules (editable on the panel's Routing page) |
 
-**路由规则**：`modelMap` 精确命中 > `models` 列表 > `default` 渠道 > 第一个渠道。
+**Routing rule**: exact hit in `modelMap` > the `models` list > the `default` channel > the first channel.
 
-### 隐私过滤（敏感内容打码）
+### Privacy filter (sensitive-content masking)
 
-- **请求方向**：转发上游前遍历请求体 JSON，命中字段名（`api_key`/`secret`/`token`/`password`/`authorization` 等）的字符串整值打码；其余字符串按规则打码；`data:` URL 与顶层 `model` 不动（保护图片与路由）。
-- **响应方向**（`redact.response=true`）：上游返回的正文、思考链、工具参数同样打码；流式响应逐片处理，密钥被 SSE 分片切开也不会漏。开启后为保证可解析会走统一转换路径（同格式不再逐字节直通）。
-- **内置规则**：`sk-`/GitHub/Slack/AWS/Google/GitLab/HuggingFace 等 API Key、`Bearer` token、邮箱、中国大陆手机号、身份证、银行卡（过 Luhn 才打码，避免误伤普通长数字）、内网 IPv4。
-- **自定义规则**：`redact.extra` 每项一条正则，例如 `"工号[0-9]+"`；面板路由页可编辑（每行一条），保存后热重载生效。
-- **性能**：无敏感特征的普通对话走快路径，不跑正则/不算哈希；含密钥的长上下文用多级 CDC 缓存，只重算改动过的块。
+- **Request direction**: before forwarding, the request body JSON is walked; strings under sensitive field names (`api_key`/`secret`/`token`/`password`/`authorization` etc.) are fully masked, other strings are masked per rule; `data:` URLs and the top-level `model` are untouched (protecting images and routing).
+- **Response direction** (`redact.response=true`): upstream content, thinking chains, and tool arguments are masked the same way; streaming responses are filtered chunk by chunk, so secrets split across SSE fragments are still caught. When enabled, responses go through the unified conversion path for parseability (same-format traffic is no longer byte-for-byte passthrough).
+- **Built-in rules**: `sk-`/GitHub/Slack/AWS/Google/GitLab/HuggingFace API keys, `Bearer` tokens, email addresses, mainland-China mobile numbers, national ID numbers, bank cards (masked only if they pass Luhn, so ordinary long numbers are safe), private IPv4.
+- **Custom rules**: each entry in `redact.extra` is one regex, e.g. `"badge[0-9]+"`; editable on the panel's routing page (one per line), hot-reloaded on save.
+- **Performance**: ordinary conversation without sensitive traits takes the fast path — no regex, no hashing; long contexts containing secrets use a multi-level CDC cache, recomputing only changed chunks.
 
-### 多渠道轮询 & 故障切换
+### Multi-channel round-robin & failover
 
-把**同一个模型名**配在多个渠道里，网关会自动轮流分发（轮询），某个渠道报错时自动切下一个重试：
+Configure the **same model name** on multiple channels; the gateway rotates requests across them and retries on the next channel when one fails:
 
 ```json
 "channels": [
@@ -120,269 +120,274 @@ curl http://127.0.0.1:16384/v1/chat/completions \
 ]
 ```
 
-- **轮询**：3 个 key 轮着用 → 第 1 次走 key1、第 2 次走 key2、第 3 次走 key3、第 4 次又回到 key1……每个 key 的免费额度都不浪费
-- **故障切换**：如果当前渠道返回 `429`(限流) / `401`(鉴权失败) / `500`~`504`(服务端错误) 或连接失败 → 自动切下一个渠道重试，用户无感；全部失败才报错
-- **不切换的情况**：`400`(请求格式错误) 等客户端错误不切换——换渠道也一样错，直接原样返回
-- 流式请求也能故障切换：上游返回错误码时尚未向客户端发送任何数据，可以安全切换；一旦开始流式输出就锁定当前渠道
+- **Round-robin**: 3 keys take turns -> request 1 uses key1, request 2 key2, request 3 key3, request 4 back to key1... no free quota is wasted
+- **Failover**: if the current channel returns `429` (rate limit) / `401` (auth failure) / `500`-`504` (server error) or the connection fails -> automatically retry on the next channel, invisible to the user; errors surface only when everything fails
+- **No switching**: client errors such as `400` (malformed request) do not switch — another channel would fail the same way; the error is returned as-is
+- Streaming requests fail over too: no data has been sent to the client when the error code arrives, so switching is safe; once streaming output starts, the current channel is locked in
 
 ---
 
-## 三、三种客户端姿势（同一网关）
+## 3. Three client styles (one gateway)
 
-设网关在 `http://192.168.1.100:16384`（手机局域网 IP，`ip -4 addr` 或 `ifconfig` 查看）。
+Assume the gateway is at `http://***:16384` (phone LAN IP; check with `ip -4 addr` or `ifconfig`).
 
-### 1. OpenAI 格式（适用：ChatGPT 客户端、openai SDK、ChatBox、NextChat 等）
+### 1. OpenAI format (ChatGPT clients, openai SDK, ChatBox, NextChat, etc.)
 
 ```bash
 curl http://127.0.0.1:16384/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"gemini-2.0-flash","messages":[{"role":"user","content":"你好"}]}'
+  -d '{"model":"gemini-2.0-flash","messages":[{"role":"user","content":"hello"}]}'
 ```
 
 ```python
 from openai import OpenAI
-client = OpenAI(base_url="http://192.168.1.100:16384/v1", api_key="随便填")
+client = OpenAI(base_url="http://***:16384/v1", api_key="anything")
 r = client.chat.completions.create(model="gemini-2.0-flash",
-    messages=[{"role": "user", "content": "你好"}], stream=True)
+    messages=[{"role": "user", "content": "hello"}], stream=True)
 for chunk in r:
     print(chunk.choices[0].delta.content or "", end="")
 ```
 
-### 2. Claude 格式（适用：Claude Code、anthropic SDK 等）
+### 2. Claude format (Claude Code, anthropic SDK, etc.)
 
 ```bash
-curl http://192.168.1.100:16384/v1/messages \
+curl http://***:16384/v1/messages \
   -H "Content-Type: application/json" \
-  -H "x-api-key: 随便填" \
+  -H "x-api-key: anything" \
   -H "anthropic-version: 2023-06-01" \
-  -d '{"model":"gemini-2.0-flash","max_tokens":1024,"messages":[{"role":"user","content":"你好"}]}'
+  -d '{"model":"gemini-2.0-flash","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}'
 ```
 
-### 3. Gemini 格式（适用：Google AI SDK 等）
+### 3. Gemini format (Google AI SDK, etc.)
 
 ```bash
-curl "http://192.168.1.100:16384/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse" \
+curl "http://***:16384/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse" \
   -H "Content-Type: application/json" \
-  -H "x-goog-api-key: 随便填" \
-  -d '{"contents":[{"role":"user","parts":[{"text":"你好"}]}]}'
+  -H "x-goog-api-key: anything" \
+  -d '{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}'
 ```
 
-> 模型列表：`GET /v1/models`（OpenAI/Claude 通用）或 `GET /v1beta/models`（Gemini）。健康检查：直接 TCP 探测端口（`agw.sh status`）。
-> 公开路径白名单：仅 `/v1`、`/v1beta`、`/auth`、`/profile` 及其子路径，外加 `/admin`（面板，webToken 鉴权）。其余一律 404（`/health`、`/status`、`/user`、`/plugins`、`/credits` 等已关闭，需要时再加回）。
+> Model list: `GET /v1/models` (shared by OpenAI/Claude) or `GET /v1beta/models` (Gemini). Health check: probe the TCP port directly (`agw.sh status`).
+> Public path whitelist: only `/v1`, `/v1beta`, `/auth`, `/profile` and their subpaths, plus `/admin` (the panel, webToken auth). Everything else returns 404 (`/health`, `/status`, `/user`, `/plugins`, `/credits` are closed; re-add when needed).
 
 ---
 
-## 四、多开（多个实例）
+## 4. Multiple instances
 
-复制配置改端口即可：
+Copy the config and change the port:
 
 ```bash
 cp ~/ai-gateway/config.json ~/ai-gateway/config.proxy2.json
-# 编辑 config.proxy2.json: 改 port 为 16385, 改渠道/代理
+# Edit config.proxy2.json: change port to 16385, adjust channels/proxies
 ~/ai-gateway/agw.sh start proxy2
-~/ai-gateway/agw.sh status        # 两个实例同时运行
+~/ai-gateway/agw.sh status        # both instances running
 ```
 
-- 实例名 `default` 用 `config.json`，其他名字用 `config.<实例名>.json`
-- `agw.sh start`（不带名字）= 启动全部实例
-- 停止某实例：`agw.sh stop proxy2`
+- Instance `default` uses `config.json`; other names use `config.<instance>.json`
+- `agw.sh start` (no name) = start all instances
+- Stop one instance: `agw.sh stop proxy2`
 
 ---
 
-## 五、常用场景配方
+## 5. Common recipes
 
-- **OpenAI 兼容中转站**：`"type": "openai", "baseUrl": "https://中转站域名"`（key 填中转站的）
-- **DeepSeek**：`"type": "openai", "baseUrl": "https://api.deepseek.com"`
-- **Gemini 官方**：`"type": "gemini", "baseUrl": "https://generativelanguage.googleapis.com"`（国内需走代理）
-- **Claude 官方**：`"type": "claude", "baseUrl": "https://api.anthropic.com"`（国内需走代理）
-- **本地 llama.cpp**：`"type": "openai", "baseUrl": "http://127.0.0.1:8080"`（直连）
-
----
-
-## 六、安全提示
-
-1. 局域网监听（`0.0.0.0`）意味着**同一 WiFi 下任何设备都能用你的 Key 跑模型**。
-   建议设置 `"gatewayKey": "一个密码"`，客户端任意位置带上即可。
-2. 配置文件里有明文 Key，不要把 `ai-gateway` 目录发给别人。
-3. 只在本机用的话，把 `listen.host` 改回 `"127.0.0.1"`。
+- **OpenAI-compatible relay**: `"type": "openai", "baseUrl": "https://relay.example.com"` (use the relay's key)
+- **DeepSeek**: `"type": "openai", "baseUrl": "https://api.deepseek.com"`
+- **Gemini official**: `"type": "gemini", "baseUrl": "https://generativelanguage.googleapis.com"` (needs a proxy in some regions)
+- **Claude official**: `"type": "claude", "baseUrl": "https://api.anthropic.com"` (needs a proxy in some regions)
+- **Local llama.cpp**: `"type": "openai", "baseUrl": "http://127.0.0.1:8080"` (direct)
 
 ---
 
-## 七、目录结构 & 测试
+## 6. Security notes
+
+1. Listening on the LAN (`0.0.0.0`) means **any device on the same Wi-Fi can run models with your keys**.
+   Set `"gatewayKey": "a-password"` and attach it anywhere on the client.
+2. Config files contain plaintext keys; do not share the `ai-gateway` directory.
+3. For localhost-only use, change `listen.host` back to `"127.0.0.1"`.
+
+---
+
+## 7. Layout & tests
 
 ```
 ~/ai-gateway/
-├── gateway.js     # 网关本体（单文件, 零依赖）
-├── config.json    # 默认实例配置
-├── agw.sh         # 管理脚本
-├── log/           # 运行日志（每实例一个）
-└── .run/          # pid 文件
+├── gateway.js     # the gateway (single file, zero deps)
+├── config.json    # default instance config
+├── agw.sh         # management script
+├── log/           # run logs (one per instance)
+└── .run/          # pid files
 ```
 
-沙箱测试套件 215 项全过：转换器单元测试、9 种组合互转 E2E（流式+非流式）、
-SOCKS5/HTTP 代理隧道（含认证、HTTPS 自签）、网关鉴权、渠道路由、多实例、
-轮询（严格交替）、故障切换（429/连接失败/不可重试400/全失败）。
+Sandbox test suite: 215/215 passing — converter unit tests, 9 combination-conversion E2E pairs (streaming + non-streaming),
+SOCKS5/HTTP proxy tunneling (with auth, HTTPS self-signed), gateway auth, channel routing, multi-instance,
+round-robin (strict alternation), failover (429 / connection failure / non-retryable 400 / total failure).
 
-### 管理面板（/auth）
+### Admin panel (/auth)
 
-面板拆成三个文件，改样式/逻辑不用再动 30 万字符的单文件：
+The panel is split into three files, so styling/logic changes no longer touch a 300k-character single file:
 
 ```
-m3/index.html   # 结构（约 500 行）+ 两个引用
-m3/app.css      # 全部样式（Material Design 3 令牌 + 响应式）
-m3/app.js       # 全部前端逻辑（数据适配 / 渲染 / 图表，原生 ESM）
-m3/vendor/      # Material Web 组件包与图标字体（本地，零 CDN）
+m3/index.html   # structure (~500 lines) + two references
+m3/app.css      # all styles (Material Design 3 tokens + responsive)
+m3/app.js       # all frontend logic (data adapter / rendering / charts, native ESM)
+m3/vendor/      # Material Web component bundle + icon font (local, zero CDN)
 ```
 
-两个文件都按 `no-store` 下发，改完刷新即生效。页面能力：12+2 个页面（总览/提供商/路由/上下文/窗口表/密钥/卡密/端口/会话/替换/统计/请求/日志/聊天），
-手机端底栏放 5 个常用页 + 「更多」抽屉，其余全部可达；统计页有纯 canvas 的每日用量与按模型图表。
+All three are served with `no-store`; refresh after editing. Capabilities: 12+2 pages (overview/providers/routing/context/window table/keys/key cards/ports/sessions/replacement/stats/requests/logs/chat);
+the mobile bottom bar holds 5 common pages plus a "More" drawer, and every page stays reachable; the stats page has pure-canvas daily-usage and per-model charts.
 
-**取色桥（Material You 主色）**：面板「主题 → 从手机取色」会请求 `GET /admin/api/mdu`，后端按下面顺序取色：
+**Color bridge (Material You primary)**: the panel's "Theme -> pick from phone" requests `GET /admin/api/mdu`; the backend resolves the color in this order:
 
-1. 配置项 `mduCmd`（或环境变量 `AGW_MDU_CMD`）—— shell 命令，2.5s 超时；
-2. `~/ai-gateway/mdu.json`（桥自己定时落盘，免命令开销）。
+1. The `mduCmd` config key (or the `AGW_MDU_CMD` env var) — a shell command with a 2.5s timeout;
+2. `~/ai-gateway/mdu.json` (written periodically by the bridge itself, avoiding command overhead).
 
-两种方式都只认这三种输出之一：`#4C6B3C`、`{"primary":"#4C6B3C"}`、`{"tokens":{"primary":"#4C6B3C"}}`。
-取不到时面板自动退回「选一张壁纸图、浏览器内取主色」，不会卡住。
+Both methods accept exactly one of these outputs: `#4C6B3C`, `{"primary":"#4C6B3C"}`, `{"tokens":{"primary":"#4C6B3C"}}`.
+When nothing works, the panel falls back to "pick a wallpaper image and extract the primary color in the browser" instead of hanging.
 
 ```jsonc
 // config.json
 { "mduCmd": "my-color-bridge --json" }
 ```
 
-## 八、HTTPS 接入（无 root）
+## 8. HTTPS access (no root)
 
-**日常只管一条命令：`agw-tls`（看状态）、`agw-tls setup`（一键开启）、`agw-tls use`（给现成代码）。**
-`agw-tls trust` 导出的证书文件默认 5 分钟后自动删除（`--keep N` 调整）。
-全部实例一起开：`agw-tls all --pure`（每个实例在原端口上只说 HTTPS，共 38 个入口）；`agw-tls all` 则是双开（https = http + 10000）。
+**Daily use needs one command: `agw-tls` (status), `agw-tls setup` (one-shot enable), `agw-tls use` (client snippets).**
+Certificates exported by `agw-tls trust` are auto-deleted after 5 minutes by default (adjust with `--keep N`).
+Enable everywhere: `agw-tls all --pure` (each instance serves HTTPS only on its existing port, 38 entries total); `agw-tls all` dual-stacks instead (https = http + 10000).
 
-非 root 拿不到 443，但每个实例都可以在自己的高位端口上说 HTTPS（单端口或双开都行）。推荐：本地私有 CA + 用户证书库，
-设备装一次 CA，之后换 IP 只重签服务器证书。
+Without root you cannot get port 443, but each instance can serve HTTPS on its own high port (single-port or dual-stack). Recommended: a local private CA + a user trust store —
+install the CA on each device once, and afterwards IP changes only need the server certificate re-signed.
 
 ```bash
 cd ~/ai-gateway
-bash tls/gen-ca.sh                    # 建私有 CA（只一次）
-bash tls/gen-server.sh                # 签发 cert.pem（SAN 自动含本机全部 IP）
-agw-tls all --pure                    # 全部实例：原端口改纯 HTTPS（当前状态）
+bash tls/gen-ca.sh                    # create the private CA (once)
+bash tls/gen-server.sh                # issue cert.pem (SAN auto-includes every local IP)
+agw-tls all --pure                    # all instances: original ports switch to pure HTTPS (current state)
 ./agw.sh restart
 ```
 
-客户端要点：Python `httpx.Client(verify="ca.pem")`、Node `NODE_EXTRA_CA_CERTS=ca.pem`、
-curl `--cacert ca.pem`；手机/电脑把 `tls/ca.pem` 装成「CA 证书」即可。
+Client essentials: Python `httpx.Client(verify="ca.pem")`, Node `NODE_EXTRA_CA_CERTS=ca.pem`,
+curl `--cacert ca.pem`; on phones/computers install `tls/ca.pem` as a "CA certificate".
 
-完整说明（各平台安装、SDK 示例、IP 变更、故障排查、安全注意）：[docs/HTTPS.md](docs/HTTPS.md)
+Full guide (per-platform install, SDK examples, IP changes, troubleshooting, security): [docs/HTTPS.md](docs/HTTPS.md)
 
-证书自动续签（<7 天触发）与客户端密钥轮换（默认 90 天、14 天宽限）由 watchdog 每 5 分钟驱动：
-`bash ops/guard.sh`（日志 `log/tls.log`、`log/keyrotation.log`）。
+Certificate auto-renewal (<7 days triggers) and client key rotation (90 days default, 14-day grace) are driven every 5 minutes by the watchdog:
+`bash ops/guard.sh` (logs in `log/tls.log`, `log/keyrotation.log`).
 
 ---
 
-## OpenAI 扩展端点 (Responses / Images / Embeddings / Audio / Completions)
+## OpenAI extended endpoints (Responses / Images / Embeddings / Audio / Completions)
 
-> 版本: 2026-09-06 新增。默认关闭(向后兼容), 开启方式见下。
+> Since: 2026-09-06. Off by default (backward compatible); see below for enabling.
 
-### 配置开关 (config.json 顶层)
+### Config switches (top level of config.json)
 
 ```json
 {
   "openaiExtras": {
-    "enable": false,            // 总开关: 对外开放扩展端点 + 允许 OpenAI 上游走 Responses API
-    "upstreamResponses": false  // 全局默认: OpenAI 渠道上游用 /v1/responses 而不是 /v1/chat/completions
+    "enable": false,            // master switch: expose extended endpoints + allow OpenAI upstreams to use the Responses API
+    "upstreamResponses": false  // global default: OpenAI channels use /v1/responses upstream instead of /v1/chat/completions
   }
 }
 ```
 
-渠道级可覆盖(单个 OpenAI 渠道加字段):
+Channel-level override (add a field to one OpenAI channel):
 
 ```json
-{ "name": "my-resp", "type": "openai", "baseUrl": "…", "useResponses": true }
+{ "name": "my-resp", "type": "openai", "baseUrl": "...", "useResponses": true }
 ```
 
-- 渠道 `useResponses` 未设置时跟随全局 `upstreamResponses`; 仅 openai 类型渠道有效; 仅在 `enable=true` 时生效。
-- 保存后需重启实例: `bash agw.sh restart <实例名>` (m3 面板保存后会自动重启)。
+- A channel's `useResponses` follows the global `upstreamResponses` when unset; openai-type channels only; effective only when `enable=true`.
+- Restart the instance after saving: `bash agw.sh restart <instance>` (the m3 panel restarts automatically on save).
 
-### 网关对外新增端点 (enable=true 时)
+### New gateway endpoints (when enable=true)
 
-| 端点 | 说明 |
+| Endpoint | Description |
 |---|---|
-| `POST /v1/responses` | OpenAI Responses API 入口(支持流式 SSE), 自动与 Chat Completions / Claude / Gemini 互转 |
-| `POST /v1/images/generations` | 图片生成(直通 openai 渠道, JSON) |
-| `POST /v1/images/edits` `POST /v1/images/variations` | 图片编辑/变体(multipart 直通) |
-| `POST /v1/embeddings` | 文本嵌入(直通) |
-| `POST /v1/audio/speech` | TTS(直通, 二进制/流式透传) |
-| `POST /v1/audio/transcriptions` `POST /v1/audio/translations` | 语音转写/翻译(multipart 直通) |
-| `POST /v1/completions` | 老版文本补全(直通) |
-| `POST /v1/moderations` | 内容审核(直通) |
+| `POST /v1/responses` | OpenAI Responses API entry (streaming SSE supported), auto-converts with Chat Completions / Claude / Gemini |
+| `POST /v1/images/generations` | Image generation (passthrough to openai channels, JSON) |
+| `POST /v1/images/edits` `POST /v1/images/variations` | Image edits/variations (multipart passthrough) |
+| `POST /v1/embeddings` | Text embeddings (passthrough) |
+| `POST /v1/audio/speech` | TTS (passthrough, binary/streaming) |
+| `POST /v1/audio/transcriptions` `POST /v1/audio/translations` | Speech transcription/translation (multipart passthrough) |
+| `POST /v1/completions` | Legacy text completions (passthrough) |
+| `POST /v1/moderations` | Content moderation (passthrough) |
 
-- 扩展直通端点只支持 openai 类型渠道(按 body.model 路由, modelMap 改名对 JSON 端点生效; multipart 端点不改名), 无匹配渠道返回 503。
-- `/v1/responses` 是完整转换端点: 客户端 Responses ↔ 上游 Chat/Responses/Claude/Gemini 任意组合均支持, 含流式、工具调用、reasoning。
-- 关闭开关时以上端点全部 404(与旧版本行为一致)。
+- Extended passthrough endpoints support openai-type channels only (routed by body.model; modelMap renames apply to JSON endpoints, not multipart); 503 when no channel matches.
+- `/v1/responses` is a full conversion endpoint: client Responses <-> upstream Chat/Responses/Claude/Gemini in any combination, including streaming, tool calls, and reasoning.
+- With the switch off, all of the above return 404 (matching old behavior).
 
-### 上游选择矩阵
+### Upstream selection matrix
 
-| 客户端 API | 上游渠道 useResponses=false | 上游渠道 useResponses=true |
+| Client API | Upstream useResponses=false | Upstream useResponses=true |
 |---|---|---|
-| Chat Completions | 直通(原行为) | canonical 转换 → Responses body |
-| Responses | canonical 转换 → Chat body | 直通 |
-| Claude / Gemini | canonical 转换 | canonical 转换 → Responses body |
+| Chat Completions | passthrough (original behavior) | canonical conversion -> Responses body |
+| Responses | canonical conversion -> Chat body | passthrough |
+| Claude / Gemini | canonical conversion | canonical conversion -> Responses body |
 
-## 变更记录
+## Changelog
 
-### 2026-10-27 — 隐私过滤增强（响应方向 + 更多规则 + 性能）
+### 2026-10-27 — Privacy filter upgrade (response direction + more rules + performance)
 
-- 新增 `redact.response`：响应正文/思考/工具参数打码，流式跨分片不漏；面板新增开关。
-- 新增邮箱/手机号/身份证/银行卡/内网 IPv4 规则；`redact.extra` 支持面板编辑（每行一条正则）。
-- 修复：面板保存只发 `{enable}` 会清空 `extra`；长 token 跨 CDC 切点被切开导致漏打码；块指纹未覆盖安全切点后移的尾部。
-- 性能：无敏感特征文本走前缀/数字快路径（只做一次字符扫描，85KB 上下文约 1ms；命中后零正则、零分配）；内置 13+ 条规则合并为单次正则扫描。
-- 顶层 `model` 字段不再参与打码，避免模型名被改写导致路由失败。
+- Added `redact.response`: masks response content/thinking/tool args; no leaks across streaming fragments; new panel switch.
+- Added email/mobile/national-ID/bank-card/private-IPv4 rules; `redact.extra` is panel-editable (one regex per line).
+- Fixed: a panel save sending only `{enable}` wiped `extra`; long tokens split across CDC cut points leaked unmasked; chunk fingerprints did not cover the tail deferred by safe cut points.
+- Performance: text without sensitive traits takes the prefix/digit fast path (one character scan, ~1ms for an 85KB context; zero regex, zero allocation on a hit); the 13+ built-in rules merged into a single regex pass.
+- The top-level `model` field no longer participates in masking, so model names are never rewritten and routing stays intact.
 
-### 2026-10-16 — 修复 DSML 标记泄漏（思考链与工具调用不连贯）
+### 2026-10-16 — DSML markup leak fix (thinking chain and tool calls disjointed)
 
-- **现象**：部分 DeepSeek 系上游（如 NVIDIA NIM）把工具调用以文本形式写进 `content`，形如
-  `<｜DSML｜tool_calls>…`，网关把整块当标记吞掉后只剩思考、没有工具调用，链路中断。
-- **根因**：该方言只有**外层**标签带 `｜DSML｜` 前缀，内层 `<invoke>`/`<parameter>`/`</tool_calls>` 全是裸的；
-  旧状态机假设所有层都带前缀，内层终止正则永远匹配不上。
-- **修复**：`dsmlFeed` 状态机放宽终止/开始正则（前缀可选），块结束时改为**解析回填**成结构化
-  `tool_calls`（含 direct 直通路径的 final 补发），不再只丢弃。
-- **验证**：`node --check` 通过；单测 23+ 用例全绿；真机 17 段思考+工具调用链路连续无断裂。
-- **回滚**：`cp ~/ai-gateway/gateway.js.bak-backfill-20261016-1113 ~/ai-gateway/gateway.js && ~/ai-gateway/agw.sh restart`
-- **后续**：上游若再改方言（换前缀/标签名），用 `/tmp/dsml/capture.js` 思路抓一次原始流，
-  只需调整 `gateway.js` 里 DSML 相关的三个正则即可。
-### 2026-10-16（第二轮）— v1.4.4：小概率"空白/断链"收口（方言再放宽 + 宽松兜底 + 留证）
+- **Symptom**: some DeepSeek-lineage upstreams (e.g. NVIDIA NIM) wrote tool calls as text inside `content`, like
+  `<｜DSML｜tool_calls>...`; the gateway swallowed the whole block as markup, leaving thinking but no tool call, breaking the chain.
+- **Root cause**: that dialect only prefixes the **outer** tag with the bar; the inner `<invoke>`/`<parameter>`/`</tool_calls>` are all bare.
+  The old state machine assumed every layer carried the prefix, so inner terminator regexes never matched.
+- **Fix**: the `dsmlFeed` state machine relaxed its terminator/opener regexes (prefix optional); at block end it now **parses and backfills** structured
+  `tool_calls` (including the final flush on the direct passthrough path) instead of just dropping.
+- **Verified**: `node --check` passes; 23+ unit cases green; a real-device 17-segment thinking + tool-call chain runs without breaks.
+- **Rollback**: `cp ~/ai-gateway/gateway.js.bak-backfill-20261016-1113 ~/ai-gateway/gateway.js && ~/ai-gateway/agw.sh restart`
+- **Follow-up**: if the upstream changes its dialect again (new prefix/tag names), capture one raw stream using the `/tmp/dsml/capture.js` approach and
+  adjust the three DSML-related regexes in `gateway.js`.
 
-- **现象**：第一轮修复后仍**小概率**出现"中间空白"（思考后断链、无工具调用）。
-- **又找到三条静默丢弃路径**（都表现为"整块被吞掉 → 正文空白"）：
-  1. `dsmlParseCall` 开头要求块内含 `DSML` 字样，否则直接 `return null`；
-  2. 解析要求 `</invoke>` 严格配对，模型漏写闭合标签 / 自闭合 `<invoke …/>` 时解析失败；
-  3. 回填要求函数名与客户端声明**完全一致**，大小写/命名空间差异 → 解析成功但不回填。
-- **修复**：
-  - 方言统一放宽为三种：① `｜DSML｜…`（含 DSML）② 完全裸标签 ③ 只剩竖线 `<｜tool_calls>`；
-  - 解析器改**按结构识别**（不再要求 DSML 字样）+ 宽松兜底（缺 `</invoke>`、自闭合、`<parameter>` 不闭合、块内 JSON 形态）；
-  - 回填闸：完全同名 → 规范化同名（大小写/命名空间）→ **单调用兜底**（宁可回填也不静默丢正文）；
-  - 上游截断（流结束仍在块内）时也先尽力解析回填，再决定丢弃。
-- **留证**：任何"吞块未回填"都写一行 JSON 到 `log/dsml-miss.log`（原因 / 原始上下文 / 声明工具名）。
-  `AGW_DSML_MISS_LOG=off` 可关闭；置为绝对路径可改位置。
-- **验证**：单元 25/25（含 133 个分片切点的模糊测试、逐字符喂入、三方言、截断回填）；
-  端到端 12/12（逐字符切片流式、工具名不匹配、非流式路径，均产出结构化 `tool_calls`）。
-- **回滚**：`cp ~/ai-gateway/gateway.js.bak-dsmlv2-*.bak ~/ai-gateway/gateway.js && ~/ai-gateway/agw.sh restart`### 2026-10-16（第三轮）— v1.4.5：停止/断流/崩溃三连修
+### 2026-10-16 (round 2) — v1.4.4: closing out rare "blank output / broken chain" cases (dialect relaxed again + loose fallback + evidence)
 
-- **现象**：仍偶发"空白/断链"，且早先"停止按钮没效果、请求卡死"。
-- **实锤**（log/dsml-miss.log + 网关日志）：上游在`<｜DSML｜ calls>`（注意是空格变体）处被掐断/自然结束 → 整块丢弃后界面无下文；日志里出现 `upstream idle timeout (180s)` 与 `uncaughtException: write after end`。
-- **根因三条**：① 客户端按停止时网关完全不处理，上游继续生成到自然结束或 180s 超时；② 上游连接重置（无 `end`）时下游永久悬挂；③ 上游 `error` 后提前 `res.end()`，随后 `close` 收尾再写 → write-after-end 打死整个网关进程。
-- **修复**：
-  - 客户端断开（`res.close` / `req.aborted`）→ 立即 `upReq.destroy()` 取消上游；
-  - 上游 `close`（无 `end`）→ 直接/转换/裸直通三条路径都强制收尾；
-  - 流式收尾时若上游未发 `[DONE]` → 网关补发，客户端不再当"未完成"；
-  - `error` 路径统一走管道收尾 + `res.on('error')` 兜底，杜绝 uncaughtException 崩进程。
-- **验证**：单元 25/25；E2E 直通 12/12（逐字符切片/名字不匹配/非流式）；E2E 中止 3/3（上游断流必补 [DONE]、客户端停止 2s 内取消上游）。
-- **测试文件已入仓**：`test/dsml/`（t2.js 单元、run.js 直通、abort.js 中止；`node test/dsml/t2.js` 等可直接跑）。
-- **回滚**：`cp ~/ai-gateway/gateway.js.bak-dsmlv3-*.bak ~/ai-gateway/gateway.js && ~/ai-gateway/agw.sh restart`### 2026-10-16（第四轮）— v1.4.6：孤儿标记截断的定向排查（maxTokens + 证据环）
+- **Symptom**: even after round 1, a **small-probability** "blank in the middle" remained (broken chain after thinking, no tool call).
+- **Three more silent-drop paths found** (all looked like "whole block swallowed -> blank content"):
+  1. `dsmlParseCall` required the block to contain the text `DSML`, else returned null immediately;
+  2. parsing demanded strict `</invoke>` pairing; a missing closing tag or self-closing `<invoke .../>` failed to parse;
+  3. backfill required the function name to match the client's declaration **exactly**; case/namespace differences parsed fine but never backfilled.
+- **Fix**:
+  - dialects unified to three: (1) the bar with DSML (2) fully bare tags (3) only the bar left, like `<｜tool_calls>`;
+  - the parser switched to **structure-based recognition** (no DSML text required) + a loose fallback (missing `</invoke>`, self-closing, unclosed `<parameter>`, JSON-shaped blocks);
+  - backfill gate: identical names -> normalized names (case/namespace) -> **single-call fallback** (prefer backfill over silently losing content);
+  - on upstream truncation (stream ends inside a block), parse/backfill best-effort before deciding to drop.
+- **Evidence**: every "block swallowed without backfill" writes one JSON line to `log/dsml-miss.log` (reason / raw context / declared tool names).
+  `AGW_DSML_MISS_LOG=off` disables it; an absolute path relocates it.
+- **Verified**: units 25/25 (including 133 fragmentation points fuzzing, char-by-char feeding, three dialects, truncated backfill);
+  E2E 12/12 (char-sliced streaming, tool-name mismatches, non-streaming path — all produced structured `tool_calls`).
+- **Rollback**: `cp ~/ai-gateway/gateway.js.bak-dsmlv2-*.bak ~/ai-gateway/gateway.js && ~/ai-gateway/agw.sh restart`
 
-- **现象**：仍偶发"空白/断链"，且 miss.log 一色 `truncated-drop | len=15 | <｜DSML｜ calls>\n`（12 次同签名）。
-- **指向**：deepseek-v4.1-flash(NIM) 长思考（20–100s）后刚写出 `<｜DSML｜ calls>`（空格变体）流即结束 —— 疑似 NIM 侧输出 token 预算在思考期耗尽、标记中途被截。
-- **改动**：
-  - 渠道级新选项 `maxTokens`（openai 直通/转换两路径，客户端未带 `max_tokens` 时才注入）；
-  - 证据环：直通管道保留最近 12 条上游 SSE 载荷，流结束时状态机仍挂起（截断/孤儿标记）→ 连同 `finish_reason` 一起写入 `log/dsml-miss.log`（reason=`pipe-final-active`），下次不必再猜；
-  - 已为 NVIDIA-NIM 四渠道注入 `maxTokens: 8192`（配置备份 `config.NVIDIA-NIM.json.bak-mt-*`）。
-- **验证**：单元 25/25，E2E 直通 12/12，E2E 中止 3/3。
-- **若仍复现**：`tail -3 ~/ai-gateway/log/dsml-miss.log` — 看 `pipe-final-active` 行的 `finish_reason`：`length` → 继续调大/确认 NIM 上限；`stop` → 模型自停，换处理策略。
+### 2026-10-16 (round 3) — v1.4.5: stop/disconnect/crash triple fix
+
+- **Symptom**: occasional "blank / broken chain" persisted, plus the earlier "stop button does nothing, request hangs".
+- **Confirmed** (log/dsml-miss.log + gateway logs): the upstream was cut off (or ended naturally) right at `<｜DSML｜ calls>` (note the space variant) -> the whole block was dropped and the UI had no continuation; logs showed `upstream idle timeout (180s)` and `uncaughtException: write after end`.
+- **Three root causes**: (1) when the client pressed stop, the gateway did nothing and the upstream kept generating to natural end or the 180s timeout; (2) an upstream connection reset (no `end`) hung the downstream forever; (3) after an upstream `error`, an early `res.end()` followed by the `close` finalization wrote again -> write-after-end killed the whole gateway process.
+- **Fix**:
+  - client disconnect (`res.close` / `req.aborted`) -> immediately `upReq.destroy()` the upstream;
+  - upstream `close` without `end` -> force finalization on all three paths (direct / converted / bare passthrough);
+  - if the upstream never sent `[DONE]`, the gateway sends it at stream end so clients stop treating it as unfinished;
+  - the error path finalizes through the pipe with a `res.on('error')` fallback, eliminating process-killing uncaughtExceptions.
+- **Verified**: units 25/25; E2E passthrough 12/12 (char slicing / name mismatch / non-streaming); E2E abort 3/3 (a broken upstream always gets [DONE]; a client stop cancels the upstream within 2s).
+- **Test files in repo**: `test/dsml/` (t2.js units, run.js passthrough, abort.js abort; run with `node test/dsml/t2.js` etc.).
+- **Rollback**: `cp ~/ai-gateway/gateway.js.bak-dsmlv3-*.bak ~/ai-gateway/gateway.js && ~/ai-gateway/agw.sh restart`
+
+### 2026-10-16 (round 4) — v1.4.6: targeted diagnosis of orphan-markup truncation (maxTokens + evidence ring)
+
+- **Symptom**: occasional "blank / broken chain" remained, with miss.log uniformly showing `truncated-drop | len=15 | <｜DSML｜ calls>\n` (12 identical signatures).
+- **Indication**: deepseek-v4.1-flash (NIM) emits `<｜DSML｜ calls>` (space variant) right after 20-100s of thinking, and the stream ends immediately — likely NIM exhausting its output token budget during thinking, truncating mid-markup.
+- **Changes**:
+  - new channel-level option `maxTokens` (both openai passthrough and conversion paths; injected only when the client sends no `max_tokens`);
+  - evidence ring: the passthrough pipe keeps the last 12 upstream SSE payloads; if the state machine is still attached at stream end (truncation/orphan markup), they are written to `log/dsml-miss.log` together with `finish_reason` (reason=`pipe-final-active`) so nobody has to guess again;
+  - `maxTokens: 8192` injected for the four NVIDIA-NIM channels (config backups at `config.NVIDIA-NIM.json.bak-mt-*`).
+- **Verified**: units 25/25, E2E passthrough 12/12, E2E abort 3/3.
+- **If it recurs**: `tail -3 ~/ai-gateway/log/dsml-miss.log` — check `finish_reason` on the `pipe-final-active` line: `length` -> raise the limit further / confirm NIM's cap; `stop` -> the model stopped on its own, change the handling strategy.

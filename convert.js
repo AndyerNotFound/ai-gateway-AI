@@ -10,16 +10,16 @@ const os = require('os');
 const zlib = require('zlib');
 const { toText, normStop, randId, safeParse, nowSec } = require('./util');
 
-// ================= 格式互转: 入口解析 / 出口构建 / 响应 / SSE =================
-/* ================= 入口解析: 客户端格式 → canonical =================
+// ================= Format conversion: entry parsing / exit building / responses / SSE =================
+/* ================= Entry parsing: client format -> canonical =================
  * canonical request: {
  *   model, stream,
  *   messages: [{ role:'system'|'user'|'assistant'|'tool',
  *                content: string | [{type:'text',text}|{type:'image_url',image_url:{url}}],
  *                name?, tool_call_id?, tool_calls?: [{id,type:'function',function:{name,arguments:string}}] }],
- *   temperature?, top_p?, max_tokens?, stop?, tools?(OpenAI形), tool_choice?(OpenAI形) }
+ *   temperature?, top_p?, max_tokens?, stop?, tools? (OpenAI form), tool_choice? (OpenAI form) }
  * canonical resp: { text, reasoning?, tool_calls?, finish_reason:'stop'|'length'|'tool_calls'|'content_filter', usage:{input,output} }
- * canonical 事件: {type:'start',usage?} {type:'text',t} {type:'reasoning',t}
+ * canonical events: {type:'start',usage?} {type:'text',t} {type:'reasoning',t}
  *                {type:'tool_start',i,id,name} {type:'tool_delta',i,s} {type:'end',finish_reason,usage}
  * ================================================================ */
 function openaiToCanonical(body, urlModel) {
@@ -99,7 +99,7 @@ function claudeToCanonical(body, urlModel) {
           : (Array.isArray(b.content) ? b.content.filter(x => x && x.type === 'text').map(x => x.text || '').join('\n') : '');
         messages.push({ role: 'tool', tool_call_id: b.tool_use_id || '', content: c });
       }
-      // thinking / document / server_tool_use 等其余 block 类型忽略
+// other block types (thinking / document / server_tool_use) ignored
     }
     if (m.role === 'assistant') {
       if (textParts.length || toolCalls.length) {
@@ -198,8 +198,8 @@ function geminiToCanonical(body, urlModel) {
   };
 }
 
-/* ================= OpenAI Responses API 转换 ================= */
-// 上游 Responses 流式事件解析(响应输出 → canonical 事件)
+/* ================= OpenAI Responses API conversion ================= */
+// Upstream Responses streaming event parsing (response output -> canonical events)
 class ResponsesStreamParser {
   constructor(emit) { this.emit = emit; this.finished = false; this.finishReason = undefined; this.usage = null; this.toolIdx = 0; }
   handle(j) {
@@ -242,7 +242,7 @@ class ResponsesStreamParser {
   }
 }
 
-// Responses content 数组 → 通用 content(multi-modal 数组, 纯文本则简化字符串)
+// Responses content array -> generic content (multi-modal array; plain text collapses to a string)
 function responsesContentToContent(content) {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
@@ -262,7 +262,7 @@ function responsesContentToContent(content) {
   return (out.length === 1 && out[0].type === 'text') ? out[0].text : out;
 }
 
-// 客户端 Responses 请求 → canonical (input/instructions → messages)
+// Client Responses request -> canonical (input/instructions -> messages)
 function responsesToCanonical(body, urlModel) {
   const messages = [];
   const instructions = body.instructions;
@@ -292,7 +292,7 @@ function responsesToCanonical(body, urlModel) {
       }
       messages.push({ role, content: responsesContentToContent(item.content) });
     }
-    // reasoning / 其它类型忽略
+// reasoning / other types ignored
   }
   let tools;
   if (Array.isArray(body.tools) && body.tools.length) {
@@ -316,7 +316,7 @@ function responsesToCanonical(body, urlModel) {
   };
 }
 
-// canonical → 上游 Responses 请求体 (system → instructions, messages → input items)
+// canonical -> upstream Responses body (system -> instructions, messages -> input items)
 function canonicalToResponsesBody(c) {
   const instructions = [];
   const input = [];
@@ -373,7 +373,7 @@ function canonicalToResponsesBody(c) {
   return body;
 }
 
-/* ================= 出口构建: canonical → 上游格式 ================= */
+/* ================= Exit building: canonical -> upstream format ================= */
 function canonicalToOpenAIBody(c, opts = {}) {
   const messages = [];
   for (const m of (c.messages || [])) {
@@ -390,7 +390,7 @@ function canonicalToOpenAIBody(c, opts = {}) {
       messages.push({ role: 'system', content: toText(m.content) });
     } else {
       let content = m.content;
-      // 纯文本数组扁平化为字符串(最大兼容 OpenAI 兼容站); 含图片则保留数组
+      // plain-text arrays flatten to a string (max compatibility with OpenAI-compatible sites); arrays with images stay arrays
       if (Array.isArray(content) && content.every(x => x && x.type === 'text')) {
         content = content.map(x => x.text || '').join('');
       }
@@ -561,7 +561,7 @@ function canonicalToGeminiBody(c) {
   return body;
 }
 
-/* ================= 上游响应(JSON) → canonical ================= */
+/* ================= Upstream response (JSON) -> canonical ================= */
 function openaiRespToCanonical(j) {
   const choice = (j.choices && j.choices[0]) || {};
   const msg = choice.message || {};
@@ -643,7 +643,7 @@ function geminiRespToCanonical(j) {
   };
 }
 
-/* ================= canonical → 客户端格式响应(JSON) ================= */
+/* ================= canonical -> client-format response (JSON) ================= */
 function canonicalToOpenAIResp(cresp, model) {
   const message = { role: 'assistant', content: cresp.text === '' ? null : cresp.text };
   if (cresp.reasoning) message.reasoning_content = cresp.reasoning;
@@ -689,7 +689,7 @@ function canonicalToGeminiResp(cresp, model) {
   };
 }
 
-// 上游 Responses 非流式响应 → canonical 响应 (output 数组解析)
+// Upstream Responses non-streaming response -> canonical response (parses the output array)
 function responsesRespToCanonical(j) {
   let text = '';
   const reasoningParts = [];
@@ -727,7 +727,7 @@ function responsesRespToCanonical(j) {
   };
 }
 
-// canonical 响应 → 客户端 Responses 非流式响应
+// canonical response -> client Responses non-streaming response
 function canonicalToResponsesResp(cresp, model) {
   const output = [];
   if (cresp.reasoning) {
@@ -750,7 +750,7 @@ function canonicalToResponsesResp(cresp, model) {
   };
 }
 
-/* ================= SSE 解码 + 上游流 → canonical 事件 ================= */
+/* ================= SSE decode + upstream stream -> canonical events ================= */
 class SSEDecoder {
   constructor(onData) { this.onData = onData; this.buf = ''; this.lines = []; }
   push(s) {
@@ -838,7 +838,7 @@ class UpstreamStreamParser {
           reasoning: (j.usage && (j.usage.reasoning_tokens != null ? j.usage.reasoning_tokens : 0)) || (this.usage && this.usage.reasoning) || 0,
         };
       }
-      // message_stop / ping / error: end 统一在 finish() 发
+// message_stop / ping / error: end is always sent from finish()
     } else { // gemini
       const cand = (j.candidates && j.candidates[0]) || {};
       for (const p of ((cand.content && cand.content.parts) || [])) {
@@ -871,7 +871,7 @@ class UpstreamStreamParser {
   }
 }
 
-/* ================= canonical 事件 → 客户端流式写出 ================= */
+/* ================= canonical events -> client streaming output ================= */
 function sseData(res, obj) { res.write('data: ' + JSON.stringify(obj) + '\n\n'); }
 function sseEvent(res, ev, obj) { res.write('event: ' + ev + '\ndata: ' + JSON.stringify(obj) + '\n\n'); }
 
@@ -966,7 +966,7 @@ function makeWriter(format, res, model, opts = {}) {
     };
   }
 
-  // gemini: alt=sse 时 SSE 格式, 否则 JSON 数组分块流
+// gemini: SSE format when alt=sse, otherwise a chunked JSON-array stream
   const isArray = !!opts.geminiArray;
   let firstArray = true;
   let toolBuf = null;
@@ -1007,7 +1007,7 @@ function makeWriter(format, res, model, opts = {}) {
   };
 }
 
-/* ================= canonical 事件 → 客户端 Responses 流式 SSE ================= */
+/* ================= canonical events -> client Responses streaming SSE ================= */
 function makeResponsesWriter(res, model) {
   const respId = randId('resp_');
   const msgId = randId('msg_');

@@ -15,11 +15,11 @@ const { logErr, log } = require('./util');
 let crypt = null; try { crypt = require('./crypt.js'); } catch (_) {}
 const admin = require('./admin');
 
-// ================= 模型同步(自动) =================
-/* ================= 模型同步(自动) ================= */
+// ================= Model sync (automatic) =================
+/* ================= Model sync (automatic) ================= */
 const TO_CANON = { openai: openaiToCanonical, claude: claudeToCanonical, gemini: geminiToCanonical };
 
-// 拉取渠道上游的模型列表(供管理面板"获取模型列表"用; 服务端发起, 用真实 apiKey, 走渠道代理)
+//// fetch a channel's upstream model list (powers the panel's "fetch model list"; server-initiated, real apiKey, channel proxy)
 function fetchUpstreamModels(cfg, ch) {
   return new Promise((resolve, reject) => {
     const base = String(ch.baseUrl || '').replace(/\/+$/, '');
@@ -59,7 +59,7 @@ function fetchUpstreamModels(cfg, ch) {
     }, 'GET');
   });
 }
-// 自动同步本实例各渠道的模型列表(定期/手动): 拉上游 /models, 合并进 ch.models(只增不减), 内存+磁盘都更新
+// Auto-sync this instance's channel model lists (scheduled/manual): fetch upstream /models, merge into ch.models (add-only), updating memory + disk
 let _syncing = false;
 async function syncModels(cfg) {
   if (_syncing) return { busy: true };
@@ -96,21 +96,21 @@ async function syncModels(cfg) {
 const UP_RESP = { openai: openaiRespToCanonical, claude: claudeRespToCanonical, gemini: geminiRespToCanonical };
 const BUILD_BODY = { openai: canonicalToOpenAIBody, claude: canonicalToClaudeBody, gemini: canonicalToGeminiBody };
 
-// 可重试的上游错误: 鉴权失败(换 key 重试)/限流/服务端错误/超时
+// Retryable upstream errors: auth failure (retry with another key) / rate limit / server error / timeout
 const RETRYABLE = new Set([401, 403, 408, 409, 425, 429, 500, 502, 503, 504, 529]);
-// 这些状态属于「过一会儿可能就好」, 先在同一个渠道重试(退避), 用完次数再切渠道
+// These conditions are "might recover shortly": retry on the same channel with backoff first, then switch after the budget
 const SAME_RETRYABLE = new Set([408, 429, 500, 502, 503, 504, 529]);
 
-// OpenAI 扩展端点/透传是否启用 (默认开启; 仅显式 enable:false 关闭) — 2026-10-16
+// Whether OpenAI extended endpoints/passthrough are on (default on; only explicit enable:false turns them off) -- 2026-10-16
 function openaiExtrasOn(cfg) {
   const oe = (cfg && cfg.openaiExtras) || {};
   return oe.enable !== false;
 }
 
-// OpenAI 渠道是否用 Responses API 上游
-//  - 渠道级 useResponses 显式设置优先
-//  - Responses 客户端(/v1/responses) 默认直通上游 /v1/responses (2026-10-16)
-//  - 其余(chat 客户端) 跟随全局 upstreamResponses(默认 false)
+// Whether OpenAI channels use the Responses API upstream
+//  - an explicit channel-level useResponses takes priority
+//  - Responses clients (/v1/responses) pass through to upstream /v1/responses by default (2026-10-16)
+//  - everything else (chat clients) follows the global upstreamResponses (default false)
 function chUsesResponses(cfg, ch, clientApi) {
   if (ch.type !== 'openai') return false;
   if (!openaiExtrasOn(cfg)) return false;
@@ -120,21 +120,21 @@ function chUsesResponses(cfg, ch, clientApi) {
   return !!oe.upstreamResponses;
 }
 
-// 为指定渠道构建上游请求的 url / headers / body
+// Build the upstream request url / headers / body for a channel
 function buildRequestForChannel(cfg, ch, clientFormat, clientApi, canonical, body, urlInfo, req) {
-  // 思考链精简开启时, 即使同格式也走 canonical 转换路径(否则直通管道会绕过精简);
-  // 客户端 API(chat/responses) 与上游 API(chat/responses) 不一致时也必须走转换中枢
+  // when condensing is on, even same-format requests take the canonical conversion path (otherwise the passthrough pipe would bypass it);
+// When the client API (chat/responses) and upstream API (chat/responses) differ, the conversion hub is mandatory
   const upApi = chUsesResponses(cfg, ch, clientApi) ? 'responses' : 'chat';
   const direct = clientFormat === ch.type && clientApi === upApi && !(cfg.thinkingSummary && cfg.thinkingSummary.enable) && !respRedactOn(cfg, urlInfo);
   const stream = canonical.stream;
-  const upstreamModel = canonical.model; // 已被调用方改写为该渠道的上游模型名
+const upstreamModel = canonical.model; // already rewritten by the caller to this channel's upstream model name
   let url, headers = {}, bodyBuf;
   if (direct) {
     if (ch.type === 'openai') {
       url = joinUrl(ch.baseUrl, upApi === 'responses' ? '/v1/responses' : '/v1/chat/completions');
       body.model = upstreamModel;
       if (body && typeof body === 'object' && ch.maxTokens && body.max_tokens == null && body.max_completion_tokens == null) {
-        body.max_tokens = Number(ch.maxTokens);   // ★渠道级输出上限(缺省时注入): 思考型模型默认上限小, 思考耗尽预算会在标记中途被截断(2026-10-16 实测)
+body.max_tokens = Number(ch.maxTokens);   // *channel-level output cap (injected when absent): thinking models default low and run out of budget mid-markup (observed 2026-10-16)
       }
       headers.authorization = 'Bearer ' + ch.apiKey;
     } else if (ch.type === 'claude') {
@@ -152,7 +152,7 @@ function buildRequestForChannel(cfg, ch, clientFormat, clientApi, canonical, bod
     const uc = { ...canonical, model: upstreamModel };
     if (ch.type === 'openai') {
       url = joinUrl(ch.baseUrl, upApi === 'responses' ? '/v1/responses' : '/v1/chat/completions');
-      if (ch.maxTokens && uc.max_tokens == null && uc.max_completion_tokens == null) uc.max_tokens = Number(ch.maxTokens);   // ★同上: 转换路径也注入
+if (ch.maxTokens && uc.max_tokens == null && uc.max_completion_tokens == null) uc.max_tokens = Number(ch.maxTokens);   // *same as above: injected on the conversion path too
       bodyBuf = Buffer.from(JSON.stringify(upApi === 'responses' ? canonicalToResponsesBody(uc) : BUILD_BODY.openai(uc, { addUsage: ch.addUsage })));
       headers.authorization = 'Bearer ' + ch.apiKey;
     } else if (ch.type === 'claude') {
@@ -171,5 +171,5 @@ function buildRequestForChannel(cfg, ch, clientFormat, clientApi, canonical, bod
   return { url, headers, bodyBuf, direct, stream, upApi };
 }
 
-// 处理上游成功响应(2xx): 直通或跨格式转换. 提取自原 handleChat.
+// Handle a successful upstream response (2xx): passthrough or cross-format conversion. Extracted from the original handleChat.
 module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, crypt, admin, TO_CANON, fetchUpstreamModels, _syncing, syncModels, UP_RESP, BUILD_BODY, RETRYABLE, SAME_RETRYABLE, openaiExtrasOn, chUsesResponses, buildRequestForChannel };

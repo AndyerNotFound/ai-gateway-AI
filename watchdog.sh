@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# ai-gateway watchdog — 检测网关死亡/失联并自动拉起
-# 事故背景 2026-10-10: 网关 18:32 被杀后 PID 被复用, agw.sh 误判"已在运行"导致无法启动
-# 用法: setsid nohup bash ~/ai-gateway/watchdog.sh [间隔秒,默认30] >/dev/null 2>&1 &
+# ai-gateway watchdog -- detects a dead/unresponsive gateway and restarts it automatically
+# Incident 2026-10-10: after the gateway was killed at 18:32 its PID got reused; agw.sh misjudged it as "already running" and could not start.
+# Usage: setsid nohup bash ~/ai-gateway/watchdog.sh [interval secs, default 30] >/dev/null 2>&1 &
 set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
 PIDFILE="$DIR/.run/main.pid"
@@ -15,7 +15,7 @@ bad=0
 
 log(){ echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 
-# 进程活着 且 确实是本网关(防 PID 复用误判)
+# Process alive AND really this gateway (guards against PID-reuse misjudgment)
 alive() {
   [ -f "$PIDFILE" ] || return 1
   local pid; pid="$(cat "$PIDFILE" 2>/dev/null)"
@@ -24,7 +24,7 @@ alive() {
   grep -q "ai-gateway/gateway[.]js" "/proc/$pid/cmdline" 2>/dev/null
 }
 
-# 主端口(与 agw.sh get_main_port 逻辑一致, 兼容加密配置)
+# Main port (same logic as agw.sh get_main_port, works with encrypted configs)
 get_port() {
   node -e 'try{const fs=require("fs");let raw=fs.readFileSync(process.argv[1],"utf8");try{const c=require(process.argv[2]+"/crypt.js");if(c.isEncText(raw))raw=c.decryptText(raw,c.loadPass())}catch(_){};console.log((JSON.parse(raw).listen||{}).port||16384)}catch(e){console.log("?")}' "$DIR/config.json" "$DIR" 2>/dev/null
 }
@@ -37,7 +37,7 @@ health() {
   curl -sf -m 5 "http://127.0.0.1:$p/health" >/dev/null 2>&1
 }
 
-# 防止重复运行
+# Prevent double runs
 if [ -f "$WDPIDFILE" ]; then
   oldpid="$(cat "$WDPIDFILE" 2>/dev/null)"
   if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null; then

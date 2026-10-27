@@ -20,7 +20,7 @@ const { socks5Connect, httpConnect, dialViaProxy, makeReader } = require('./prox
 const state = require('./state');
 const rt = require('./runtime');
 
-// ================= main(组装入口) =================
+// ================= main (assembly entry) =================
 /* ================= main ================= */
 function main() {
   const args = process.argv.slice(2);
@@ -42,7 +42,7 @@ function main() {
   process.on('uncaughtException', e => logErr('uncaughtException:', (e && e.message) || e));
   process.on('SIGTERM', () => { const cs = state.CUR_POOL ? [...state.CUR_POOL.instances.values()] : [cfg]; for (const c of cs) { try { saveKeyUsage(c); } catch (_) {} try { flushStats(c); } catch (_) {} } try { rt.PLUGINS && rt.PLUGINS.flushAll(); } catch (_) {} process.exit(0); });
   process.on('SIGINT', () => process.exit(0));
-  // 默认多实例单进程模式(托管目录下全部 config*.json); AGW_SINGLE=1 或显式端口参数时退回单实例
+// Defaults to single-process multi-instance mode (hosts all config*.json in the dir); AGW_SINGLE=1 or an explicit port arg falls back to a single instance
   const multi = portOverride == null && process.env.AGW_SINGLE !== '1';
   startServer(cfg, { port: portOverride, multi }).catch(e => { logErr('启动失败:', e.message); process.exit(1); });
 }

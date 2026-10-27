@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 'use strict';
-/* agw — ai-gateway unified CLI (计划通.md spec)
- * 入口: ~/bin/agw -> ~/ai-gateway/agw.js
- * 读配置: 直接文件 + crypt.js 解密(AGWENC1); 写配置: 改后走 admin API 热生效(实例在跑时)
+/* agw -- ai-gateway unified CLI (jihuasheng.md spec)
+ * Entry: ~/bin/agw -> ~/ai-gateway/agw.js
+ * Reads config: file directly + crypt.js decryption (AGWENC1); writes config: hot-applied via the admin API (when the instance is running)
  */
 const fs = require('fs');
 const path = require('path');
@@ -14,10 +14,10 @@ const { spawn, execSync } = require('child_process');
 const crypt = require(path.join(__dirname, 'crypt.js'));
 const ctxp = require(path.join(__dirname, 'ctxp.js'));
 
-const DIR = __dirname; // 代码根
-const DATA_DIR = path.join(__dirname, 'data'); // 数据根: config*/ball*/.agwkey/log 等
+const DIR = __dirname; // code root
+const DATA_DIR = path.join(__dirname, 'data'); // data root: config*/ball*/.agwkey/log etc.
 const HOME = os.homedir();
-/* ===== i18n: zh-CN 为键, lang/<code>.json 查表; 无条目原样回退 ===== */
+/* ===== i18n: zh-CN is the key, looked up in lang/<code>.json; falls back to the key itself when missing ===== */
 const LANG_FILE = path.join(HOME, '.agwlang');
 const LANGS = ['zh-CN', 'en', 'zh-TW', 'ja', 'ko', 'ru', 'es', 'fr', 'eo'];
 function currentLang() {
@@ -29,7 +29,7 @@ let _t = null, _tn = null;
 try {
   if (currentLang() !== 'zh-CN') {
     _t = JSON.parse(fs.readFileSync(path.join(__dirname, 'lang', currentLang() + '.json'), 'utf8'));
-    _tn = {}; // 归一化键(去首尾空白+压内部空白): 帮助块逐行匹配用
+    _tn = {}; // normalized keys (trimmed + inner whitespace collapsed): for line-by-line matching of help blocks
     for (const k of Object.keys(_t)) _tn[k.trim().replace(/\s+/g, ' ')] = _t[k];
   }
 } catch (_) { _t = null; }
@@ -53,10 +53,10 @@ const C = process.stdout.isTTY ? {
   dim: s => `\x1b[2m${s}\x1b[0m`, red: s => `\x1b[31m${s}\x1b[0m`, grn: s => `\x1b[32m${s}\x1b[0m`,
   yel: s => `\x1b[33m${s}\x1b[0m`, cyn: s => `\x1b[36m${s}\x1b[0m`, bold: s => `\x1b[1m${s}\x1b[0m`,
 } : { dim: s => s, red: s => s, grn: s => s, yel: s => s, cyn: s => s, bold: s => s };
-let LOOPING = false; // loop 内 die 改为抛错(不退出进程), 由 REPL 捕获后打印
+let LOOPING = false; // inside a loop, die throws instead of exiting; the REPL catches and prints it
 const die = m => { if (LOOPING) throw new Error(t(m)); console.error(C.red('✗ ' + t(m))); process.exit(1); };
 const ok = m => console.log(C.grn('✓ ' + t(m)));
-function parseNum(v) { // "200k" | "50%" 等宽松数字(ctxp 同款)
+function parseNum(v) { // lenient numbers like "200k" | "50%" (same as ctxp)
   if (v == null) return NaN;
   const s = String(v).trim().toLowerCase();
   let m = s.match(/^([\d.]+)\s*(ki|mi|k|m|%)?$/);
@@ -66,13 +66,13 @@ function parseNum(v) { // "200k" | "50%" 等宽松数字(ctxp 同款)
   return n * mult;
 }
 const fmtN = n => n >= 1e6 ? (n / 1e6).toFixed(n % 1e6 ? 1 : 0) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(n % 1e3 ? 1 : 0) + 'k' : String(n);
-function fmtTok(n) { n = Number(n) || 0; return n >= 1e8 ? (n / 1e8).toFixed(2) + '亿' : n >= 1e4 ? (n / 1e4).toFixed(1) + '万' : String(n); }
+function fmtTok(n) { n = Number(n) || 0; return n >= 1e8 ? (n / 1e8).toFixed(2) + 'Y' : n >= 1e4 ? (n / 1e4).toFixed(1) + 'W' : String(n); }
 function fmtDur(ms) { return ms >= 60000 ? (ms / 60000).toFixed(1) + 'min' : ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : ms + 'ms'; }
 function humanTime(iso) {
   if (!iso) return '-';
   const d = new Date(iso); if (isNaN(d)) return iso;
   const diff = Date.now() - d.getTime();
-  if (diff >= 0 && diff < 864e5) return fmtDur(diff) + '前';
+  if (diff >= 0 && diff < 864e5) return fmtDur(diff) + ' ago';
   return iso.slice(0, 16).replace('T', ' ');
 }
 function pad(s, n) { s = String(s); return s.length >= n ? s : s + ' '.repeat(n - s.length); }
@@ -97,17 +97,17 @@ function listInsts() {
 function cfgPathOf(name) { return name === 'default' ? path.join(DATA_DIR, 'config.json') : path.join(DATA_DIR, `config.${name}.json`); }
 function loadCfg(name) {
   const f = cfgPathOf(name);
-  if (!fs.existsSync(f)) die(`实例不存在: ${name} (已有: ${listInsts().join(', ') || '无'})`);
+  if (!fs.existsSync(f)) die(`instance not found: ${name} (have: ${listInsts().join(', ') || 'none'})`);
   const raw = fs.readFileSync(f, 'utf8');
   if (crypt.isEncText(raw)) {
     const pass = crypt.loadPass();
-    if (!pass) die(`${f} 已加密但找不到口令(.agwkey / AGW_CRYPT_PASS)`);
+    if (!pass) die(`${f} is encrypted but no passphrase found (.agwkey / AGW_CRYPT_PASS)`);
     try { return JSON.parse(crypt.decryptText(raw, pass)); }
-    catch (e) { die(`解密失败: ${e.message}`); }
+    catch (e) { die(`decrypt failed: ${e.message}`); }
   }
-  try { return JSON.parse(raw); } catch (e) { die(`${f} JSON 损坏: ${e.message}`); }
+  try { return JSON.parse(raw); } catch (e) { die(`${f} broken JSON: ${e.message}`); }
 }
-function saveCfg(name, cfg) { // 保持文件原加密状态(原密文则回写密文)
+function saveCfg(name, cfg) { // preserve the file's original encryption state (re-encrypt if it was ciphertext)
   const f = cfgPathOf(name);
   const raw = fs.readFileSync(f, 'utf8');
   const bak = f + '.agwbak';
@@ -115,7 +115,7 @@ function saveCfg(name, cfg) { // 保持文件原加密状态(原密文则回写�
   let out = JSON.stringify(cfg, null, 2) + '\n';
   if (crypt.isEncText(raw)) {
     const pass = crypt.loadPass();
-    if (!pass) die(`无法保持加密状态(找不到口令): ${f}`);
+    if (!pass) die(`cannot preserve encryption (no passphrase): ${f}`);
     out = crypt.encryptText(out, pass);
   }
   fs.writeFileSync(f, out);
@@ -123,20 +123,20 @@ function saveCfg(name, cfg) { // 保持文件原加密状态(原密文则回写�
 function needLive() {
   let pid = 0;
   try { pid = Number(fs.readFileSync(path.join(DATA_DIR, '.run', 'main.pid'), 'utf8').trim()); } catch (_) {}
-  if (pid) { try { process.kill(pid, 0); } catch (_) { die(`网关未在运行(pid ${pid} 已失效), 请先 agw.sh start`); } }
-  else die('网关未在运行(无 .run/main.pid), 请先 agw.sh start');
+  if (pid) { try { process.kill(pid, 0); } catch (_) { die(`gateway not running (pid ${pid} is stale); run agw.sh start first`); } }
+  else die('gateway not running (no .run/main.pid); run agw.sh start first');
   const c = loadCfg('default');
   const port = (c.listen || {}).port || 16384;
   const tls = !!(c.tls && c.tls.enable);
   return { port, tls, pid };
 }
-function instLive(name, tok) { // 实例是否在池里跑着(读 pool 端口表退化: 尝试 /health/<name>? 无此路由, 改用 admin instances)
+function instLive(name, tok) { // is the instance running in the pool (reading the pool port table regressed: no /health/<name> route, so use admin instances)
   return api('GET', '/admin/api/instances', null, tok).then(d => {
     const it = (d.instances || []).find(x => x.name === name);
     return it ? it : null;
   }).catch(() => null);
 }
-async function hotRestart(name, tok) { // 在跑的实例改完配置后重启生效; tok=显式令牌(令牌轮换时网关内存里还是旧令牌, 须用旧的调 API)
+async function hotRestart(name, tok) { // restart a running instance to apply config changes; tok = explicit token (after token rotation the gateway still holds the old token in memory, so calls must use the old one)
   const it = await instLive(name, tok);
   if (it && it.running) { await api('POST', `/admin/api/action/${name}/restart`, null, tok); ok(t('实例 %s 已热重启生效').replace('%s', name)); }
   else console.log(C.dim('实例未在运行, 下次启动生效'));
@@ -157,7 +157,7 @@ function api(method, p, body, tok) {
       host: '127.0.0.1', port: st.port, method,
       path: p, timeout: 30000,
       headers: { 'x-agw-token': tok || adminKey(), 'Content-Type': 'application/json' },
-      ...(tls ? { rejectUnauthorized: false } : {}), // 自签 CA: 本机回环
+...(tls ? { rejectUnauthorized: false } : {}), // self-signed CA: local loopback
     };
     const mod = tls ? https : http;
     const req = mod.request(opts, res => {
@@ -170,7 +170,7 @@ function api(method, p, body, tok) {
     });
     req.on('timeout', () => { req.destroy(new Error('请求超时(30s)')); });
     req.on('error', reject);
-    if (body != null) req.write(JSON.stringify(body)); // null/undefined 都不发 body(GET 带 body 会被服务端提前断连)
+if (body != null) req.write(JSON.stringify(body)); // no body for null/undefined (a GET with a body gets the connection cut early by servers)
     req.end();
   });
 }
@@ -521,7 +521,7 @@ function cmdCtxp(argv) {
   if (!pat && canLoop()) return loopCtxp();
   if (!pat) { show(); return; }
   const maxV = get('--max'), warnV = get('--warn'), killV = get('--kill');
-  if (maxV == null && warnV == null && killV == null) { // 查询单条
+if (maxV == null && warnV == null && killV == null) { // query a single entry
     const rules = ctxp.loadRules();
     const hit = Object.keys(rules).find(k => k === pat || ctxp.globMatch(pat, k));
     if (!hit) return console.log(`  无匹配规则: ${pat}`);
@@ -542,7 +542,7 @@ function cmdCtxp(argv) {
 }
 
 
-/* ---------- 上下文上限 loop ---------- */
+/* ---------- context-limit loop ---------- */
 const HELP_CTXP = t(`上下文上限 loop 命令:
   stat <模型|*>                查看规则(*=全部)
   edit                         编辑 loop(models= / max= / warn=, apply 生效)
@@ -693,7 +693,7 @@ function cmdRefresh(argv) {
   if (argv[0] !== 'ca') { console.log(t('用法: agw refresh ca  — 检查并按需重签 TLS 证书(过期/换 CA/SAN 缺当前 IP 时), 完成后重启网关并回验')); return; }
   const script = path.join(DIR, 'ops', 'guard.sh');
   if (!fs.existsSync(script)) die('找不到 ops/guard.sh');
-  // renew.sh 走 gen-server.sh --ensure(只在该重签时才签); --force 无条件重签
+  // renew.sh uses gen-server.sh --ensure (signs only when a re-sign is actually needed); --force re-signs unconditionally
   const renew = path.join(DIR, 'tls', 'renew.sh');
   console.log(C.dim('运行 tls/renew.sh (检查+按需重签+重启+回验)…'));
   try { execSync(`bash '${renew}'`, { stdio: 'inherit' }); ok('证书检查完成'); }
@@ -735,7 +735,7 @@ function cmdCloudflared(argv) {
   }).catch(e => die(e.message));
 }
 
-/* ---------- 隧道 loop ---------- */
+/* ---------- tunnel loop ---------- */
 const HELP_CF = t(`隧道管理 loop 命令:
   log [silence|log|warn|error|debug]   日志尾部(可按级别过滤)
   grep <time|line|content|other> <值>  日志过滤
@@ -948,7 +948,7 @@ function cmdNotice(argv) {
     for (const ch of (c.channels || [])) {
       if (!ch.apiKey) { console.log(C.red(`  [${t}] 渠道 ${ch.name}: apiKey 为空`)); n++; }
       if (ch.balanceWarn) {
-        // 余额代查(有配置才查)
+        // balance proxy lookup (only when configured)
         try {
           const gw = require('./gateway.js');
           gw.fetchBalanceCached(c, ch, r => {
@@ -962,7 +962,7 @@ function cmdNotice(argv) {
     const exp = (c.apiKeys || []).filter(k => k.expiresAt && new Date(k.expiresAt) < new Date(Date.now() + 7 * 864e5));
     for (const k of exp) { console.log(C.yel(`  [${t}] 卡 ${trunc(k.key, 10)}… 将到期/已到期: ${k.expiresAt}`)); n++; }
   }
-  // 证书剩余
+  // certificate days remaining
   try {
     const cert = path.join(DIR, 'tls', 'ca.pem');
     const certFile = fs.existsSync(path.join(DIR, 'tls', 'cert.pem')) ? path.join(DIR, 'tls', 'cert.pem') : cert;
@@ -1008,7 +1008,7 @@ function cmdStat(argv) {
       }
       return;
     }
-    // dist: 聚合全部分日的六分类
+  // dist: aggregate the 6-way split across all days
     const D = { tools: 0, system: 0, history: 0, user: 0, reasoning: 0, text: 0, tool: 0 };
     for (const v of Object.values(j.daily || {})) { for (const k of Object.keys(D)) D[k] += (v.dist && v.dist[k]) || 0; }
     const tot = Object.values(D).reduce((a, b) => a + b, 0);
@@ -1030,7 +1030,7 @@ function cmdStat(argv) {
       for (const [cn, v] of Object.entries(s.byChannel || {})) console.log(`    ${pad(cn, 18)} ${v.requests}次${v.errors ? ' ' + C.red(v.errors + '错') : ''}`);
     }).catch(e => die(e.message));
   }
-  // daily/weekly/monthly: 解析 requests-<inst>.jsonl
+  // daily/weekly/monthly: parse requests-<inst>.jsonl
   const f = path.join(DATA_DIR, 'log', `requests-${inst}.jsonl`);
   if (!fs.existsSync(f)) return console.log(C.dim(`  ${inst} 未开请求记录(record), 无历史数据可统计`));
   const now = Date.now();
@@ -1056,10 +1056,10 @@ function cmdStat(argv) {
 }
 
 /* ================================================================
- *  agw web — 面板访问令牌(/auth?key=<token>)
- *  webToken: 面板入口与 /admin/api/* 唯一的管理访问令牌
+ *  agw web -- panel access token (/auth?key=<token>)
+ *  webToken: the single admin access token for the panel entry and /admin/api/*
  * ================================================================ */
-function webBases(cfg) { // 面板基础地址(不含凭据)
+function webBases(cfg) { // panel base addresses (no credentials)
   const port = (cfg.listen || {}).port || 16384;
   const scheme = (cfg.tls && cfg.tls.enable) ? 'https' : 'http';
   const bases = [`${scheme}://127.0.0.1:${port}`];
@@ -1072,14 +1072,14 @@ function webBases(cfg) { // 面板基础地址(不含凭据)
   return bases;
 }
 function openBrowser(url) {
-  if (process.env.AGW_NO_OPEN) return null; // 脚本化/测试场景: 不弹浏览器
+if (process.env.AGW_NO_OPEN) return null; // scripted/test runs: do not open a browser
   const q = `'` + String(url).replace(/'/g, `'\\''`) + `'`;
   for (const c of ['termux-open', 'termux-open-url', 'xdg-open']) {
     try { execSync(`${c} ${q}`, { stdio: 'ignore' }); return c; } catch (_) {}
   }
   return null;
 }
-async function makeLoginLink(inst, cfg, apiTok) { // 一次性登录链接: 随机会话UID + 令牌, 全走路径
+async function makeLoginLink(inst, cfg, apiTok) { // one-time login link: random session UID + token, carried entirely in the path
   const sid = crypto.randomBytes(24).toString('base64url');
   const bases = webBases(cfg);
   const tok = encodeURIComponent(cfg.webToken || '');
@@ -1143,7 +1143,7 @@ async function cmdWeb(argv) {
   }
   if (argv.length && !has('login')) return webHelp();
 
-  // login: 固定令牌 → 直接用; 自动令牌 → 每次轮换(旧令牌+旧链接失效)
+  // login: fixed token -> use directly; auto token -> rotate each time (old token + old links invalidated)
   let rotated = false, prevTok = cfg.webToken || '';
   if (!cfg.webTokenFixed) {
     cfg.webToken = crypto.randomBytes(24).toString('base64url');
@@ -1152,7 +1152,7 @@ async function cmdWeb(argv) {
   } else {
     console.log(C.dim('使用固定访问令牌(--key 设定, login 不轮换)'));
   }
-  if (rotated) await hotRestart(inst, prevTok); // 用旧令牌调重启(网关内存里还是旧令牌); 重启后新令牌生效, 待用链接/会话一并清空
+if (rotated) await hotRestart(inst, prevTok); // restart with the old token (still in gateway memory); after restart the new token applies and pending links/sessions are wiped
   const r = await makeLoginLink(inst, cfg, rotated ? undefined : prevTok);
   printLinks('登录链接(一次性: 打开即绑定会话, 链接作废; 勿外传):', r.urls);
   if (r.fallback) console.log(C.dim('一次性链接注册失败(网关未在运行?), 已退回 ?key= 形式: ' + r.err));
@@ -1162,9 +1162,9 @@ async function cmdWeb(argv) {
 
 }
 
-/* ==================== 分域 loop — agw inst/chan/router/stat/register/admin ==================== */
+/* ==================== per-domain loop -- agw inst/chan/router/stat/register/admin ==================== */
 const LOOP_HINT = '空行刷新 | help 看命令 | exit 退出';
-function canLoop() { return !process.env.AGW_NO_LOOP && !!(process.stdin.isTTY && process.stdout.isTTY); } // loop 内再调用 cmdXxx 时不再嵌套进 loop
+function canLoop() { return !process.env.AGW_NO_LOOP && !!(process.stdin.isTTY && process.stdout.isTTY); } // cmdXxx called inside a loop does not nest another loop
 function tailLog(name, n) {
   const k = Math.max(1, Number(n) || 30);
   return api('GET', `/admin/api/logs/${encodeURIComponent(name)}?lines=${k}`)
@@ -1173,7 +1173,7 @@ function tailLog(name, n) {
       console.log(String(txt || '(空)').split('\n').slice(-k).join('\n'));
     }).catch(e => console.log(C.yel('日志读取失败: ' + e.message)));
 }
-function splitArgs(raw) { // 按空白分词, 但尊重 "…" / '…' (渠道 url=…, key=… 这类值含逗号空格)
+function splitArgs(raw) { // split on whitespace but respect "..." / '...' (values like url=..., key=... may contain commas/spaces)
   const out = []; let cur = '', q = null;
   for (const ch of String(raw || '')) {
     if (q) { if (ch === q) q = null; else cur += ch; }
@@ -1184,7 +1184,7 @@ function splitArgs(raw) { // 按空白分词, 但尊重 "…" / '…' (渠道 ur
   if (cur) out.push(cur);
   return out;
 }
-/* 通用 REPL: 空行=刷新; help/exit; 其余交给各域 commands 表 */
+/* Generic REPL: empty line = refresh; help/exit; everything else goes to the domain's commands table */
 function startRepl(o) {
   const rl = require('readline').createInterface({ input: process.stdin, output: process.stdout, prompt: '' });
   let closing = false;
@@ -1193,7 +1193,7 @@ function startRepl(o) {
   const P = () => { if (!closing) { try { rl.setPrompt(C.cyn(typeof o.prompt === 'function' ? o.prompt() : o.prompt)); rl.prompt(); } catch (_) {} } };
   const done = r => { if (r && r.then) r.then(P).catch(e => { console.log(C.red('✗ ' + e.message)); P(); }); else P(); };
   const run = raw => {
-    if (o.before) { const h = o.before(raw); if (h) return h; } // 子 loop(edit/scope/models) 优先接管输入
+if (o.before) { const h = o.before(raw); if (h) return h; } // sub-loops (edit/scope/models) take input first
     const parts = splitArgs(raw);
     if (!parts.length) return o.refresh && o.refresh();
     const c = parts[0].toLowerCase();
@@ -1212,11 +1212,11 @@ function startRepl(o) {
     closing = true; LOOPING = false;
     if (o.onClose) { try { o.onClose(); } catch (_) {} }
     console.log(C.dim('bye'));
-    setTimeout(() => process.exit(0), 300); // 留点时间让在途输出落地
+setTimeout(() => process.exit(0), 300); // give in-flight output a moment to flush
   });
 }
 
-/* ---------- 实例管理 ---------- */
+/* ---------- Instance management ---------- */
 const HELP_INST = t(`实例管理 loop 命令:
   status [all|requests|error|debug|usage]   状态 / 日志 / 用量
   grep <time|line|content|other> <值>       日志过滤
@@ -1294,7 +1294,7 @@ function instGrep(cur, a) {
       const win = parseWhen(val || '10m');
       if (!win) return console.log('用法: grep time <10m|2h|HH:MM>');
       const nowT = Date.now();
-      const from = win > nowT ? nowT - (win - nowT) : win; // 相对窗口 → now-时长; 绝对时间 → 直接比较
+const from = win > nowT ? nowT - (win - nowT) : win; // relative window -> now minus duration; absolute time -> compare directly
       lines = lines.filter(l => {
         const m = l.match(/\[(\d{2}):(\d{2}):(\d{2})\]/);
         if (!m) return false;
@@ -1420,7 +1420,7 @@ const HELP_CHAN = t(`渠道管理 loop 命令:
   scope <渠道>                  映射/白名单 loop(models= / name= / override= / apply)
   空行                          刷新渠道列表`);
 
-/* 渠道锁定判定(与 router.js channelLocked 同口径, 供列表/提示用) */
+/* Channel-lock check (same semantics as router.js channelLocked; used for listings/hints) */
 function chanLockInfo(ch, now) {
   const t = now || Date.now();
   const at = Number(ch && ch.lockAt) || 0, until = Number(ch && ch.lockUntil) || 0;
@@ -1433,7 +1433,7 @@ function fmtWhen(ms) {
   const d = new Date(Number(ms)), p = n => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
-function parseWhen(v) { // "30"=秒 / 30s 10m 2h 1h30m / 22:30 / 10-28 09:00 / 2026-10-28 09:00
+function parseWhen(v) { // "30" = seconds / 30s 10m 2h 1h30m / 22:30 / 10-28 09:00 / 2026-10-28 09:00
   const s = String(v == null ? '' : v).trim();
   if (!s) return NaN;
   const now = Date.now();
@@ -1461,11 +1461,11 @@ function loopChan(startName) {
   const chOf = name => (loadCfg(cur).channels || []).find(x => x.name === name);
   const post = ch => api('POST', `/admin/api/channel/${encodeURIComponent(cur)}`, ch)
     .then(d => { if (d && d.hotReload === false) console.log(C.yel('已保存但热重载失败: ' + (d.warn || ''))); return d; });
-  const pv = (a, rest) => { // <渠道名> + 其余参数 → cmdChan --provider
+const pv = (a, rest) => { // <channel> + rest -> cmdChan --provider
     if (!a[0]) return console.log(C.yel('缺少渠道名'));
     return cmdChan([cur, '--provider', a[0]].concat(rest));
   };
-  /* ---- edit 子 loop ---- */
+  /* ---- edit sub-loop ---- */
   const editView = () => {
     const ch = chOf(mode.name);
     if (!ch) { mode = null; return console.log(C.yel('渠道不存在, 已退出编辑')); }
@@ -1513,7 +1513,7 @@ function loopChan(startName) {
     else return console.log(C.yel('未知字段: ' + k));
     return post(next).then(() => { ok(k + ' 已生效'); editView(); }).catch(e => console.log(C.yel('保存失败: ' + e.message)));
   };
-  /* ---- scope 子 loop ---- */
+  /* ---- scope sub-loop ---- */
   const scopeView = () => {
     console.log(C.bold('■ 模型映射/白名单 ' + mode.name) + C.dim('  (字段逐项设置, apply 生效, exit 返回)'));
     console.log(`  models=${mode.models || C.dim('(未设)')}  name=${mode.real || C.dim('(未设)')}  override=${mode.override}`);
@@ -1535,7 +1535,7 @@ function loopChan(startName) {
     next.modelMap = Object.keys(map).length ? map : null;
     return post(next).then(() => { ok('映射已保存'); mode = null; show(); }).catch(e => console.log(C.yel('保存失败: ' + e.message)));
   };
-  /* ---- models 子 loop ---- */
+  /* ---- models sub-loop ---- */
   const modelsView = () => {
     const ch = chOf(mode.name);
     if (!ch) { mode = null; return console.log(C.yel('渠道不存在, 已退出')); }
@@ -1549,7 +1549,7 @@ function loopChan(startName) {
     if (!ch) { mode = null; return console.log(C.yel('渠道不存在, 已退出')); }
     return post(Object.assign({}, ch, { models: ms })).then(() => { ok(label); modelsView(); }).catch(e => console.log(C.yel('保存失败: ' + e.message)));
   };
-  /* ---- ctxp 子 loop(渠道级上下文策略) ---- */
+  /* ---- ctxp sub-loop (channel-level context policy) ---- */
   const ctxpView = () => {
     const ch = chOf(mode.name);
     if (!ch) { mode = null; return console.log(C.yel('渠道不存在, 已退出')); }
@@ -1605,13 +1605,13 @@ function loopChan(startName) {
       if (!until) { delete next.lockAt; delete next.lockUntil; }
       else {
         if (until <= now) return console.log(C.yel('解锁时间必须晚于当前时间'));
-        if (!(Number(ch.lockAt) > now)) next.lockAt = now; // 未锁则立即锁, 到点自动解
+if (!(Number(ch.lockAt) > now)) next.lockAt = now; // lock immediately if unlocked; auto-unlocks at the deadline
         next.lockUntil = until;
       }
     }
     return post(next).then(() => { ok(want ? '锁定已生效' : '解锁已设置'); lockView(chOf(name)); }).catch(e => console.log(C.yel('保存失败: ' + e.message)));
   };
-  /* ---- 子 loop 输入分发 ---- */
+  /* ---- sub-loop input dispatch ---- */
   const before = raw => {
     if (!mode) return;
     const line = raw.trim();
@@ -1726,7 +1726,7 @@ function loopChan(startName) {
   });
 }
 
-/* ---------- 用户注册 ---------- */
+/* ---------- User registration ---------- */
 const HELP_REGISTER = t(`用户注册 loop:
   name=<UID>         3-32 位字母/数字/下划线
   password=<密码>    不小于实例要求的最小长度
@@ -1735,7 +1735,7 @@ const HELP_REGISTER = t(`用户注册 loop:
   other=<备注>       额外信息(写入用户 note)
   空行               信息齐全则提交注册, 否则显示已填内容
   exit               退出`);
-function plainPost(inst, p, body) { // 直接打实例端口(不经 admin API)
+function plainPost(inst, p, body) { // hit the instance port directly (not via the admin API)
   return new Promise((resolve, reject) => {
     const c = loadCfg(inst);
     const port = (c.listen || {}).port || 16384, useTls = !!(c.tls && c.tls.enable);
@@ -1783,7 +1783,7 @@ function loopRegister(startName) {
   };
   const before = raw => {
     const line = raw.trim();
-    if (/^(exit|quit|q|:q)$/i.test(line) || /^(help|\?)$/i.test(line)) return; // 交给 REPL: 退出/帮助
+if (/^(exit|quit|q|:q)$/i.test(line) || /^(help|\?)$/i.test(line)) return; // left to the REPL: exit/help
     if (!line) { submit(); return true; }
     const eq = line.indexOf('=');
     if (eq < 0) { view(); return true; }
@@ -1807,7 +1807,7 @@ function loopRegister(startName) {
 }
 
 
-/* ---------- 管理体系 ---------- */
+/* ---------- Admin system ---------- */
 const HELP_ADMIN = t(`管理体系 loop 命令:
   login [token=<令牌|random>]   生成/设置面板令牌并打印登录链接
   expire [--time -t <时长/时间>] [--wait -w <时长/时间>] [--device -d <id|all>]
@@ -1872,7 +1872,7 @@ function loopAdmin(startName) {
 }
 
 
-/* ---------- 命令入口(非 TTY 时打印一次性摘要, 交互终端进 loop) ---------- */
+/* ---------- Command entry (prints a one-shot summary when not a TTY; interactive terminals enter the loop) ---------- */
 function cmdRegister(argv) {
   if (argv.includes('help') || argv.includes('--help')) { console.log(HELP_REGISTER); return; }
   const inst = (argv[0] && !argv[0].startsWith('-')) ? argv[0] : 'default';
@@ -2080,7 +2080,7 @@ const CMDS = {
   export: cmdExport, inport: cmdInport, config: cmdConfig, crypt: cmdCrypt,
 };
 
-/* agw restart / agw stop / agw start — 网关进程级操作(计划通未列, 保留 agw.sh 肌肉记忆) */
+/* agw restart / agw stop / agw start -- gateway process-level operations (not in the spec; kept for agw.sh muscle memory) */
 function cmdProc(argv) {
   const a = (argv[0] || 'status').toLowerCase();
   if (!['start', 'stop', 'restart', 'status'].includes(a)) { console.log(t('用法: agw <start|stop|restart|status>  (网关进程级; 实例启停用 agw inst <inst> [start|stop])')); return; }

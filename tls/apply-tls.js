@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 'use strict';
-/* 加解密感知的 TLS 开关。cfg-cli.js 的 loadCfg 直接 JSON.parse，
-   遇到 AGWENC1 加密配置会崩，并会把配置写成明文 —— 故单独提供本脚本。
-   用法:
-     node tls/apply-tls.js [实例名] [HTTPS端口]   # 默认 default、HTTP端口+9
-     node tls/apply-tls.js [实例名] --off         # 关闭 TLS
+/* Encryption-aware TLS switch. cfg-cli.js loadCfg does a plain JSON.parse,
+it crashes on AGWENC1-encrypted configs and would write configs as plaintext -- hence this separate script.
+Usage:
+node tls/apply-tls.js [instance] [HTTPS port]   # default instance, HTTP port + 9
+node tls/apply-tls.js [instance] --off         # turn TLS off
 */
 const fs = require('fs');
 const path = require('path');

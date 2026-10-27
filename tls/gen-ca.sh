@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 生成 ai-gateway 本地私有 CA（只跑一次）。已存在则跳过；--force 重建会让所有已安装设备失效。
+# Generate the ai-gateway local private CA (run once). Skipped if it exists; --force rebuilds and invalidates every installed device.
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 CA_KEY="$DIR/ca.key"

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 每 5 分钟一次的守护任务（由 watchdog.sh 调用）：
-#   1) 证书：剩余 <7 天 / 不被本 CA 签发 / SAN 缺当前 IP → 重签并重启（随时可做）
-#   2) 客户端密钥：到期才轮换，且只在 03:00-05:00 窗口内执行（走 admin API，零停机，无需重启）
-# 并发保护：flock；退出码恒为 0，避免拖垮 watchdog。
+# Guard task run every 5 minutes (invoked by watchdog.sh):
+#   1) Certificate: <7 days left / not issued by this CA / SAN missing current IP -> re-sign and restart (can run anytime)
+#   2) Client keys: rotate only when due, and only inside the 03:00-05:00 window (via admin API, zero downtime, no restart)
+# Concurrency guard: flock; always exit 0 so the watchdog never breaks.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DATA="$ROOT/data"
@@ -34,7 +34,7 @@ mkdir -p "$DATA/.run" "$DATA/log"
 exec 9>"$LOCK"
 if ! flock -n 9; then exit 0; fi
 
-# ---- 1) 证书 ----
+# ---- 1) Certificates ----
 out="$(bash "$ROOT/tls/renew.sh" --no-restart 2>&1)"
 rc=$?
 first="$(printf '%s\n' "$out" | head -n 1)"
@@ -63,7 +63,7 @@ case "$first" in
     ;;
 esac
 
-# ---- 2) 客户端密钥轮换（夜间窗口）----
+# ---- 2) Client key rotation (night window) ----
 H=$(date +%H)
 if [ "$H" -ge "$WINDOW_START" ] && [ "$H" -lt "$WINDOW_END" ]; then
   kout="$(node "$ROOT/ops/rotate-keys.js" --if-due 2>&1)"
@@ -73,7 +73,7 @@ fi
 bash "$ROOT/tls/cleanup.sh" sweep >/dev/null 2>&1   # 临时文件到期删除的兜底
 date +%s > "$DATA/.run/guard.last"   # 每次运行都记时间戳，用于确认调度链
 
-# ---- 3) 心跳（每小时最多一条，用于确认调度链活着）----
+# ---- 3) Heartbeat (at most one per hour, confirms the scheduler chain is alive) ----
 HB="$DATA/.run/guard.heartbeat"
 now_s=$(date +%s)
 last_s=$(cat "$HB" 2>/dev/null || echo 0)

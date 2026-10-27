@@ -15,9 +15,9 @@ const { isConnErr, makeFreshAgents } = require('./proxy');
 const { RETRYABLE } = require('./sync');
 const { redactText } = require('./redact');
 
-// ================= 扩展 OpenAI 端点直通 =================
-/* ================= 扩展 OpenAI 端点直通(images/embeddings/audio/completions/moderations) ================= */
-// 只支持 openai 类型渠道: 原样转发(JSON 端点应用 modelMap 改名; multipart 原样 Buffer), 响应透传; 带简单的故障切换
+// ================= Extended OpenAI endpoint passthrough =================
+/* ================= Extended OpenAI endpoint passthrough (images/embeddings/audio/completions/moderations) ================= */
+// OpenAI-type channels only: forwards verbatim (JSON endpoints apply modelMap renames; multipart stays a Buffer), responses pass through; basic failover included
 function handleExtraEndpoint(cfg, req, res, pathname, bodyBuf, contentType, method) {
   const stats = cfg._stats;
   let model = '';
@@ -106,7 +106,7 @@ function handleExtraEndpoint(cfg, req, res, pathname, bodyBuf, contentType, meth
         upRes.on('error', () => { try { res.end(); } catch (_) {} });
         return;
       }
-      // 成功 → 透传(含流式/二进制/音频)
+      // success -> passthrough (streaming/binary/audio included)
       try {
         res.writeHead(upRes.statusCode, { 'Content-Type': upRes.headers['content-type'] || contentType || 'application/json', 'X-AI-Gateway-Channel': hdrName(ch.name), ...corsHeaders(), 'Cache-Control': 'no-cache' });
       } catch (e) { logErr('[resp] 响应头下发失败, 已中断该请求:', e.message); try { res.end(); } catch (_) {} try { upRes.resume(); } catch (_) {} return; }

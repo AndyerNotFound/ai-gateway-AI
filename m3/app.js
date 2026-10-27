@@ -1,10 +1,10 @@
-// ============ Material Web 组件库(本地 vendor, 零外部依赖) ============
-// 说明: 该 bundle 已把 lit 完全内联, 无裸模块引用, 故浏览器可直接加载。
+// ============ Material Web component library (local vendor, zero external deps) ============
+// Note: this bundle fully inlines lit with no bare module references, so browsers can load it directly.
 const MW_OK = await import('/auth/vendor/mw-v2.js').then(()=>true).catch(e=>{
   console.error('[MW] 组件库加载失败:', e); return false;
 });
 
-// ============ 能力探测: Form Association / dialog 是 Material Web 表单组件的硬依赖 ============
+// ============ Feature detection: Form Association / dialog are hard dependencies of Material Web form components ============
 (function detectCompat(){
   const miss=[];
   if(!('attachInternals' in HTMLElement.prototype)) miss.push('Element Internals');
@@ -18,14 +18,14 @@ const MW_OK = await import('/auth/vendor/mw-v2.js').then(()=>true).catch(e=>{
   }
 })();
 
-// ============ 工具 ============
+// ============ Tools ============
 const $  = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const escAttr = s => esc(s).replace(/\s/g,' ');
 const fmtNum = n => n?.toLocaleString?.() ?? '-';
 const fmtDur = s => { if(!s||s<0)return '-'; const h=Math.floor(s/3600),m=Math.floor(s%3600/60); return h?`${h}h${m}m`:`${m}m`; };
-// 略写 Base URL: 剥协议头与尾部 /v1, 同宽度多装约 40% 有效信息; 完整值挂 title
+//// abbreviated Base URL: strip the scheme and trailing /v1 to fit ~40% more useful info at the same width; the full value goes in title
 const fmtHost = u => String(u||'-')
   .replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
   .replace(/\/+$/, '')
@@ -38,7 +38,7 @@ function snack(msg, isErr=false){
   el._t=setTimeout(()=>el.classList.remove('show'), isErr?4000:2000);
 }
 
-// ============ 数据适配层(与后端契约与手写版完全一致) ============
+// ============ Data adapter layer (contract identical to the hand-written version) ============
 class BaseAdapter{
   async _fetch(url, opts={}, signal){
     if(!Store.online) throw new Error('网络已断开');
@@ -46,9 +46,9 @@ class BaseAdapter{
     try{ res = await fetch(url, {...opts, signal}); }
     catch(e){ if(e.name==='AbortError') throw e;
       throw new Error('无法连接到 ' + url.split('/admin/api/')[0] + ' (实例可能未运行或正在重启中)'); }
-    if(res.status===401) openKeyDialog(); // 密码缺失/错误: 弹出输入框
+if(res.status===401) openKeyDialog(); // missing/wrong password: open the input dialog
     if(!res.ok){
-      // 尽量把 {error:{message}} / {error:"..."} 解析成可读文案(查余额这类失败要看得懂原因)
+// Best-effort parse {error:{message}} / {error:"..."} into readable text (balance failures must show why)
       let msg='';
       try{
         const t=await res.text();
@@ -139,10 +139,10 @@ class HttpAdapter extends BaseAdapter{
     if(r&&r.restarting){ snack('已保存, 实例 '+name+' 重启中…'); await this._waitUp(name); snack('实例 '+name+' 已重启'); }
     return r;
   }
-  // 等实例重启完成(轮询实例列表直到 running)
+  // wait for the instance to finish restarting (poll the instance list until running)
   async _waitUp(name,timeoutMs=40000){
     const t0=Date.now();
-    await new Promise(r=>setTimeout(r,3500)); // 先让旧进程退出+新进程启动(自我重启脚本约2-3s)
+await new Promise(r=>setTimeout(r,3500)); // let the old process exit and the new one start first (the self-restart script takes ~2-3s)
     while(Date.now()-t0<timeoutMs){
       try{ const d=await this.getInstances(); const i=(d.instances||[]).find(x=>x.name===name); if(i&&i.running) return true; }catch(_){}
       await new Promise(r=>setTimeout(r,1000));
@@ -190,9 +190,9 @@ class HttpAdapter extends BaseAdapter{
     if(!r.ok) throw new Error(await r.text().catch(()=>'聊天请求失败')); return r; }
 }
 
-// ============ 状态 ============
+// ============ State ============
 const VIEWS = [
-  // icon 用 Material Symbols 词形(本地字体 ligature, 见 @font-face)
+// icons use Material Symbols word forms (local font ligatures; see @font-face)
   {id:'overview', label:'总览',   icon:'home'},
   {id:'providers',label:'提供商', icon:'business'},
   {id:'routing',  label:'路由',   icon:'sync'},
@@ -223,15 +223,15 @@ const Store = {
 };
 let adapter = new MockAdapter();
 
-// ============ 导航 ============
+// ============ Navigation ============
 function buildNav(){
-  // 侧栏项用自绘按钮: MW md-list-item 的行高/间距在部分屏幕异常(条目过高、激活胶囊过大)
+// Sidebar items use custom buttons: MW md-list-item line-height/spacing misbehaves on some screens (rows too tall, active pill too big)
   $('#railList').innerHTML = VIEWS.map(v=>
     `<button type="button" class="rail-item" data-page="${v.id}" ${v.id===Store.page?'active':''}>
        <span class="msym" aria-hidden="true">${v.icon}</span><span>${v.label}</span>
      </button>`).join('');
-  // md-navigation-tab 的插槽名是 inactive-icon / active-icon (没有 icon 插槽),
-  // 写 slot="icon" 会被直接丢弃 → 底栏图标不显示。两个插槽都要给。
+// md-navigation-tab's slots are inactive-icon / active-icon (there is no icon slot),
+// Writing slot="icon" is dropped outright -> bottom-bar icons disappear. Both slots must be provided.
   $('#navbar').innerHTML = NAV_TABS.map(v=>
     `<md-navigation-tab data-page="${v.id}" label="${v.label}" ${navActive(v.id)?'active':''}>
        <md-icon slot="inactive-icon" aria-hidden="true">${v.icon}</md-icon>
@@ -246,7 +246,7 @@ function syncNav(){
   if(idx>=0 && bar.activeIndex!==idx) bar.activeIndex=idx;
   tabs.forEach(t=>t.toggleAttribute('active', t.dataset.page===NAV_ACTIVE_PAGE));
 }
-// 底栏只放 5 个常用页, 其余收进「更多」: 手机上 12 个页面都能到达
+//// The bottom bar holds 5 common pages; the rest fold into "More": all 12 pages remain reachable on phones
 const NAV_TABS = ['overview','providers','routing','keys','stats']
   .map(id=>VIEWS.find(v=>v.id===id)).filter(Boolean)
   .concat([{id:'__more', label:'更多', icon:'more_horiz'}]);
@@ -261,8 +261,8 @@ function openViewSheet(){
 }
 async function go(page){
   if(!VIEWS.some(v=>v.id===page)) return;
-  // 按导航顺序决定滑动方向: 目标页在当前页后面=从右滑入, 前面=从左滑入
-  // 同页(go 被重复触发, 如底栏点击+导航事件双发)不动画, 避免第二次 go 把滑动覆盖成淡入
+  // slide direction from nav order: target after current = enters from the right, before = from the left
+// Same page (go triggered twice, e.g. bottom-bar click + nav event) skips animation so the second go does not override the slide with a fade
   const oldIdx=VIEWS.findIndex(v=>v.id===Store.page), newIdx=VIEWS.findIndex(v=>v.id===page);
   const anim=newIdx>oldIdx?'anim-slide-r':newIdx<oldIdx?'anim-slide-l':'';
   Store.page=page;
@@ -278,7 +278,7 @@ async function go(page){
   await R[page]?.();
 }
 
-// ============ 渲染: 文本替换 ============
+// ============ Render: text replacement ============
 let rpLists={out:[],inc:[]};
 function rpCompileCli(rules){
   const out=[];
@@ -332,7 +332,7 @@ function rpBindSwipe(dir){
     chip=null; idx=-1; dx=0;
   });
 }
-// ============ 渲染: 上下文上限(ctxp) ============
+// ============ Render: context limit (ctxp) ============
 function fmtTokLim(n){ if(!n) return '关'; if(n>=1000000&&n%1000000===0) return (n/1000000)+'m'; if(n>=1000&&n%1000===0) return (n/1000)+'k'; return String(n); }
 async function renderCtxp(){
   const signal=Store.abort('ctxp');
@@ -382,7 +382,7 @@ async function renderReplace(){
   }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
 }
 
-// ============ 实例下拉(md-select 必须先挂选项再赋值, 否则 value 不生效) ============
+// ============ Instance dropdown (md-select needs options attached before value is set, otherwise it is ignored) ============
 async function fillInstSelect(sel, current, signal){
   if(!sel) return;
   try{
@@ -416,7 +416,7 @@ async function fillChatModels(sel, inst){
   }catch(e){ sel.innerHTML='<md-select-option value="">(加载失败)</md-select-option>'; }
 }
 
-// ============ 列表项构造器: md-list-item 只支持 slot 写法(属性 headline 在 v2.5 不存在) ============
+// ============ List item builders: md-list-item supports only slots (no headline attribute in v2.5) ============
 function listItem({icon='', headline='', sub='', over='', endHtml='', active=false, data=''}){
   return `<md-list-item ${data} tabindex="0" role="button">
     ${icon?`<span slot="start" aria-hidden="true">${icon}</span>`:''}
@@ -427,7 +427,7 @@ function listItem({icon='', headline='', sub='', over='', endHtml='', active=fal
   </md-list-item>`;
 }
 
-// ============ 渲染: 总览 ============
+// ============ Render: overview ============
 async function renderOverview(){
   const signal=Store.abort('overview');
   try{
@@ -463,7 +463,7 @@ async function renderOverview(){
   }catch(e){ if(e.name!=='AbortError'){ console.error(e); snack(e.message,true); } }
 }
 
-// ============ 渲染: 提供商 ============
+// ============ Render: providers ============
 async function renderProviders(){
   const signal=Store.abort('providers');
   const cur = await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
@@ -499,7 +499,7 @@ async function renderProviders(){
   }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
 }
 
-// 点击渠道名/星标 → 设为默认渠道 (其余渠道去掉 default 标记, 保存后实例自动重启)
+//// clicking a channel name/star -> set as default (other channels lose the marker; the instance auto-restarts after saving)
 async function setDefaultChannel(n){
   try{
     const cfg=await adapter.getConfig(Store.inst);
@@ -511,7 +511,7 @@ async function setDefaultChannel(n){
   }catch(e){ snack(e.message,true); }
 }
 
-// ============ 渲染: 路由 ============
+// ============ Render: routing ============
 async function renderRouting(){
   const signal=Store.abort('routing');
   const cur = await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
@@ -535,7 +535,7 @@ async function renderRouting(){
   }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
 }
 
-// ============ 渲染: 密钥 ============
+// ============ Render: keys ============
 async function renderKeys(){
   const signal=Store.abort('keys');
   const cur = await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
@@ -548,7 +548,7 @@ async function renderKeys(){
     $('#ky-channels').innerHTML=(cfg.channels||[]).map(ch=>
       `<md-outlined-text-field data-keyfor="${escAttr(ch.name)}" label="${esc(ch.name)} (${esc(ch.type)})" type="password" value="${esc(ch.apiKey||'')}" placeholder="${ch.hasKey?'(已设)':'API Key'}"></md-outlined-text-field>`
     ).join('');
-    // 注册设置回填
+    // registration settings backfill
     const reg=cfg.registration||{};
     $('#rg-keyLength').value=cfg.keyLength||24;
     $('#rg-enable').selected=!!reg.enable;
@@ -562,7 +562,7 @@ async function renderKeys(){
   loadAdminAuth(cur);
 }
 
-// ---- 管理端第二验证 ----
+// ---- Admin second factor ----
 async function loadAdminAuth(inst){
   try{
     const d=await adapter.getAdminAuth(inst);
@@ -581,7 +581,7 @@ async function loadAdminAuth(inst){
   }catch(e){ $('#ka-status').textContent='加载失败: '+e.message; }
 }
 
-// ---- 注册设置保存 ----
+// ---- Registration settings save ----
 async function saveRegistration(){
   try{
     await adapter.saveConfig(Store.inst,{ keyLength:Number($('#rg-keyLength').value)||24,
@@ -591,7 +591,7 @@ async function saveRegistration(){
   }catch(e){ snack(e.message,true); }
 }
 
-// ============ 渲染: 端口 ============
+// ============ Render: ports ============
 async function renderPorts(){
   const signal=Store.abort('ports');
   try{
@@ -616,7 +616,7 @@ async function renderPorts(){
   loadTunnel();
 }
 
-// ---- cloudflared 隧道 ----
+// ---- cloudflared tunnel ----
 let tnTimer=null;
 async function loadTunnel(){
   try{
@@ -640,7 +640,7 @@ function renderTunnel(d){
   }
 }
 
-// ============ 渲染: 卡密管理 ============
+// ============ Render: key card management ============
 function fmtTok(n){ n=Number(n)||0; if(n>=1e8)return (n/1e8).toFixed(2)+'亿'; if(n>=1e4)return (n/1e4).toFixed(1)+'万'; return String(n); }
 async function renderCards(){
   const signal=Store.abort('cards');
@@ -671,7 +671,7 @@ async function renderCards(){
     }).join('')+'</md-list>';
   }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
 }
-// ---- 卡密页 tab 切换(卡密|用户) ----
+// ---- Key-card page tab switch (cards|users) ----
 let cdTab='keys';
 function cdSwitchTab(t){
   cdTab=t;
@@ -682,7 +682,7 @@ function cdSwitchTab(t){
   $('#cd-tab-users').style.fontWeight = t==='users'?'600':'400';
   if(t==='users') renderUsers(); else renderCards();
 }
-// ---- 用户管理 ----
+// ---- User management ----
 async function renderUsers(){
   const signal=Store.abort('cards');
   $('#cu-list').innerHTML='<md-linear-progress indeterminate></md-linear-progress>';
@@ -751,9 +751,9 @@ async function userAction(action,uid,name){
   }catch(e){ snack(e.message,true); }
 }
 
-// ---- 发卡弹窗 ----
+// ---- Key-issuing dialog ----
 async function openCardDialog(){
-  // 先拉用户列表(填"绑定用户"下拉)
+// Fetch the user list first (fills the "bind user" dropdown)
   let users=[];
   try{ users=(await adapter.getUsers(Store.inst)).users||[]; }catch(_){}
   openDialog('发新卡 (实例 '+Store.inst+')', `
@@ -789,7 +789,7 @@ async function openCardDialog(){
     }});
   setTimeout(()=>{ const sel=$('#dlgBody [data-f=uid]'); if(sel&&users.length) users.forEach(u=>{ const o=document.createElement('md-select-option'); o.value=u.uid; o.textContent=(u.name||u.uid)+' ('+u.uid+')'; sel.appendChild(o); }); },80);
 }
-// ---- 卡密操作 ----
+// ---- Key card operations ----
 async function cardAction(action,key,name,on){
   try{
     if(action==='copyKey'){ await navigator.clipboard.writeText(key); snack('已复制完整 Key'); return; }
@@ -817,7 +817,7 @@ async function cardAction(action,key,name,on){
   }catch(e){ snack(e.message,true); }
 }
 
-// ---- 渠道余额 ----
+// ---- Channel balances ----
 async function chBalanceAction(chName){
   snack('查询 '+chName+' 余额…');
   try{
@@ -828,7 +828,7 @@ async function chBalanceAction(chName){
   }catch(e){ snack(e.message,true); }
 }
 
-// ============ 渲染: 统计 ============
+// ============ Render: statistics ============
 async function renderStats(){
   const signal=Store.abort('stats');
   const cur = await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
@@ -847,18 +847,18 @@ async function renderStats(){
     $('#st-hitrate').textContent=sumIn?((sumCached/sumIn)*100).toFixed(1)+'%':'-';
     $('#st-uptime').textContent=fmtDur(s.uptime);
     $('#st-rps').textContent=((s.requests||0)/(s.uptime||1)).toFixed(2);
-    // Token 分布(聚合全部分日)
+// Token distribution (aggregated across all days)
     const D={tools:0,system:0,history:0,user:0,reasoning:0,text:0,tool:0};
     for(const v of Object.values(s.daily||{})){ for(const k of Object.keys(D)) D[k]+=(v.dist&&v.dist[k])||0; }
     const dTot=Object.values(D).reduce((a,b)=>a+b,0);
     const DN={tools:'工具定义',system:'系统提示',history:'对话历史',user:'用户输入',reasoning:'思考内容',text:'正文',tool:'ToolCall'};
     const bar=(pct,label,val)=>`<div style="margin:6px 0"><div style="display:flex;justify-content:space-between;font-size:12px"><span>${esc(label)}</span><span class="mono" style="opacity:.8">${fmtNum(val)} · ${pct.toFixed(1)}%</span></div><div style="height:6px;border-radius:3px;background:var(--md-sys-color-surface-container-highest,#333);overflow:hidden"><div style="height:100%;width:${Math.max(pct,0.5)}%;background:var(--md-sys-color-primary)"></div></div></div>`;
     $('#st-dist').innerHTML=dTot?Object.keys(DN).map(k=>bar(D[k]/dTot*100,DN[k],D[k])).join(''):'<div class="empty" style="padding:8px 0">暂无分布数据(需有请求流过)</div>';
-    // 按模型
+    // by model
     const mRows=models.map(([m,d])=>({m,...d,sum:(d.inputTokens||0)+(d.outputTokens||0)})).sort((a,b)=>b.sum-a.sum);
     const mTot=mRows.reduce((t,r)=>t+r.sum,0)||1;
     $('#st-model').innerHTML=mRows.length?mRows.slice(0,12).map(r=>bar(r.sum/mTot*100,r.m,r.sum)).join(''):'<div class="empty" style="padding:8px 0">暂无数据</div>';
-    // 每日用量
+    // daily usage
     const days=Object.entries(s.daily||{}).sort((a,b)=>b[0].localeCompare(a[0])).slice(0,14);
     $('#st-daily tbody').innerHTML=days.length?days.map(([d,v])=>
       `<tr><td class="mono">${esc(d)}</td><td>${fmtNum(v.requests)}</td><td>${fmtNum(v.inputTokens)}</td><td>${fmtNum(v.outputTokens)}</td><td>${fmtNum(v.cached)}</td></tr>`).join('')
@@ -866,7 +866,7 @@ async function renderStats(){
     $('#st-table tbody').innerHTML=chs.length?chs.map(([n,d])=>
       `<tr><td class="mono truncate" title="${escAttr(n)}">${esc(n)}</td><td>${fmtNum(d.requests)}</td><td>${fmtNum(d.inputTokens)}</td><td>${fmtNum(d.outputTokens)}</td></tr>`).join('')
       :'<tr><td colspan="4" class="empty">暂无数据</td></tr>';
-    // 图表(纯 canvas, 无第三方库)
+// Charts (plain canvas, no third-party libs)
     const daily=Object.entries(s.daily||{}).sort((x,y)=>x[0].localeCompare(y[0])).slice(-14)
       .map(([d,v])=>({label:String(d).slice(5),in:v.inputTokens||0,out:v.outputTokens||0}));
     Store.charts={daily, models:mRows.map(r=>({name:r.m,sum:r.sum}))};
@@ -874,7 +874,7 @@ async function renderStats(){
   }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
 }
 
-// ============ 渲染: 请求记录 ============
+// ============ Render: request log ============
 async function renderRequests(){
   const signal=Store.abort('requests');
   const cur = await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
@@ -894,14 +894,14 @@ async function renderRequests(){
       <td>${r.id?`<button type="button" class="icon-act" data-action="viewBody" data-id="${escAttr(r.id)}" title="查看正文"><span class="msym">article</span></button>`:''}</td></tr>`;}).join('') || '<tr><td colspan="6" class="empty">暂无记录</td></tr>';
   }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
 }
-// 保存记录设置(开关/服务器地址)
+// Save recording settings (switch/server address)
 async function saveRecCfg(){
   try{
     await adapter.saveConfig(Store.inst,{record:{enable:!!$('#rq-rec-enable').selected, server:($('#rq-rec-server').value||'').trim()}});
     snack('记录设置已保存');
   }catch(e){ snack(e.message,true); }
 }
-// 从记录文件里按 id 取请求/响应正文并弹窗展示
+// Fetch a request/response body by id from the record file and show it in a dialog
 async function viewRecordBody(id){
   openDialog('请求正文', '<div style="padding:8px">加载中…</div>', {okText:'关闭', cancel:false});
   try{
@@ -914,7 +914,7 @@ async function viewRecordBody(id){
   }catch(e){ $('#dlgBody').innerHTML='<div style="padding:8px;color:var(--md-sys-color-error)">'+esc(e.message)+'</div>'; }
 }
 
-// ============ 渲染: 日志 ============
+// ============ Render: logs ============
 async function renderLogs(){
   const signal=Store.abort('logs');
   const cur = await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
@@ -927,7 +927,7 @@ async function renderLogs(){
   }catch(e){ if(e.name!=='AbortError'){ box.textContent='读取失败: '+e.message; } }
 }
 
-// ============ 渲染: 聊天 ============
+// ============ Render: chat ============
 let chatStick=true;
 const chatNow=()=>new Date().toTimeString().slice(0,5);
 const chatAtBottom=()=>{ const b=$('#ch-messages'); return b?(b.scrollHeight-b.scrollTop-b.clientHeight<80):true; };
@@ -1000,10 +1000,10 @@ async function sendChat(){
   finally{ Store.chat.streaming=false; btn.disabled=false; btn.textContent='发送'; renderChatMessages(); try{inp.focus();}catch(_){} }
 }
 
-// ============ 对话框 ============
-// md-dialog 的「确定/取消」按钮在 actions 插槽里, 跨插槽无法用 <form method=dialog> 关联,
-// 因此改为显式绑定点击: 校验/保存失败时保持对话框打开(不再需要 show() 重开)。
-// 密码框加"眼睛"显示切换
+// ============ Dialogs ============
+// md-dialog's OK/Cancel buttons live in the actions slot; a <form method=dialog> cannot bind across slots,
+// hence explicit click binding: on validation/save failure the dialog stays open (no more show() reopening).
+// Add an eye toggle to password fields
 function upgradePwFields(root){
   if(!root || !root.querySelectorAll) return;
   root.querySelectorAll('md-outlined-text-field[type="password"]').forEach(f=>{
@@ -1023,8 +1023,8 @@ document.body.addEventListener('click', e=>{
 });
 
 let dlgOnOk = null;
-let mmList=[]; // 渠道弹窗的模型改名映射 [[对外名,真实名],...]
-let portDlgOrigKey; // 实例弹窗回填前的原管理密码(undefined=预填未完成)
+let mmList=[]; // the channel dialog's model rename map [[public name, real name],...]
+let portDlgOrigKey; // the original admin password before dialog backfill (undefined = backfill not done)
 function openDialog(title, bodyHtml, {okText='确定', cancel=true, onOk=null}={}){
   dlgOnOk = onOk;
   $('#dlgTitle').textContent=title;
@@ -1034,22 +1034,22 @@ function openDialog(title, bodyHtml, {okText='确定', cancel=true, onOk=null}={
   $('#dlgCancel').hidden=!cancel;
   $('#dlgFetch').hidden=true;
   $('#dlgOverlay').hidden=false;
-  // 自动聚焦首个输入控件; 聚焦失败不应影响对话框可用性
+// Auto-focus the first input; a failed focus must not break the dialog
   setTimeout(()=>{ try{ $('#dlgBody').querySelector('md-outlined-text-field,md-outlined-select')?.focus?.(); }catch(_){} },120);
 }
 const dlgValue = () => { const o={}; $$('#dlgBody [data-f]').forEach(el=>o[el.dataset.f]=el.value); return o; };
-// ---- 主题切换(深浅色 + Material You 主色) ----
+// ---- Theme switching (light/dark + Material You primary color) ----
 const SWATCHES=['#6750A4','#005AC1','#006C7C','#006E1C','#9A1E78','#9C4146','#8E4D00','#3B5BA5'];
 let themeState={mode:'dark',seed:'#6750A4'};
 function hexToHSL(hex){hex=hex.replace('#','');const r=parseInt(hex.substr(0,2),16)/255,g=parseInt(hex.substr(2,2),16)/255,b=parseInt(hex.substr(4,2),16)/255;const mx=Math.max(r,g,b),mn=Math.min(r,g,b);let h,s,l=(mx+mn)/2;if(mx===mn){h=s=0;}else{const d=mx-mn;s=l>0.5?d/(2-mx-mn):d/(mx+mn);switch(mx){case r:h=(g-b)/d+(g<b?6:0);break;case g:h=(b-r)/d+2;break;case b:h=(r-g)/d+4;break;}h/=6;}return{h:Math.round(h*360),s:Math.round(s*100),l:Math.round(l*100)};}
 function hslToHex(h,s,l){s/=100;l/=100;const a=s*Math.min(l,1-l);const f=n=>{const k=(n+h/30)%12;const c=l-a*Math.max(-1,Math.min(k-3,9-k,1));return Math.round(255*c).toString(16).padStart(2,'0');};return'#'+f(0)+f(8)+f(4);}
-// 由种子色派生整套主/次/第三角色色, 否则底栏指示器(secondary-container)与部分按钮(filled-tonal=secondary-container)不跟随换色
+//// derive the full primary/secondary/tertiary roles from the seed color, otherwise the bottom-bar indicator (secondary-container) and some buttons (filled-tonal = secondary-container) never follow the change
 function applyTheme(t){
   themeState={mode:t.mode||'dark',seed:t.seed||'#6750A4'};
   const el=document.documentElement; el.dataset.theme=themeState.mode; el.style.colorScheme=themeState.mode;
   const hsl=hexToHSL(themeState.seed), isDark=themeState.mode!=='light';
   const set=(k,v)=>el.style.setProperty(k,v);
-  // 一组角色色: 主色/主色上文字/容器色/容器上文字
+// A role palette: primary / on-primary / primary-container / on-primary-container
   const role=(h,s,cL,onCL)=>{
     const pL=isDark?80:40;
     set('--md-sys-color-'+cL,hslToHex(h,s,pL));
@@ -1093,13 +1093,13 @@ function openThemeDialog(){
     mduBtn.disabled=false;
   });
 }
-// 应用主题种子色(自定义色块 / 色板 / 自定义输入三处同步)
+// Apply the theme seed color (kept in sync across the custom swatch / palette / custom input)
 function applySeed(hex){
   applyTheme({mode:themeState.mode, seed:hex}); saveTheme();
   const cu=$('#th-custom'); if(cu) cu.value=hex;
   const sw=$('#th-swatches'); if(sw) sw.querySelectorAll('.th-swatch').forEach(s=>s.style.borderColor='transparent');
 }
-// 从相册选一张壁纸 → 浏览器内 canvas 取主色, 不依赖系统 API / 后端接口
+// Pick a wallpaper from the gallery -> extract the primary color with in-browser canvas; no system API / backend endpoint
 function pickWallpaperColor(btn){
   const inp=document.createElement('input');
   inp.type='file'; inp.accept='image/*';
@@ -1115,7 +1115,7 @@ function pickWallpaperColor(btn){
   });
   inp.click();
 }
-// 主色提取: 缩到 32×32 → 按 30° 色相分桶 → 取「像素数×饱和度×亮度居中」最高的桶求均值
+// Primary extraction: downscale to 32x32 -> bucket by 30-degree hue -> average the bucket scoring best on pixels x saturation x centered lightness
 async function dominantColor(file){
   const url=URL.createObjectURL(file);
   try{
@@ -1126,7 +1126,7 @@ async function dominantColor(file){
     for(let i=0;i<d.length;i+=4){
       if(d[i+3]<128) continue;
       const c=rgbToHsl(d[i],d[i+1],d[i+2]);
-      if(c.s<12 || c.l<12 || c.l>92) continue;   // 跳过近灰/过暗/过亮
+if(c.s<12 || c.l<12 || c.l>92) continue;   // skip near-gray / too dark / too bright
       const k=Math.round(c.h/12);
       const b=buckets.get(k)||{n:0,h:0,s:0,l:0};
       b.n++; b.h+=c.h; b.s+=c.s; b.l+=c.l; buckets.set(k,b);
@@ -1140,7 +1140,7 @@ async function dominantColor(file){
     const b=best.b, h=Math.round(b.h/b.n);
     const s=Math.min(100,Math.round(b.s/b.n*1.15));
     const l=Math.round(b.l/b.n);
-    // 种子色限定在中亮度: 太浅/太暗会让整套角色色失去对比
+    // Seed colors are clamped to mid lightness: too pale/dark and the whole role palette loses contrast
     return hslToHex(h, Math.max(28,s), l>70?58:(l<35?45:l));
   } finally { URL.revokeObjectURL(url); }
 }
@@ -1156,7 +1156,7 @@ function rgbToHsl(r,g,b){
   return {h,s:s*100,l:l*100};
 }
 
-// ---- 访问令牌(webToken)输入: 顶栏钥匙按钮 / 接口 401 时自动弹出 ----
+// ---- Access token (webToken) input: top-bar key button, auto-opens on API 401 ----
 function keyDlgVisible(){ return !$('#dlgOverlay').hidden && $('#dlgTitle').textContent==='管理令牌'; }
 function openKeyDialog(){
   if(keyDlgVisible()) return;
@@ -1173,7 +1173,7 @@ async function saveKey(){
   setTimeout(()=>location.reload(),600);
   return true;
 }
-// ---- 模型改名标签编辑器(渠道弹窗内) ----
+// ---- Model rename tag editor (inside the channel dialog) ----
 function renderMmChips(){
   const box=$('#mmChips'); if(!box) return;
   box.innerHTML=mmList.length?mmList.map(([k,v],i)=>
@@ -1207,7 +1207,7 @@ function mmBindSwipe(){
   },{passive:true});
   box.addEventListener('touchend',()=>{
     if(!chip) return;
-    if(Math.abs(dx)>64){ // 滑动超过阈值 → 删除
+if(Math.abs(dx)>64){ // swipe past the threshold -> delete
       chip.style.transition='transform .18s,opacity .18s';
       chip.style.transform='translateX('+(dx>0?160:-160)+'px)'; chip.style.opacity='0';
       const i=idx; setTimeout(()=>mmDel(i),180);
@@ -1215,7 +1215,7 @@ function mmBindSwipe(){
     chip=null; idx=-1; dx=0;
   });
 }
-// 已获取模型列表的勾选面板(插在弹窗顶部, 勾选后填入"模型"字段)
+// Checkbox panel for a fetched model list (inserted at the top of the dialog; checking fills the Models field)
 function mmShowModelPicker(list){
   const oldBox=$('#mmSelBox'); if(oldBox) oldBox.remove();
   const box=document.createElement('div');
@@ -1248,7 +1248,7 @@ function mmShowModelPicker(list){
     }
     else if(t==='mmSelX') box.remove();
   });
-  // 插到"模型"字段正上方(而不是弹窗顶部), 并滚动到可见位置
+  // insert right above the Models field (not the dialog top) and scroll it into view
   const mf=$('#dlgBody [data-f=models]');
   if(mf && mf.parentNode) mf.parentNode.insertBefore(box, mf);
   else $('#dlgBody').prepend(box);
@@ -1256,7 +1256,7 @@ function mmShowModelPicker(list){
   catch(_){ try{ $('#dlgBody').scrollTop = box.offsetTop - 8; }catch(_2){} }
 }
 let providerDlgOrigName='';        // 打开渠道弹窗时的原渠道名(用于改名)
-let providerDlgOrigUseResponses;   // 原 useResponses(undefined=未设置/自动直通; 只有用户主动改变才提交)
+let providerDlgOrigUseResponses;   // the original useResponses (undefined = unset/auto passthrough; submitted only when the user flips it)
 function openProviderDialog(ch){
   const c=ch||{name:'',type:'openai',baseUrl:'',proxy:'-',models:[],apiKey:'',default:false};
   providerDlgOrigName=ch?ch.name:'';
@@ -1339,7 +1339,7 @@ function openPortDialog(name){
       <label style="display:flex;align-items:center;gap:8px;font-size:14px"><md-switch data-f="tls" ${i.tlsOn?'selected':''}></md-switch>启用 HTTPS</label>
       ${(name&&name!=='default'&&name!==Store.currentName)?`<md-text-button data-action="delInstance" data-name="${escAttr(name)}" style="color:var(--md-sys-color-error);align-self:flex-start;margin-top:2px">删除实例</md-text-button>`:''}
     </div>`, {onOk:()=>savePortSettings(name)});
-  if(name){ // 编辑模式: 拉真实配置回填端口/TLS/管理密码(reveal 明文, 所见即所得)
+if(name){ // edit mode: fetch the real config to backfill port/TLS/admin password (revealed in plaintext, WYSIWYG)
     portDlgOrigKey=undefined;
     adapter.getConfig(name).then(c=>{
       const q=f=>$('#dlgBody [data-f='+f+']');
@@ -1352,8 +1352,8 @@ function openPortDialog(name){
   }
 }
 
-// ============ 保存动作 ============
-// 新建/编辑实例(端口页弹窗的"确定")。editName 存在=编辑, 否则=新建。
+// ============ Save actions ============
+//// create/edit an instance (the ports page dialog's OK). editName present = edit, otherwise create.
 async function savePortSettings(editName){
   const v=dlgValue();
   const name=String(editName||v.name||'').trim();
@@ -1364,9 +1364,9 @@ async function savePortSettings(editName){
   if(!port||port<1024||port>65535){ snack('HTTP 端口范围 1024-65535',true); return false; }
   if(tlsOn&&(!tlsPort||tlsPort<1024||tlsPort>65535)){ snack('HTTPS 端口范围 1024-65535',true); return false; }
   try{
-    if(editName){ // ---- 编辑已有实例 ----
+if(editName){ // ---- edit an existing instance ----
       let effName=editName;
-      if(name!==editName){ // ---- 改名: 先调 rename API(热生效), 后续配置保存用新名 ----
+if(name!==editName){ // ---- rename: call the rename API first (hot), later saves use the new name ----
         await adapter.renameInstance(editName,name);
         effName=name;
         snack('实例已改名: '+editName+' → '+name);
@@ -1374,7 +1374,7 @@ async function savePortSettings(editName){
       const cur=await adapter.getConfig(effName);
       const patch={ port, host:(cur&&cur.host)||'0.0.0.0',
         tls:Object.assign({},(cur&&cur.tls)||{},{ enable:tlsOn, port:tlsPort||port+10 }) };
-      // 管理密码: 与回填原值不同才提交(含清空=移除密码); 预填失败(unknown)则不动
+      // admin password: submit only when different from the backfilled value (empty = remove it); untouched when backfill failed (unknown)
       if(portDlgOrigKey!==undefined && adminKey!==portDlgOrigKey) patch.webToken=adminKey;
       await adapter.saveConfig(effName,patch);
       snack('已保存实例 '+effName);
@@ -1383,9 +1383,9 @@ async function savePortSettings(editName){
       let running=false;
       try{ const d=await adapter.getInstances(); running=!!(d.instances||[]).find(x=>x.name===effName&&x.running); }catch(_){}
       if(running) doInstanceAction(effName,'restart'); else renderPorts();
-    }else{ // ---- 新建实例 ----
+}else{ // ---- create a new instance ----
       const tls={ enable:tlsOn, port:tlsPort||port+10 };
-      if(tlsOn){ // 复用已有实例的证书(证书可跨实例共用); 都没有则降级纯 HTTP
+if(tlsOn){ // reuse an existing instance's certificate (certs can be shared across instances); none available -> fall back to pure HTTP
         try{
           const d=await adapter.getInstances();
           const names=(d.instances||[]).map(x=>x.name);
@@ -1406,7 +1406,7 @@ async function savePortSettings(editName){
   }catch(e){ snack(e.message,true); return false; }
   return true;
 }
-// ---- 代理服务器管理(增/改/删, 走 saveConfig 的 proxies 整体替换) ----
+// ---- Proxy server management (add/edit/remove; whole-array replace via saveConfig's proxies) ----
 function openProxyDialog(name){
   const cur=Store.configs.get(Store.inst);
   const p=(cur&&cur.proxies&&cur.proxies[name])||{};
@@ -1440,7 +1440,7 @@ async function saveProxy(origName){
     const entry={ type:v.type||'socks5', host, port };
     const un=String(v.username||'').trim(), pw=String(v.password||'');
     if(un) entry.username=un;
-    else if(origName&&(cur.proxies[origName]||{}).username) entry.username=cur.proxies[origName].username; // 留空=保持原值
+else if(origName&&(cur.proxies[origName]||{}).username) entry.username=cur.proxies[origName].username; // empty = keep the old value
     if(pw) entry.password=pw;
     else if(origName&&(cur.proxies[origName]||{}).password) entry.password=cur.proxies[origName].password;
     proxies[name]=entry;
@@ -1469,25 +1469,25 @@ async function delProxy(name){
 async function saveProvider(){
   const v=dlgValue();
   if(!v.name||!v.baseUrl){ snack('名称与 Base URL 必填',true); return false; }
-  // 模型改名映射来自标签编辑器(mmList); 对外名→真实名, 相同=按原名提供
+  // the model rename map comes from the tag editor (mmList); public -> real name; identical = served under the original name
   const modelMap={};
   for(const [k,r] of mmList) modelMap[k]=r;
   const ch={ name:v.name, type:v.type||'openai', baseUrl:v.baseUrl, proxy:v.proxy||'-',
     models:String(v.models||'').split(',').map(s=>s.trim()).filter(Boolean),
     apiKey:v.apiKey||'', default:!!v.default,
-    // 上游余额透传: 恒发(空串=清空), 后端对「未提交」才做继承 —— 否则编辑一次渠道会把余额配置抹掉
-    // 上游响应直通 Responses 是三态: 未设置(undefined)=自动直通 /v1/responses; 只有用户主动改变勾选才提交该字段,
-    // 否则不提交(避免「编辑一次渠道就把 undefined 固化成 false、悄悄关掉 Responses 直通」)
+// Upstream balance passthrough: always send (empty string = clear); the backend inherits only on omission -- otherwise one channel edit wipes the balance config
+// Upstream passthrough-to-Responses is three-state: unset (undefined) = auto passthrough /v1/responses; the field is submitted only when the user explicitly changes the checkbox,
+// otherwise omit (avoids an edit baking undefined into false and silently killing Responses passthrough)
     balanceUrl:String(v.balanceUrl||'').trim(), balancePath:String(v.balancePath||'').trim(), balanceUnit:String(v.balanceUnit||'').trim(),
     probe:!!($('#dlgBody [data-f=probe]')&&$('#dlgBody [data-f=probe]').selected) };
-  // useResponses 三态保持: 仅当用户显式反转了勾选才提交该字段; 未动则不提交(undefined=自动直通 /v1/responses)
+// useResponses stays three-state: the field is submitted only when the user explicitly flipped the checkbox; otherwise omitted (undefined = auto passthrough /v1/responses)
   const urEl=$('#dlgBody [data-f=useResponses]');
   const urNow=!!(urEl&&urEl.selected);
   if(!!providerDlgOrigUseResponses!==urNow) ch.useResponses=urNow;
   const delayMs=Math.max(0,Math.min(120000,+v.delayMs||0));
-  if(delayMs) ch.delayMs=delayMs; // 0=不带, 覆盖掉旧值
-  if(providerDlgOrigName && providerDlgOrigName!==ch.name) ch.oldName=providerDlgOrigName; // 改名
-  if(Object.keys(modelMap).length) ch.modelMap=modelMap; // 不带箭头的空映射就不发, 避免覆盖成空
+if(delayMs) ch.delayMs=delayMs; // 0 = omit, clearing the old value
+if(providerDlgOrigName && providerDlgOrigName!==ch.name) ch.oldName=providerDlgOrigName; // rename
+if(Object.keys(modelMap).length) ch.modelMap=modelMap; // never send an arrow-less empty map, so an existing one is not wiped
   try{ await adapter.saveChannel(Store.inst,ch);
     snack('已保存渠道 '+ch.name+(Object.keys(modelMap).length?' (改名映射重启实例后生效)':''));
     await renderProviders(); }
@@ -1523,7 +1523,7 @@ async function doInstanceAction(name,cmd){
   }catch(e){ snack(e.message,true); }
 }
 
-// 删除实例(编辑弹窗内按钮): 确认后停止+删配置, 不可恢复
+// Delete instance (button in the edit dialog): after confirmation, stops + removes config; irreversible
 async function delInstance(name){
   if(!name||name==='default'||name===Store.currentName) return;
   if(!confirm('确定删除实例 '+name+' ? 将停止它并删除其配置文件, 不可恢复!')) return;
@@ -1535,7 +1535,7 @@ async function delInstance(name){
   }catch(e){ snack(e.message,true); }
 }
 
-// ============ 渲染: 上下文窗口 ============
+// ============ Render: context windows ============
 let cwList=[], cwLimit={soft:80,hard:0,charsPerToken:4};
 function cwRender(){
   const tb=$('#cw-table tbody'); if(!tb) return;
@@ -1578,7 +1578,7 @@ function cwAdd(){
 }
 function cwDel(i){ cwList.splice(i,1); cwRender(); cwSave(); }
 
-// ============ 渲染: 面板会话 ============
+// ============ Render: panel sessions ============
 function fmtDateTime(ms){ try{ return new Date(ms).toLocaleString('zh-CN',{hour12:false}); }catch(_){ return String(ms); } }
 function fmtLeft(ms){
   const d=Math.round((ms-Date.now())/1000);
@@ -1629,7 +1629,7 @@ async function clearAdminExpire(){
   catch(e){ snack(e.message,true); }
 }
 
-// ============ 统计图表(纯 canvas) ============
+// ============ Statistics charts (plain canvas) ============
 function cvCtx(id, h){
   const cv=$('#'+id); if(!cv) return null;
   const dpr=window.devicePixelRatio||1;
@@ -1696,7 +1696,7 @@ function drawModelChart(rows){
     const bw=Math.max(2, (w-padL-padR)*r.sum/max);
     cx.fillStyle=track; cx.fillRect(padL, cy-barH/2, w-padL-padR, barH);
     cx.fillStyle=prim;  cx.fillRect(padL, cy-barH/2, bw, barH);
-    // 模型名右对齐 + 省略
+    // model names right-aligned + truncated
     let nm=String(r.name||'');
     const maxW=padL-8;
     while(nm.length>3 && cx.measureText(nm).width>maxW) nm=nm.slice(0,-2);
@@ -1705,7 +1705,7 @@ function drawModelChart(rows){
   });
 }
 
-// ============ 事件(集中委托) ============
+// ============ Events (centralized delegation) ============
 document.body.addEventListener('click', e=>{
   const nav=e.target.closest('[data-page]');
   if(nav?.dataset.page){
@@ -1768,14 +1768,14 @@ if(rpTestInc) rpTestInc.addEventListener('click',()=>{ const rules=rpCompileCli(
   $('#cd-new').addEventListener('click',()=>{ if(cdTab==='users')openUserDialog(); else openCardDialog(); });
   $('#cd-tab-keys').addEventListener('click',()=>cdSwitchTab('keys'));
   $('#cd-tab-users').addEventListener('click',()=>cdSwitchTab('users'));
-  // 第二验证
+  // second factor
   $('#ka-save-second').addEventListener('click',async()=>{ try{ await adapter.setAdminAuth(Store.inst,{secondKey:$('#ka-secondKey').value}); snack('第二密码已保存'); loadAdminAuth(Store.inst); }catch(e){ snack(e.message,true); } });
   $('#ka-totp-enable').addEventListener('click',async()=>{ try{ const r=await adapter.setAdminAuth(Store.inst,{totpAction:'enable'}); if(r.totpSecret){ $('#ka-totp-info').style.display=''; $('#ka-totp-secret').textContent=r.totpSecret; $('#ka-totp-url').textContent=r.otpauthUrl||''; } snack('TOTP 已启用, 请立即扫码保存密钥!'); loadAdminAuth(Store.inst); }catch(e){ snack(e.message,true); } });
   $('#ka-totp-disable').addEventListener('click',async()=>{ try{ await adapter.setAdminAuth(Store.inst,{totpAction:'disable'}); snack('TOTP 已停用'); loadAdminAuth(Store.inst); }catch(e){ snack(e.message,true); } });
-  // 注册设置
+    // registration settings
   $('#rg-save').addEventListener('click',saveRegistration);
   $('#rg-enable').addEventListener('change',()=>{ $('#rg-more').style.display=$('#rg-enable').selected?'':'none'; });
-  // 隧道
+// Tunnel
   $('#tn-toggle').addEventListener('click',async()=>{ try{ const d=await adapter.getTunnel(); await adapter.tunnelAction(d.running?'stop':'start'); snack(d.running?'隧道已停止':'隧道启动中…'); setTimeout(loadTunnel,1500); }catch(e){ snack(e.message,true); } });
   $('#tn-copy').addEventListener('click',()=>{ const t=$('#tn-url').textContent; if(t){ navigator.clipboard&&navigator.clipboard.writeText(t); snack('已复制'); } });
 $('#rt-save').addEventListener('click',saveRouting);
@@ -1829,14 +1829,14 @@ $('#ch-model').addEventListener('change', e=>{ Store.chat.model=e.target.value; 
 window.addEventListener('online',()=>{ Store.online=true; });
 window.addEventListener('offline',()=>{ Store.online=false; snack('网络已断开',true); });
 
-// ============ 启动 ============
+// ============ Boot ============
 if(!MW_OK){
   $('#compatBar').textContent='⚠ Material Web 组件库 (/auth/vendor/mw-v2.js) 加载失败，页面将只有无样式内容。请确认文件已部署。';
   $('#compatBar').classList.add('show');
 }
 $('#keyBtn').addEventListener('click',openKeyDialog);
 $('#thBtn').addEventListener('click',openThemeDialog);
-// ?key=<webToken> 一键带令牌访问: 存入 localStorage 并从地址栏抹掉
+// ?key=<webToken> one-click token access: store in localStorage and scrub from the address bar
 try{
   const u=new URL(location.href);
   const k=u.searchParams.has('key')?u.searchParams.get('key'):'';
@@ -1846,7 +1846,7 @@ try{
   }
 }catch(_){}
 upgradePwFields(document.body);
-// ---- 品牌名称自定义(点左上角品牌区修改, 存浏览器 localStorage, 各设备独立) ----
+// ---- Custom brand name (edit via the brand area top-left; stored in localStorage, per device) ----
 let brandState={name:'AI Gateway',ver:'Material Web v2.11'};
 function applyBrand(b){
   brandState={name:(b&&b.name)||'AI Gateway', ver:b&&b.ver!=null?b.ver:'Material Web v2.11'};

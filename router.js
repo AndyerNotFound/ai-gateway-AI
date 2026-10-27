@@ -13,25 +13,25 @@ const ctxp = require('./ctxp');
 const state = require('./state');
 const admin = require('./admin');
 
-// ================= 渠道路由 / 鉴权 / 错误 / 模型列表 =================
-/* ================= 渠道路由 / 鉴权 / 错误 / 模型列表 ================= */
+// ================= Channel routing / auth / errors / model list =================
+/* ================= Channel routing / auth / errors / model list ================= */
 
-// 收集所有匹配该 model 的候选渠道, 按 round-robin 计数器旋转起始位置
-// 返回 [{ ch, upstreamModel }, ...] (已旋转, 第一个该本轮使用)
-// 渠道锁定判定: lockAt=开始锁定的时间戳, lockUntil=解锁时间戳(0/空=手动解锁前一直锁)
+//// collect all channels matching the model, rotating the start by the round-robin counter
+// Returns [{ ch, upstreamModel }, ...] (rotated; the first one is for this round)
+//// channel lock check: lockAt = when the lock starts, lockUntil = when it unlocks (0/empty = locked until manually unlocked)
 function channelLocked(ch, now) {
   if (!ch) return false;
   const t = now || Date.now();
   const at = Number(ch.lockAt) || 0, until = Number(ch.lockUntil) || 0;
   if (!at && !until) return false;
-  if (at && t < at) return false;         // 还没到锁定时刻
-  if (until && t >= until) return false;  // 已过解锁时刻
+if (at && t < at) return false;         // lock time not reached yet
+if (until && t >= until) return false;  // past the unlock time
   return true;
 }
 function pickChannels(cfg, model, forceName) {
-  const chs = (cfg.channels || []).filter(c => !channelLocked(c)); // 锁定的渠道不参与路由
+const chs = (cfg.channels || []).filter(c => !channelLocked(c)); // locked channels stay out of routing
   const candidates = [];
-  // 手动路由: 请求头 x-agw-channel > 实例级 forceChannel > 自动匹配。命中即单渠道, 不参与轮转
+  // manual routing: x-agw-channel header > instance forceChannel > auto match. A hit pins the single channel; no rotation
   const forced = forceName ? String(forceName).trim() : '';
   if (forced) {
     const hit = chs.find(c => c.name === forced);
@@ -42,7 +42,7 @@ function pickChannels(cfg, model, forceName) {
     }
     logErr('[route] 手动路由的渠道不存在, 退回自动匹配: ' + forced);
   }
-  // 一次性路由: 悬浮球里点选的渠道, 用一次就清掉, 不落盘
+// One-shot routing: the channel picked in the floating ball, cleared after one use, never persisted
   if (cfg._onceChannel) {
     const onceName = String(cfg._onceChannel);
     const hit = chs.find(c => c.name === onceName);
@@ -56,27 +56,27 @@ function pickChannels(cfg, model, forceName) {
     logErr('[route] 一次性路由的渠道已不存在, 走自动匹配: ' + onceName);
   }
   if (model) {
-    // 1) modelMap 精确命中
+// 1) exact hit in modelMap
     for (const ch of chs) {
       if (ch.modelMap && Object.prototype.hasOwnProperty.call(ch.modelMap, model)) {
         candidates.push({ ch, upstreamModel: String(ch.modelMap[model]) });
       }
     }
-    // 2) models 列表命中 (避免和 modelMap 重复加入同一渠道)
+// 2) hit in the models list (avoids adding the same channel twice via modelMap)
     if (!candidates.length) {
       for (const ch of chs) {
         if (ch.models && ch.models.includes(model)) candidates.push({ ch, upstreamModel: model });
       }
     }
   }
-  // 3) 没有任何精确命中 → 用 default 渠道 (可多个) 或全部渠道兜底
+// 3) no exact hit -> fall back to default channel(s) (possibly several) or all channels
   if (!candidates.length) {
     const defs = chs.filter(c => c.default);
     const pool = defs.length ? defs : chs;
     for (const ch of pool) candidates.push({ ch, upstreamModel: model || '' });
   }
   if (!candidates.length) return [];
-  // round-robin: 用 model 做 key 的计数器决定起始偏移
+// round-robin: a counter keyed by model decides the starting offset
   if (!cfg._rr) cfg._rr = {};
   const key = model || '__nomodel__';
   cfg._rr[key] = ((cfg._rr[key] || 0) + 1) % candidates.length;
@@ -84,20 +84,20 @@ function pickChannels(cfg, model, forceName) {
   return candidates.slice(rot).concat(candidates.slice(0, rot));
 }
 
-// 请求级/实例级强制渠道: 请求头优先(只影响本次), 其次实例配置
+// Request/instance-level forced channel: the header wins (this request only), then instance config
 function forcedChannelName(cfg, req) {
   const h = (req && req.headers) ? String(req.headers['x-agw-channel'] || '').trim() : '';
   if (h) return h;
   return cfg.forceChannel ? String(cfg.forceChannel) : '';
 }
 
-// 模型名通配匹配(* 任意), 不区分大小写
+//// model-name glob matching (* = anything), case-insensitive
 function globMatch(pat, str) {
   const esc = String(pat).split('*').map(x => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*');
   try { return new RegExp('^' + esc + '$', 'i').test(String(str)); } catch (_) { return false; }
 }
 
-// 按 contextWindows 表(有序, 支持通配, 兜底 *)取模型窗口大小; 取不到返回 0 = 不显示占用
+//// resolve a model's window size from the contextWindows table (ordered, wildcards, * fallback); 0 when unknown = hide usage
 function matchContextWindow(cfg, model) {
   const list = Array.isArray(cfg.contextWindows) ? cfg.contextWindows : [];
   const m = String(model || '');
@@ -110,10 +110,10 @@ function matchContextWindow(cfg, model) {
   return 0;
 }
 
-// 粗估 prompt token 数: 只用于硬上限的前置拦截, 不是精确分词
-// 中文/日文/韩文按 1 字 ≈ 1 token, 其余按 charsPerToken(默认 4) 字符 ≈ 1 token
+//// rough prompt token estimate: only for the hard limit's upfront block, not real tokenization
+// CJK counts ~1 token per character; everything else ~1 token per charsPerToken characters (default 4)
 const CJK_RE = /[\u3000-\u9fff\uff00-\uffef\u3040-\u30ff\uac00-\ud7af]/g;
-// 零分配 CJK 计数(与旧 CJK_RE 正则等价的范围判断): 大上下文时省掉 match 数组分配
+// Allocation-free CJK counting (range check equivalent to the old CJK_RE): avoids match-array allocation on large contexts
 function countCjk(str) {
   let n = 0;
   for (let i = 0; i < str.length; i++) {
@@ -123,7 +123,7 @@ function countCjk(str) {
   }
   return n;
 }
-// 粗估 token 数(不是精确分词): CJK 1字 ≈ 1 token, 其余 cpt 字符 ≈ 1 token
+//// rough token estimate (not real tokenization): CJK ~1 token per char, others ~1 token per cpt chars
 function tokOf(str, cpt) {
   str = String(str || '');
   if (!str) return 0;
@@ -131,8 +131,8 @@ function tokOf(str, cpt) {
   return Math.ceil(cjk + (str.length - cjk) / cpt);
 }
 
-// 请求侧单次扫描(2026-10-27 重构): 总量 + 分布(tools/system/user/history) 一趟算完
-// history = assistant/tool 历史轮次, 与 system(系统提示) 分开, 才能看出"是提示膨胀还是历史膨胀"
+// Request-side single scan (2026-10-27 refactor): total + distribution (tools/system/user/history) in one pass
+// history = assistant/tool turns, kept separate from system (the prompt), so you can tell prompt bloat from history bloat
 function analyzePrompt(canonical, charsPerToken) {
   const cpt = Math.max(1, Number(charsPerToken) || 4);
   const dist = { tools: 0, system: 0, user: 0, history: 0 };
@@ -148,11 +148,11 @@ function analyzePrompt(canonical, charsPerToken) {
   dist.history += Math.ceil(msgs.length * 0.5);
   return { total: dist.tools + dist.system + dist.user + dist.history, dist };
 }
-// 兼容旧调用
+// Backward compatible with old callers
 function estimatePromptTokens(canonical, charsPerToken) { return analyzePrompt(canonical, charsPerToken).total; }
 function estimatePromptDist(canonical, charsPerToken) { return analyzePrompt(canonical, charsPerToken).dist; }
 
-// ---- 自校准(2026-10-27): 每模型 EMA(真实 input / 本地估算), 存 byModel[n].estRatio 随统计落盘 ----
+// ---- Self-calibration (2026-10-27): per-model EMA of real input / local estimate, stored in byModel[n].estRatio with stats ----
 const EST_RATIO_MIN = 0.1, EST_RATIO_MAX = 10, EST_EMA_A = 0.2;
 function calibRatio(cfg, model) {
   const bm = cfg && cfg._stats && cfg._stats.byModel && cfg._stats.byModel[model];
@@ -167,7 +167,7 @@ function calibUpdate(cfg, model, actual, rawEst) {
   const r = Math.min(EST_RATIO_MAX, Math.max(EST_RATIO_MIN, actual / rawEst));
   bm.estRatio = bm.estRatio ? bm.estRatio * (1 - EST_EMA_A) + r * EST_EMA_A : r;
 }
-// 应用校准系数后的估算(硬上限/ctxp 拦截用, 误杀更少)
+// Estimate after applying the calibration ratio (used by hard limits/ctxp interception; fewer false blocks)
 function estPromptAdj(cfg, model, canonical) {
   const raw = analyzePrompt(canonical, ((cfg.contextLimit || {}).charsPerToken) || 4);
   const ratio = calibRatio(cfg, model);
@@ -175,7 +175,7 @@ function estPromptAdj(cfg, model, canonical) {
   const dist = {}; for (const k in raw.dist) dist[k] = Math.round(raw.dist[k] * ratio);
   return { total: Math.round(raw.total * ratio), dist };
 }
-// 有真实 usage 时把分布归一到真实 input, 三段加总 = 真实 input(口径一致)
+//// with real usage, normalize the distribution to the real input so the three parts sum to it (consistent convention)
 function scaleDist(dist, rawTotal, actualInput) {
   if (!(actualInput > 0) || !(rawTotal > 0)) return dist;
   const f = actualInput / rawTotal, out = {};
@@ -183,7 +183,7 @@ function scaleDist(dist, rawTotal, actualInput) {
   return out;
 }
 
-// 记录最近一次请求的上下文占用(仅内存, 供悬浮球/面板读) + 最近占用序列(趋势/触顶预测)
+// Record the latest request's context usage (memory only, read by the ball/panel) + a recent usage series (trend/approach prediction)
 function recordContext(cfg, model, prompt, completion, channel, estimated, extra) {
   const p = Number(prompt) || 0;
   if (p <= 0) return;
@@ -201,36 +201,36 @@ function recordContext(cfg, model, prompt, completion, channel, estimated, extra
   }
 }
 
-// 向后兼容: 返回第一个候选
+// Backward compatibility: return the first candidate
 function pickChannel(cfg, model) {
   const cs = pickChannels(cfg, model);
   return cs.length ? cs[0] : null;
 }
 
-/* ---- 小工具: 收集 JSON body ---- */
+/* ---- Helper: collect a JSON body ---- */
 function collectJson(req, res, cb) {
   let body = '';
-  const u8 = utf8();   /* ★跨分块安全解码(2026-09-18) */
+const u8 = utf8();   /* *chunk-safe decoding (2026-09-18) */
   req.on('data', c => { body += u8(c); if (body.length > 262144) req.destroy(); });
   req.on('end', () => { let j; try { j = JSON.parse(body || '{}'); } catch (_) { return sendError('openai', res, 400, 'bad json'); } cb(j); });
   req.on('error', () => {});
 }
-// 卡密可访问的实例分支列表(空=全部)
+// Instances a key card may reach (empty = all)
 function availableBranches(cfg, userKey) {
   const all = state.CUR_POOL ? [...state.CUR_POOL.instances.keys()].filter(n => { const c = state.CUR_POOL.instances.get(n); return c && !c._disabled; }) : [cfg._name || 'default'];
-  if (!userKey) return all; // 管理员/免密: 全部
+if (!userKey) return all; // admin/keyless: everything
   const b = userKey.branches || [];
   return b.length ? all.filter(n => b.includes(n)) : all;
 }
 
-/* ---- 卡密生成(长度可配 8-128, 字符集 base64url) ---- */
+/* ---- Key card generation (configurable length 8-128, base64url charset) ---- */
 function genApiKey(len) {
   const n = Math.min(128, Math.max(8, Number(len) || 24));
   const bytes = Math.ceil(n * 3 / 4) + 2;
   return 'sk-' + crypto.randomBytes(bytes).toString('base64url').slice(0, n);
 }
 
-/* ---- 运行时配置落盘(剔除 _ 开头的运行时字段, 复用 admin.saveCfg) ---- */
+/* ---- Persist runtime config (strips _-prefixed runtime fields; reuses admin.saveCfg) ---- */
 function persistRuntimeCfg(cfg) {
   try {
     const clean = JSON.parse(JSON.stringify(cfg, (k, v) => (k && k[0] === '_') ? undefined : v));
@@ -238,7 +238,7 @@ function persistRuntimeCfg(cfg) {
   } catch (e) { logErr('[persist] 配置落盘失败:', e.message); }
 }
 
-/* ---- 用户密码(scrypt) ---- */
+/* ---- User passwords (scrypt) ---- */
 function hashPassword(pw) {
   const salt = crypto.randomBytes(16).toString('base64url');
   const h = crypto.scryptSync(String(pw), salt, 32);
@@ -252,7 +252,7 @@ function verifyPassword(pw, stored) {
     return crypto.timingSafeEqual(calc, Buffer.from(h, 'base64url'));
   } catch (_) { return false; }
 }
-// 卡密余额 JSON(/credits 响应 + login 复用)
+// Key card balance JSON (/credits response, reused by login)
 function keyCreditsJSON(uk) {
   const quota = Number(uk.quotaTokens) || 0;
   const used = Number(uk.usedTokens) || 0;
@@ -266,9 +266,9 @@ function keyCreditsJSON(uk) {
   };
 }
 
-// 认证: 返回 {ok, admin, userKey, status, error}
-//  - admin=true: gatewayKey 匹配(或无密钥配置的免密模式)
-//  - userKey: 命中 apiKeys 卡密(限额/过期/禁用/模型白名单在此校验)
+// Auth: returns {ok, admin, userKey, status, error}
+//  - admin=true: gatewayKey matched (or keyless no-auth mode)
+//  - userKey: matched an apiKeys card (quota/expiry/disabled/model whitelist checked here)
 function checkAuth(cfg, req, query) {
   const h = req.headers;
   const auth = h.authorization || '';
@@ -289,12 +289,12 @@ function checkAuth(cfg, req, query) {
       return { ok: true, userKey: uk };
     }
   }
-  // 无 gatewayKey 且无卡密 = 免密(向后兼容)
+  // no gatewayKey and no card = keyless (backward compatible)
   if (!cfg.gatewayKey && !keys.length) return { ok: true, admin: true };
   return { ok: false, status: 401, error: 'invalid key' };
 }
 
-/* ---- 卡密用量持久化(log/keyusage-<实例>.json, 30s 脏检查落盘) ---- */
+/* ---- Key card usage persistence (log/keyusage-<inst>.json, dirty-check flush every 30s) ---- */
 function cfgDirOf(cfg) { return cfg._configFile ? path.dirname(cfg._configFile) : process.cwd(); }
 function keyUsageFile(cfg) { return path.join(cfgDirOf(cfg), 'log', 'keyusage-' + (cfg._name || 'default') + '.json'); }
 function loadKeyUsage(cfg) {
@@ -312,18 +312,18 @@ function saveKeyUsage(cfg) {
   for (const k of cfg.apiKeys) j[k.key] = { usedTokens: k.usedTokens || 0, name: k.name || '' };
   try { fs.mkdirSync(path.dirname(keyUsageFile(cfg)), { recursive: true }); fs.writeFileSync(keyUsageFile(cfg), JSON.stringify(j, null, 1)); } catch (_) {}
 }
-// 30 秒脏检查落盘(所有实例)
+// dirty-check flush every 30s (all instances)
 setInterval(() => {
   const cfgs = state.CUR_POOL ? [...state.CUR_POOL.instances.values()] : (state.CUR_CFG ? [state.CUR_CFG] : []);
   for (const c of cfgs) if (c._keyUsageDirty) { c._keyUsageDirty = false; saveKeyUsage(c); }
 }, 30000).unref();
 
-/* ---- 插件 gatewayApi 工厂: 给插件暴露受限的网关能力 ---- */
+/* ---- Plugin gatewayApi factory: exposes restricted gateway capabilities to plugins ---- */
 function makeGatewayApi(cfg) {
   return {
-    // 按卡密 token 查 key 记录（插件校验调用者身份用）
+    // look up a key record by card token (lets plugins verify the caller's identity)
     findKey: (token) => (cfg.apiKeys || []).find(k => k && k.key && k.key === token) || null,
-    // 给卡密加额度: 用减用量的方式实现(走 keyusage 落盘, 无需动 config)
+    // add card quota: implemented by reducing usedTokens (persisted via keyusage; config untouched)
     grantQuota: (keyId, tokens) => {
       const k = (cfg.apiKeys || []).find(x => x && x.key === keyId);
       if (!k || !(tokens > 0)) return false;
@@ -376,7 +376,7 @@ function modelsResponse(cfg, format) {
   if (format === 'gemini') {
     return { models: ms.map(m => ({ name: 'models/' + m, displayName: m, supportedGenerationMethods: ['generateContent', 'streamGenerateContent', 'countTokens'] })) };
   }
-  // openai 与 claude 字段合并, 两边 SDK 都能读
+// openai and claude fields merged so both SDKs can read it
   return { object: 'list', data: ms.map(m => ({ id: m, object: 'model', type: 'model', created: 1700000000, owned_by: 'ai-gateway', display_name: m })) };
 }
 

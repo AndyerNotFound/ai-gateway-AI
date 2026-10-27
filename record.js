@@ -18,14 +18,14 @@ const { respRedactOn, wrapRedactWriter, redactText, redactDeep } = require('./re
 const { isConnErr, makeFreshAgents } = require('./proxy');
 const ctxp = require('./ctxp');
 
-// ================= 请求记录 / Token 统计 =================
-/* ================= 请求记录 (config.record: {enable, server, maxChars}) ================= */
+// ================= Request recording / token stats =================
+/* ================= Request recording (config.record: {enable, server, maxChars}) ================= */
 function instName(cfg) {
   if (cfg._name) return cfg._name;
   const bn = cfg._configFile ? path.basename(cfg._configFile, '.json') : 'config';
   return bn === 'config' ? 'default' : bn.replace(/^config\./, '');
 }
-// 写一条记录: 配了 server 就 POST JSON 过去(异步, 不阻塞响应), 否则追加到本机 log/requests-<实例>.jsonl
+// Write a record: POST JSON to the configured server when present (async, never blocks the response), otherwise append to local log/requests-<inst>.jsonl
 function writeRequestRecord(cfg, recCfg, rec) {
   const line = JSON.stringify(rec);
   if (recCfg.server) { postRequestRecord(recCfg.server, line); return; }
@@ -33,7 +33,7 @@ function writeRequestRecord(cfg, recCfg, rec) {
     const dir = path.join(path.dirname(cfg._configFile || process.cwd()), 'log');
     fs.mkdirSync(dir, { recursive: true });
     const f = path.join(dir, 'requests-' + instName(cfg) + '.jsonl');
-    // 简单轮转: 超过 5MB 时只保留尾部约 2MB (按行截断, 不截断 JSON)
+    // simple rotation: past 5MB keep only the last ~2MB (line-aligned, never mid-JSON)
     try {
       const st = fs.statSync(f);
       if (st.size > 5 * 1024 * 1024) {
@@ -64,14 +64,14 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
   const { direct, stream, upApi } = built;
   const { logMeta, t0, usageCapture, stats } = ctx;
   const rpInc = (cfg.replace && Array.isArray(cfg.replace.inc)) ? rpCompile(cfg.replace.inc) : [];
-  // 渠道级覆盖(ch.transcreet): on / off / res-only; 未设=沿用实例全局 dsmlClean
+  // channel-level override (ch.transcreet): on / off / res-only; unset = follow the instance's global dsmlClean
   const chTrans = ch && ch.transcreet ? String(ch.transcreet).toLowerCase() : '';
   const dsmlOn = chTrans === 'off' ? false : (chTrans ? true : !!(cfg.dsmlClean && cfg.dsmlClean.enable));        // 内置 DSML 标记清洗(默认开)
   const dsmlThink = chTrans === 'on' ? true : (chTrans === 'off' || chTrans === 'res-only') ? false : !!(cfg.dsmlClean && cfg.dsmlClean.reasoning); // 思考字段是否也清
-  /* ★DSML 清洗只对"能按事件解析"的响应生效: SSE 流 与 非流式 JSON。
-   *   Gemini 的 JSON 数组流(content-type: application/json)不解析 —— 要解析就得整份缓冲,
-   *   会把"边收边发"退化成"收完再发"(打字机效果直接没了)。那条链路维持原样。 */
-  /* 回填闸: 只有"函数名命中客户端本次声明的工具"才把文本态调用还原成结构化调用 */
+/* *DSML scrubbing only applies to responses parseable as events: SSE streams and non-streaming JSON.
+   *   Gemini's JSON-array stream (content-type: application/json) is not parsed -- parsing would require buffering the whole body,
+   *   it would degrade "stream-as-you-go" into "collect-then-send" (killing the typewriter effect). That path stays untouched. */
+/* Backfill gate: restore a textual call into a structured one only when the function name matches a tool the client declared this round */
   const dsmlBackfill = !!(cfg.dsmlClean && cfg.dsmlClean.backfill);
   const dsmlToolNames = (() => {
     if (!dsmlBackfill) return null;
@@ -88,11 +88,11 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
   const dsmlPipe = dsmlOn && (ctSse || !stream);
   const isResponsesUp = ch.type === 'openai' && upApi === 'responses';
 
-  /* ★★统一结算 + 收尾加固（2026-09-18，与 ai-gateway-core 同源）
-   * 事故：direct 流式分支的 `upRes.on('end')` 直接裸调 `ctx.logDone()`。它一旦抛错，EventEmitter
-   * 的 emit 循环就中断 —— `upRes.pipe(res)` 的 onend 不会被调用，于是**下游永远等不到结束标记**、
-   * 统计里留下「1 次请求 / 0 token」的幽灵记录（core 侧表现为请求挂 9 分钟不结算）。
-   * 现在：①结算只做一次；②结算异常绝不影响下游收尾；③流中断也要结算。 */
+/* **Unified settlement + finalization hardening (2026-09-18, same origin as ai-gateway-core)
+   * Incident: the direct streaming branch's upRes.on('end') called ctx.logDone() bare. Once it threw, the EventEmitter
+   * emit loop broke -- upRes.pipe(res)'s onend never fired, so the downstream never saw the end marker,
+   * leaving ghost records of "1 request / 0 tokens" in stats (on core it showed as requests hanging 9 minutes unsettled).
+   * Now: (1) settlement runs exactly once (2) settlement errors never break downstream finalization (3) interrupted streams still settle. */
   let __settled = false;
   const __settle = (status, why) => {
     if (__settled) return;
@@ -102,10 +102,10 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
     try { ctx.logDone(status); } catch (e) { logErr('[settle] logDone 失败:', e.message); }
   };
 
-  /* ★客户端断开(点停止 / 关页面 / 弱网断): 立即取消上游请求。
-   *   之前完全没有这条通道 —— 用户按停止后上游继续生成到自然结束或 180s 超时, 表现为"停止按钮没效果/卡死"。 */
-  /* ★上游发完 finish_reason/[DONE] 却不关连接(反代很常见): 2.5s 后强制收尾。
-   *   没有这条, 结算/logDone 永不触发 —— 统计 0 token、悬浮球上下文圈不动、客户端一直转圈。 */
+/* *Client disconnect (stop button / page closed / flaky network): cancel the upstream request immediately.
+   *   this channel did not exist before -- after pressing stop the upstream kept generating until natural end or the 180s timeout, looking like a dead stop button. */
+/* *Upstream sends finish_reason/[DONE] but keeps the connection open (common with reverse proxies): force finalization after 2.5s.
+   *   without this, settlement/logDone never fires -- 0 tokens in stats, a frozen ball ring, a client that spins forever. */
   let __forceEnd = () => { try { if (!res.writableEnded) res.end(); } catch (_) {} };
   let __doneTimer = null;
   const __armForceEnd = () => {
@@ -119,8 +119,8 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
       try { upRes.destroy(); } catch (_) {}
     }, 2500);
   };
-  /* ★兜底结算: 上游断流/客户端断开时以前根本不走 logDone —— 统计停在「1 次请求 0 token」,
-   *  悬浮球的上下文圈也就永远不动(2026-10-26 实测: 20:5x 的 4 次请求全是这样消失的)。 */
+/* *Fallback settlement: upstream/client disconnects previously never reached logDone -- stats froze at "1 request / 0 tokens",
+   *  the ball's context ring never moves either (observed 2026-10-26: all 4 requests around 20:5x vanished this way). */
   upRes.on('close', () => { if (!__settled) __settle(upRes.statusCode || 200, '上游连接关闭(没等到 end)'); });
   let clientGone = false;
   const killUp = () => {
@@ -138,8 +138,8 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
     try {
       res.writeHead(upRes.statusCode, { 'Content-Type': ct, 'X-AI-Gateway-Channel': hdrName(ch.name), 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' });
     } catch (e) {
-      /* ★不能静默 return：报头下发失败时，客户端收不到任何东西、上游响应也无人读取，
-       *  请求会永久悬挂。改为明确报错 + 释放上游连接。 */
+/* *Never return silently: if writing the headers fails, the client gets nothing and nobody reads the upstream response,
+       *  the request would hang forever. Now it errors clearly and releases the upstream connection. */
       logErr('[resp] 响应头下发失败, 已中断该请求:', e.message);
       try {
         if (!res.headersSent) { res.writeHead(502, { 'Content-Type': 'application/json' }); res.end('{"error":{"message":"gateway: 响应头下发失败","type":"gateway_error"}}'); }
@@ -159,7 +159,7 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
           parser.handle(j);
         } catch (_) {}
       });
-      const u8 = utf8();   /* ★跨分块安全解码(2026-09-18) */
+const u8 = utf8();   /* *chunk-safe decoding (2026-09-18) */
       upRes.on('data', c => { try { dec.push(u8(c)); } catch (_) {} });
       upRes.on('end', () => {
         try {
@@ -170,8 +170,8 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
           usageCapture.reasoning = parser.usage ? (parser.usage.reasoning || 0) : 0;
           __settle(upRes.statusCode);
         } catch (e) { logErr('[stream] 结算失败，仍强制给下游收尾:', e.message); }
-        /* ★有改写管道(inc 替换 / DSML 清洗)时, 收尾交给管道 —— 它得先冲掉末行残留与状态机残留;
-         *   这里先 res.end() 会让管道尾部写入变成 write after end(实测尾部丢字, 2026-10-15)。 */
+/* *When a rewrite pipe exists (inc replacement / DSML scrubbing), finalization belongs to the pipe -- it must flush the trailing partial line and the state machine residue first;
+         *   calling res.end() here turns later pipe writes into write-after-end (trailing bytes were lost, observed 2026-10-15). */
         if (!rpInc.length && !dsmlPipe) { try { res.end(); } catch (_) {} }
       });
       upRes.on('error', (e) => { if (!rpInc.length && !dsmlPipe) { try { res.end(); } catch (_) {} } __settle(502, '上游流中断(' + e.message + ')'); });
@@ -196,12 +196,12 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
       });
       upRes.on('error', (e) => { try { res.end(); } catch (_) {} __settle(502, '上游中断(非流式): ' + e.message); });
     }
-    /* ★DSML 清洗只对"能按事件解析"的响应生效: SSE 流 与 非流式 JSON(条件见函数开头 dsmlPipe)。 */
+/* *DSML scrubbing only applies to responses parseable as events: SSE streams and non-streaming JSON (conditions at the top of dsmlPipe). */
     if (rpInc.length || dsmlPipe) {
-      /* 统一改写管道(2026-10-15): inc 文本替换 + 内置 DSML 标记清洗
-       *   - 逐行改写, 不需要改写的行原样透传(同格式直通尽量零损耗);
-       *   - DSML 状态机按字段隔离, 只动 content/text 与 reasoning_content/reasoning/thinking;
-       *   - 收尾(末行残留 + 状态机残留)与 res.end() 都在管道内, 详见 makeDirectPipe。 */
+/* Unified rewrite pipe (2026-10-15): inc text replacement + built-in DSML markup scrubbing
+       *   - rewrites line by line; lines that need no rewrite pass through verbatim (same-format passthrough stays as lossless as possible);
+       *   - the DSML state machine is isolated per field, touching only content/text and reasoning_content/reasoning/thinking;
+       *   - finalization (trailing partial line + state-machine residue) and res.end() both live inside the pipe; see makeDirectPipe. */
       const pipe = makeDirectPipe(res, rpInc, dsmlPipe, dsmlThink, stream, dsmlOpts);
       let upEnded = false;
       const finishPipe = () => { if (upEnded) return; upEnded = true; try { pipe.end(); } catch (_) {} };
@@ -217,7 +217,7 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
     return;
   }
 
-  // 跨格式转换
+// Cross-format conversion
   if (stream) {
     const isArrayStream = clientFormat === 'gemini' && !urlInfo.altSse;
     try {
@@ -227,8 +227,8 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
         'X-AI-Gateway-Channel': hdrName(ch.name), 'Access-Control-Allow-Origin': '*',
       });
     } catch (e) {
-      /* ★不能静默 return：报头下发失败时，客户端收不到任何东西、上游响应也无人读取，
-       *  请求会永久悬挂。改为明确报错 + 释放上游连接。 */
+/* *Never return silently: if writing the headers fails, the client gets nothing and nobody reads the upstream response,
+       *  the request would hang forever. Now it errors clearly and releases the upstream connection. */
       logErr('[resp] 响应头下发失败, 已中断该请求:', e.message);
       try {
         if (!res.headersSent) { res.writeHead(502, { 'Content-Type': 'application/json' }); res.end('{"error":{"message":"gateway: 响应头下发失败","type":"gateway_error"}}'); }
@@ -238,11 +238,11 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
       return;
     }
     const baseWriter = (clientFormat === 'openai' && clientApi === 'responses') ? makeResponsesWriter(res, canonical.model) : makeWriter(clientFormat, res, canonical.model, { geminiArray: isArrayStream });
-    /* DSML 清洗放在最内层(紧贴 writer): 正文/思考在变成客户端格式前就已干净,
-     * 也不会把内部标记喂给 thinkingSummary 的总结模型。 */
+/* DSML scrubbing sits innermost (right against the writer): content/thinking are already clean before being converted to the client format,
+     * internal markup is never fed to the thinkingSummary model either. */
     let writer = wrapThinkingSummary(dsmlOn ? wrapDsmlClean(baseWriter, true, dsmlThink, dsmlOpts) : baseWriter, cfg.thinkingSummary, ch, cfg);
     if (respRedactOn(cfg, urlInfo)) writer = wrapRedactWriter(writer, cfg.redact && cfg.redact.extra);
-    // 响应侧 Token 分布计数(旁路, 只数不转发; ctx.respDist 声明在 handleChat 顶层)
+// Response-side token distribution counter (side channel; counts only; ctx.respDist declared at the top of handleChat)
     const __origOnEvent = writer.onEvent.bind(writer);
     writer.onEvent = (ev) => {
       try {
@@ -263,7 +263,7 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
       if (data === '[DONE]') { parser.finish(); return; }
       try { parser.handle(JSON.parse(data)); } catch (e) { logErr('bad SSE data (first 200 chars):', String(data).slice(0, 200)); }
     });
-    const u8 = utf8();   /* ★跨分块安全解码(2026-09-18) */
+const u8 = utf8();   /* *chunk-safe decoding (2026-09-18) */
     upRes.on('data', c => { try { dec.push(u8(c)); } catch (_) {} });
     let upStreamDone = false;
     const upStreamFinal = () => {
@@ -288,7 +288,7 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
       const txt = Buffer.concat(chunks).toString('utf8');
       const j = safeParse(txt);
       if (!j) {
-        // 上游 200 但正文不是 JSON(HTML 错误页等, content-type 也可能伪装成 json): 可重试
+// Upstream returned 200 but the body is not JSON (HTML error pages etc.; content-type may even fake json): retryable
         const why = 'upstream returned non-JSON: ' + redactText(txt.slice(0, 200), cfg.redact && cfg.redact.extra);
         if (retryHook && retryHook(why)) return;
         stats.errors++;
@@ -297,7 +297,7 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
       const cresp = isResponsesUp ? responsesRespToCanonical(j) : UP_RESP[ch.type](j);
       usageCapture.input = cresp.usage.input;
       usageCapture.output = cresp.usage.output;
-      if (dsmlOn) {   /* 非流式: 整段一次性清洗(final=true: 未闭合的标记块丢弃, 暂缓的尾巴补回) + 文本态调用回填 */
+if (dsmlOn) {   /* non-streaming: scrub the whole text at once (final=true: unclosed markup dropped, deferred tail appended) + textual-call backfill */
         try {
           if (typeof cresp.text === 'string') {
             const cand = dsmlExtractCall(cresp.text);
@@ -321,7 +321,7 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
           else cresp.reasoning = truncateReasoning(cresp.reasoning, cfg.thinkingSummary.maxCharsPerSegment);
         } catch (e) { logErr('[thinkingSummary] 非流式精简失败:', e.message); }
       }
-      if (respRedactOn(cfg, urlInfo)) {   // 响应方向过滤(非流式): 正文/思考/工具参数
+if (respRedactOn(cfg, urlInfo)) {   // response-direction filter (non-streaming): content/thinking/tool args
         try {
           const rx = cfg.redact && cfg.redact.extra;
           if (typeof cresp.text === 'string') cresp.text = redactText(cresp.text, rx);
@@ -351,35 +351,35 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
   let body;
   try { body = JSON.parse(bodyStr || '{}'); } catch (e) { return sendError(clientFormat, res, 400, 'invalid JSON body: ' + e.message); }
   if (!body || typeof body !== 'object') return sendError(clientFormat, res, 400, 'request body must be a JSON object');
-  // 隐私过滤: 转发前把请求体里的密钥/token 替换为 ***
-  // 管理端总开关 redact.enable(实例级, 默认开) 是上限; 用户卡可 redact=false 覆盖关闭
+// Privacy filter: replace secrets/tokens in the request body with *** before forwarding
+  // the admin master switch redact.enable (instance-level, on by default) is the ceiling; a user card can opt out with redact=false
   const redactInstOn = !(cfg.redact && cfg.redact.enable === false);
   let redactOn = redactInstOn;
-  if (redactInstOn && urlInfo.userKey && urlInfo.userKey.redact === false) redactOn = false; // 用户端关
+if (redactInstOn && urlInfo.userKey && urlInfo.userKey.redact === false) redactOn = false; // user card opted out
   if (redactOn) body = redactDeep(body, cfg.redact && cfg.redact.extra, 0);
-  // 文本替换(发送方向): config.replace.out 规则作用于请求文本(model 字段与 data:URL 跳过)
+  // text replacement (request direction): config.replace.out rules apply to request text (model fields and data: URLs skipped)
   const rpOutRules = (cfg.replace && Array.isArray(cfg.replace.out)) ? rpCompile(cfg.replace.out) : [];
   if (rpOutRules.length) body = rpWalk(body, rpOutRules, 0, true);
 
   const canonical = (clientApi === 'responses') ? responsesToCanonical(body, urlInfo.model) : TO_CANON[clientFormat](body, urlInfo.model);
-  if (urlInfo.stream) canonical.stream = true; // gemini: 流式标志在 URL 路径里
+if (urlInfo.stream) canonical.stream = true; // gemini: the streaming flag lives in the URL path
   if (!canonical.model) return sendError(clientFormat, res, 400, 'missing "model"');
-  // 卡密模型白名单(按客户端请求的对外模型名判定)
+// Key card model whitelist (matched against the client-facing model name)
   if (urlInfo.userKey && Array.isArray(urlInfo.userKey.models) && urlInfo.userKey.models.length
       && !urlInfo.userKey.models.includes(canonical.model)) {
     return sendError(clientFormat, res, 403, '此卡密不允许使用模型: ' + canonical.model + ' (可用: ' + urlInfo.userKey.models.join(', ') + ')');
   }
-  // 卡密分支白名单(只允许访问指定实例)
+// Key card branch whitelist (only listed instances are reachable)
   if (urlInfo.userKey && Array.isArray(urlInfo.userKey.branches) && urlInfo.userKey.branches.length) {
     const br = cfg._name || 'default';
     if (!urlInfo.userKey.branches.includes(br)) {
       return sendError(clientFormat, res, 403, '此卡密不允许访问分组: ' + br + ' (可用: ' + urlInfo.userKey.branches.join(', ') + ')');
     }
   }
-  // 卡级隐私过滤覆盖在 redactDeep 前已应用(2250行附近), 此处不再重复
+// Card-level privacy overrides are applied earlier (inside redactDeep, ~line 2250); not repeated here
 
 
-  // 上下文硬上限: 按估算先卡住, 别白跑一趟上游(软上限只影响提示色, 不拦)
+// Hard context limit: block on the estimate up front rather than wasting a trip upstream (soft limit only tints the indicator, never blocks)
   const cl = cfg.contextLimit || { soft: 80, hard: 0, charsPerToken: 2 };
   if (cl.hard > 0) {
     const win = matchContextWindow(cfg, canonical.model);
@@ -398,8 +398,8 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
   const candidates = pickChannels(cfg, canonical.model, forcedChannelName(cfg, req));
   if (!candidates.length) return sendError(clientFormat, res, 503, 'no channel configured in config.json');
 
-  // 全局上下文上限(ctxp): 按模型名通配, max 拦截 / warn 走 TermuxBridge 通知(5分钟节流)
-  // 渠道级 ch.ctxp 可覆盖模式(force/warn/none), 并用 models 限定生效范围(支持 * 通配)
+// Global context limit (ctxp): model-name globs; max blocks / warn sends a TermuxBridge notification (5-min throttle)
+  // channel-level ch.ctxp overrides the mode (force/warn/none) and limits scope via models (* wildcard supported)
   {
     const __cand = candidates[0] && candidates[0].ch;
     const __cctx = __cand && __cand.ctxp;
@@ -429,9 +429,9 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
   }
 
   stats.requests++;
-  // 请求记录(可选, 默认关闭): 包一层 res.write/res.end 捕获实际发给客户端的响应正文
+// Request recording (optional, off by default): wraps res.write/res.end to capture what was actually sent to the client
   const reqId = randId('req');
-  // 进行中的请求(reqId -> 开始时间): 给悬浮球判断"思考中", 10 分钟自动过期
+// In-flight requests (reqId -> start time): lets the ball show "thinking"; auto-expires after 10 minutes
   stats._inflight = stats._inflight || new Map();
   for (const [k, t] of stats._inflight) if (Date.now() - t > 120000) stats._inflight.delete(k);
   stats._inflight.set(reqId, Date.now());
@@ -448,8 +448,8 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
     'tools=' + (Array.isArray(canonical.tools) ? canonical.tools.length : 0));
   const t0 = Date.now();
   const usageCapture = { input: 0, output: 0, cached: 0, reasoning: 0 };
-  const respDist = { reasoning: 0, text: 0, tool: 0 }; // 响应侧分布计数(流式由 writer 钩子、非流式由 __settle 前填)
-  // 首字时间(TTFB): 只记时间戳, 不改写内容
+const respDist = { reasoning: 0, text: 0, tool: 0 }; // response-side distribution (streaming via the writer hook, non-streaming filled before __settle)
+// Time to first byte (TTFB): records the timestamp only, never rewrites content
   let firstWriteAt = 0;
   try {
     const __ow = res.write.bind(res), __oe = res.end.bind(res);
@@ -486,10 +486,10 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
   let lastErrStatus = 0;
   let lastErrMsg = '';
 
-  // 逐个候选渠道尝试, 连接失败或可重试的 HTTP 错误 → 切下一个; 不可重试错误(如 400) → 直接透传
+// Try candidates one by one; connection failures / retryable HTTP errors -> next candidate; non-retryable (e.g. 400) -> pass straight through
   const tryNext = () => {
     if (attempt >= candidates.length) {
-      // 全部候选都失败了
+// Every candidate failed
       stats.errors++;
       recordReq(lastErrStatus || 502, '', 0, 0);
       const msg = lastErrMsg || ('all ' + candidates.length + ' channels failed');
@@ -501,7 +501,7 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
     const built = buildRequestForChannel(cfg, ch, clientFormat, clientApi, myCanonical, body, urlInfo, req);
     attempt++;
 
-    // HTTP 头只允许 ASCII, 中文/全角字符的 apiKey 会让 node 抛内部错误
+// HTTP headers allow ASCII only; an apiKey with CJK/full-width characters makes node throw internally
     for (const [hk, hv] of Object.entries(built.headers)) {
       if (typeof hv === 'string' && !/^[\x09\x20-\x7e]*$/.test(hv)) {
         return sendError(clientFormat, res, 500, `渠道 "${ch.name}" 的请求头 ${hk} 含非 ASCII 字符(可能是 apiKey 里残留了中文占位符), 请修改 config.json`);
@@ -512,14 +512,14 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
       logMeta: [clientFormat + '>' + ch.type, 'model=' + canonical.model, 'ch=' + ch.name, 'proxy=' + (ch.proxy || '-'), stream ? 'stream' : 'block'].join(' '),
       t0, usageCapture, stats, reqId, respDist,
       logDone(status) {
-        // 在 logDone 里结算 inflight: 这里 reqId/stats 一定在作用域内
+// Settle inflight inside logDone: reqId/stats are guaranteed in scope here
         try { if (stats._inflight) stats._inflight.delete(reqId); } catch (_) {}
         log(ctx.logMeta, 'status=' + status, 'in=' + usageCapture.input, 'out=' + usageCapture.output,
           'ttfb=' + (firstWriteAt ? firstWriteAt - t0 : 0), 'ms=' + (Date.now() - t0));
         stats.byChannel[ch.name] = stats.byChannel[ch.name] || { requests: 0, inputTokens: 0, outputTokens: 0 };
         stats.byChannel[ch.name].inputTokens += usageCapture.input;
         stats.byChannel[ch.name].outputTokens += usageCapture.output;
-        // 卡密用量统计 + 额度累计
+// Key card usage stats + quota accumulation
         if (urlInfo.userKey) {
           const kn = urlInfo.userKey.name || (urlInfo.userKey.key || '').slice(0, 12);
           stats.byKey = stats.byKey || {};
@@ -529,15 +529,15 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
           urlInfo.userKey.usedTokens = (urlInfo.userKey.usedTokens || 0) + usageCapture.input + usageCapture.output;
           cfg._keyUsageDirty = true;
         }
-        // 有的反代渠道不给 usage: 退回本地估算, 否则悬浮球的上下文圈永远不动
+        // Some reverse-proxy channels never send usage: fall back to the local estimate, otherwise the ball's context ring never moves
         const __cpt = Math.max(1, Number((cfg.contextLimit || {}).charsPerToken) || 4);
         const __raw = analyzePrompt(canonical, __cpt);
         const __est = !usageCapture.input;
         const __inTok = usageCapture.input || Math.round(__raw.total * calibRatio(cfg, canonical.model));
-        calibUpdate(cfg, canonical.model, usageCapture.input, __raw.total); // 自校准 EMA(真实/估算)
-        const __pd = scaleDist(__raw.dist, __raw.total, usageCapture.input); // 有真实 usage 时归一到 input
+calibUpdate(cfg, canonical.model, usageCapture.input, __raw.total); // self-calibration EMA (real/estimated)
+const __pd = scaleDist(__raw.dist, __raw.total, usageCapture.input); // normalize to input when real usage exists
         recordContext(cfg, canonical.model, __inTok, usageCapture.output, ch.name, __est, { cached: usageCapture.cached || 0, dist: __pd });
-        // ===== Token 分布 + daily/byModel 累加 (2026-10-27) =====
+// ===== Token distribution + daily/byModel accumulation (2026-10-27) =====
         try {
           const __rd = respDist || { reasoning: 0, text: 0, tool: 0 };
           const __rdActual = usageCapture.reasoning ? usageCapture.reasoning : __rd.reasoning;
@@ -566,16 +566,16 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
       stats.byKey[kn].requests++;
     }
 
-    // 渠道级排队延迟(渠道字段 delayMs, 毫秒): 每个请求发出前先等待; 同一渠道的并发请求经 _gate 链按间隔串行发出(并发也撞不到上游), 缓解 429 限流
+    // channel-level queueing delay (channel field delayMs, ms): each request waits before sending; concurrent requests on one channel serialize through the _gate chain at intervals (they never pile onto the upstream), easing 429 rate limits
     const delayMs = Math.min(120000, Number(ch.delayMs) || 0);
-    // 连接级错误 / HTML 冒充成功的同渠道重试(默认 cfg.connRetry=2 次, 每次换全新连接):
-    // socket hang up 等错误发生在收到任何响应之前, 重试安全不会重复计费
+// Connection-level errors / HTML-faked-success same-channel retries (default cfg.connRetry=2, a fresh connection each time):
+// socket hang up and friends happen before any response arrives, so retrying is safe and never double-bills
     let connRetries = 0;
     const maxConnRetry = Math.max(0, Number(cfg.connRetry) || 0);
-    // 429/5xx 的同渠道重试预算(每渠道独立); 未配置时默认 1 次
+// Same-channel retry budget for 429/5xx (per channel); defaults to 1 when unset
     let sameLeft = Math.max(0, Number(cfg.retrySame == null ? 1 : cfg.retrySame) || 0);
     const maxSame = sameLeft;
-    // 返回 true = 已安排同渠道重试或切换下一候选; false = 没招了, 调用方走最终失败
+// Returns true = a same-channel retry or next-candidate switch was scheduled; false = out of options, caller proceeds to final failure
     const retrySameOrNext = (why) => {
       if (connRetries < maxConnRetry) {
         connRetries++;
@@ -604,7 +604,7 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
         return sendError(clientFormat, res, 502, lastErrMsg);
       }
 
-      // 上游拿 HTML 网页冒充成功(CDN 验证页/中转站故障页): 视为可重试错误, 先重试本渠道再换渠道
+// Upstream fakes success with an HTML page (CDN challenge / relay failure page): treated as retryable; retry the same channel first, then switch
       const upCt = String(upRes.headers['content-type'] || '');
       if (upRes.statusCode < 400 && /text\/html/i.test(upCt)) {
         const chunks = [];
@@ -628,7 +628,7 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
 
       if (upRes.statusCode >= 400 && SAME_RETRYABLE.has(upRes.statusCode)
           && (sameLeft > 0 || attempt < candidates.length)) {
-        // 429/5xx: 同渠道退避重试 → 用完预算再切下一个候选; 其他可重试错误照旧直接切
+// 429/5xx: backoff-retry on the same channel -> switch to the next candidate after the budget; other retryable errors switch immediately as before
         const sc = upRes.statusCode;
         const ra = parseInt(String(upRes.headers['retry-after'] || ''), 10);
         const chunks = [];
@@ -651,9 +651,9 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
         return;
       }
 
-      // ★ Responses 直通降级 (2026-10-16): 客户端 /v1/responses 直通上游 /v1/responses 时,
-      //   上游返回 404/405(该上游不支持 Responses 端点, 如旧版 vLLM/部分中转) → 自动改发
-      //   /v1/chat/completions(同一渠道), 响应照常转回 responses 格式。每个渠道只降级一次。
+// * Responses passthrough downgrade (2026-10-16): when a client's /v1/responses passes through to upstream /v1/responses,
+//   upstream replies 404/405 (that upstream has no Responses endpoint, e.g. old vLLM/some relays) -> automatically resend as
+//   /v1/chat/completions (same channel) and converts the response back to responses format. Each channel degrades at most once.
       if (clientApi === 'responses' && built.direct && ch.type === 'openai'
           && (upRes.statusCode === 404 || upRes.statusCode === 405)) {
         ctx.respDg = ctx.respDg || {};
@@ -664,7 +664,7 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
           const dgHeaders = { authorization: 'Bearer ' + ch.apiKey };
           if (stream) dgHeaders.accept = 'text/event-stream';
           const dgBuilt = { url: joinUrl(ch.baseUrl, '/v1/chat/completions'), headers: dgHeaders, bodyBuf: dgBody, direct: false, stream: !!stream, upApi: 'chat' };
-          upRes.resume(); // 丢弃原 404/405 body
+upRes.resume(); // discard the original 404/405 body
           log('DOWNGRADE', ctx.logMeta, 'status=' + sc, '上游不支持 /v1/responses → 改 chat 转换重发');
           return upstreamRequest(cfg, ch, dgBuilt.url, dgHeaders, dgBody, (err2, upRes2, upReq2) => {
             if (err2) {
@@ -675,7 +675,7 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
               return sendError(clientFormat, res, 502, lastErrMsg);
             }
             if (upRes2.statusCode >= 400) {
-              // chat 也失败(非 404/405 直通, 本来就是转换路径) → 透传 chat 的错误
+// chat failed too (not a 404/405 passthrough; this was already a conversion path) -> pass through chat's error
               const c2 = [];
               upRes2.on('data', c => c2.push(c));
               upRes2.on('end', () => {
@@ -699,7 +699,7 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
       }
 
       if (upRes.statusCode >= 400) {
-        // 不可重试错误(如 400) 或已是最后候选 → 原样透传错误
+// Non-retryable error (e.g. 400) or last candidate -> pass the error through unchanged
         const chunks = [];
         upRes.on('data', c => chunks.push(c));
         upRes.on('end', () => {
@@ -715,7 +715,7 @@ function handleChat(cfg, clientFormat, clientApi, req, res, urlInfo, bodyStr) {
         return;
       }
 
-      // 成功(2xx) → 正常处理, 从此不可回退(正文非 JSON 冒充成功时仍可经 hook 重试)
+      // success (2xx) -> normal handling; no more fallback from here (a non-JSON body faking success can still be retried via the hook)
       handleUpstreamResponse(cfg, ch, clientFormat, clientApi, myCanonical, body, urlInfo, req, res, upRes, upReq, built, ctx, (why) => {
         lastErrStatus = 502; lastErrMsg = why;
         return retrySameOrNext(why);

@@ -1,23 +1,23 @@
 #!/usr/bin/env node
 'use strict';
 /*
- * 客户端密钥（实例 apiKey 卡密）定期轮换 —— 零停机版。
+ * Periodic rotation of client keys (instance apiKey cards) -- zero-downtime edition.
  *
- * 为什么不换 gatewayKey：
- *   gatewayKey 是单值字段，换 = 所有客户端同时失效，没有并存窗口。
- *   apiKeys 支持多条 + expiresAt，可以"新 Key 先发、老 Key 宽限期内继续可用"。
- *   若要换 gatewayKey，用 --gateway <实例> --yes（会立即失效，只能夜里做）。
+ * Why not rotate the gatewayKey:
+ *   gatewayKey is a single-valued field: changing it invalidates every client at once, with no overlap window.
+ *   apiKeys supports multiple entries + expiresAt, so a new key can ship while old keys stay valid through a grace period.
+ *   to rotate a gatewayKey use --gateway <instance> --yes (clients break immediately; only do this in the night window).
  *
- * 走 admin HTTP API（gateway 内部 saveCfg 会重新加密 + hotReload），不直接改 config.json，
- * 因此不会与面板/网关的写入互相覆盖，也不需要重启进程。
+ * Goes through the admin HTTP API (gateway's internal saveCfg re-encrypts + hotReloads) instead of editing config.json directly,
+ * so it never races the panel/gateway writes, and no process restart is needed.
  *
- * 用法:
+ * Usage:
  *   node ops/rotate-keys.js --list
  *   node ops/rotate-keys.js --dry-run
- *   node ops/rotate-keys.js --if-due          # 到期才轮换（guard.sh 调用）
- *   node ops/rotate-keys.js --now             # 立即轮换（需 --yes 才真正写）
- *   node ops/rotate-keys.js --gateway qwen --yes   # 立即更换某实例 gatewayKey（破坏性）
- * 可选: --inst default  --rotate-days 90  --grace-days 14  --quiet
+ *   node ops/rotate-keys.js --if-due          # rotate only when due (called by guard.sh)
+ *   node ops/rotate-keys.js --now             # rotate now (writes only with --yes)
+ *   node ops/rotate-keys.js --gateway qwen --yes   # replace an instance's gatewayKey immediately (destructive)
+ * Options: --inst default  --rotate-days 90  --grace-days 14  --quiet
  */
 const fs = require('fs');
 const path = require('path');
@@ -100,7 +100,7 @@ function api(inst, method, apiPath, body) {
   if (payload) headers['Content-Length'] = payload.length;
 
   const useTls = (cfg.tls || (cfg.listen || {}).tls || {});
-  const viaHttps = useTls.enable && Number(useTls.port) === port; // 该实例本身是纯 HTTPS 时才走 TLS
+const viaHttps = useTls.enable && Number(useTls.port) === port; // TLS only when the instance itself is pure HTTPS
   const mod = viaHttps ? https : http;
   const opts = { host: '127.0.0.1', port, path: apiPath, method, headers, timeout: 15000 };
   if (viaHttps) { opts.ca = fs.readFileSync(CA_FILE); opts.servername = 'localhost'; }
@@ -182,7 +182,7 @@ async function rotateInstance(inst, state, apply) {
     demoted++;
   }
 
-  // 回验：新 key 必须真能通过网关鉴权
+// Re-verify: the new key must actually pass gateway auth
   const port = Number((cfg.listen || {}).port || 16384);
   await verifyKey(inst, port, newKey, cfg);
 

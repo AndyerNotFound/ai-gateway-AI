@@ -12,8 +12,8 @@ const { logErr } = require('./util');
 const { redactCache } = require('./redact');
 let crypt = null; try { crypt = require('./crypt.js'); } catch (_) {}
 
-// ================= 配置加载 =================
-/* ================= 配置加载 ================= */
+// ================= Config loading =================
+/* ================= Config loading ================= */
 function normalizeProxy(p) {
   if (!p) return null;
   if (typeof p === 'object') {
@@ -24,7 +24,7 @@ function normalizeProxy(p) {
     if (!o.host || !o.port) return null;
     return o;
   }
-  // 字符串: socks5://user:pass@host:port 或 http://host:port
+// String: socks5://user:pass@host:port or http://host:port
   const m = /^(socks5h?|socks|http|https):\/\/(?:([^:@\/]+)(?::([^@\/]*))?@)?([^:\/@]+):(\d+)\/?$/i.exec(String(p).trim());
   if (!m) return null;
   const scheme = m[1].toLowerCase();
@@ -39,53 +39,53 @@ function applyDefaults(cfg) {
   cfg.listen.port = Number(cfg.listen.port || 16384);
   cfg.listen.host = String(cfg.listen.host || '0.0.0.0');
   cfg.gatewayKey = cfg.gatewayKey ? String(cfg.gatewayKey) : '';
-  // 卡密列表规整
+// Key card list normalization
   cfg.apiKeys = Array.isArray(cfg.apiKeys) ? cfg.apiKeys.filter(k => k && k.key) : [];
-  // 用户表规整(账密登录: uid+密码 → 返回该用户的卡密)
+  // user table normalization (credential login: uid+password -> that user's key cards)
   cfg.users = Array.isArray(cfg.users) ? cfg.users.filter(u => u && u.uid && u.passwordHash) : [];
-  // 隐私过滤: enable 实例总开关; response 响应方向过滤; extra 自定义正则(字符串数组)
+// Privacy filter: enable is the instance master switch; response filters the response direction; extra is custom regexes (string array)
   cfg.redact = (cfg.redact && typeof cfg.redact === 'object') ? cfg.redact : {};
   cfg.redact.enable = cfg.redact.enable !== false;
   cfg.redact.response = !!cfg.redact.response;
   cfg.redact.extra = Array.isArray(cfg.redact.extra) ? cfg.redact.extra.filter(p => typeof p === 'string' && p) : [];
-  // 卡密长度(8-128, 默认24; 不含 sk- 前缀)
+// Key card length (8-128, default 24; sk- prefix excluded)
   cfg.keyLength = Math.min(128, Math.max(8, Number(cfg.keyLength) || 24));
-  // 注册开关(默认关; 公网中转站才开)
+  // registration switch (off by default; only public relays enable it)
   cfg.registration = cfg.registration && typeof cfg.registration === 'object' ? cfg.registration : {};
   cfg.registration.enable = !!cfg.registration.enable;
   cfg.registration.defaultQuota = Math.max(0, Number(cfg.registration.defaultQuota) || 0);
   cfg.registration.minPasswordLen = Math.min(64, Math.max(4, Number(cfg.registration.minPasswordLen) || 8));
-  // 人机验证: none(默认) | turnstile(Cloudflare免费)
+// CAPTCHA: none (default) | turnstile (Cloudflare free tier)
   cfg.registration.captchaProvider = cfg.registration.captchaProvider === 'turnstile' ? 'turnstile' : 'none';
   cfg.registration.captchaSecret = String(cfg.registration.captchaSecret || '');
   cfg.registration.captchaSiteKey = String(cfg.registration.captchaSiteKey || '');
-  // 邮箱验证(可选, 默认关): {enable, smtp:{host,port,user,pass,from}}
+// Email verification (optional, off by default): {enable, smtp:{host,port,user,pass,from}}
   cfg.registration.emailVerify = cfg.registration.emailVerify && typeof cfg.registration.emailVerify === 'object' ? cfg.registration.emailVerify : {};
   cfg.registration.emailVerify.enable = !!cfg.registration.emailVerify.enable;
-  // 成功率探测规整(默认关闭, 减少token消耗)
+  // success-rate probe normalization (off by default to save tokens)
   cfg.probe = cfg.probe && typeof cfg.probe === 'object' ? cfg.probe : {};
   cfg.probe.enable = !!cfg.probe.enable;
   cfg.probe.intervalMin = Math.max(1, Number(cfg.probe.intervalMin) || 10);
   if (!cfg.probe.mode) cfg.probe.mode = 'models';
   cfg.modelSync = cfg.modelSync && typeof cfg.modelSync === 'object' ? cfg.modelSync : {};
-  cfg.modelSync.enable = cfg.modelSync.enable !== false; // 默认开
+cfg.modelSync.enable = cfg.modelSync.enable !== false; // on by default
   cfg.modelSync.intervalHours = Math.max(1, Number(cfg.modelSync.intervalHours) || 24);
-  cfg.modelSync.intervalMin = Number(cfg.modelSync.intervalMin) > 0 ? Number(cfg.modelSync.intervalMin) : null; // loop: fetch=<分钟>
-  // 管理端资料(agw admin profile) 与全局 ctxp 执行模式(agw inst edit ctxp=)
+cfg.modelSync.intervalMin = Number(cfg.modelSync.intervalMin) > 0 ? Number(cfg.modelSync.intervalMin) : null; // loop: fetch=<minutes>
+  // admin profile (agw admin profile) and the global ctxp enforcement mode (agw inst edit ctxp=)
   const __ap = (cfg.adminProfile && typeof cfg.adminProfile === "object") ? cfg.adminProfile : {};
   cfg.adminProfile = { name: String(__ap.name || ""), avatar: String(__ap.avatar || ""), profile: String(__ap.profile || ""), other: String(__ap.other || "") };
   cfg.ctxpMode = ["force", "warn", "none"].includes(String(cfg.ctxpMode || "")) ? String(cfg.ctxpMode) : "force";
-  cfg.adminExpireAt = Number(cfg.adminExpireAt) > 0 ? Number(cfg.adminExpireAt) : 0; // 面板会话到期时间(agw admin expire)
+cfg.adminExpireAt = Number(cfg.adminExpireAt) > 0 ? Number(cfg.adminExpireAt) : 0; // panel session expiry (agw admin expire)
   cfg.maxBodyBytes = Number(cfg.maxBodyBytes || 64 * 1024 * 1024);
   cfg.connectTimeout = Number(cfg.connectTimeout || 15000);
   cfg.responseTimeout = Number(cfg.responseTimeout || 180000);
-  // 连接级错误(socket hang up 等)的同渠道重试次数, 默认 2; 0 = 关闭
+// Same-channel retry count for connection-level errors (socket hang up etc.), default 2; 0 = off
   if (cfg.connRetry === undefined) cfg.connRetry = 2;
   cfg.cors = cfg.cors !== false;
-  // 内置 DSML 工具调用标记清洗(默认开; dsmlClean:false 关闭; dsmlClean.reasoning:false 只清正文不清思考)
+// Built-in DSML tool-call markup scrubbing (on by default; dsmlClean:false disables; dsmlClean.reasoning:false scrubs content only, not thinking)
   const __dc = (cfg.dsmlClean && typeof cfg.dsmlClean === 'object') ? cfg.dsmlClean : {};
   cfg.dsmlClean = { enable: cfg.dsmlClean === false ? false : __dc.enable !== false, reasoning: __dc.reasoning !== false, backfill: __dc.backfill !== false };
-  // 上下文软/硬上限(占窗口百分比): soft 只影响提示色, hard>0 时超过直接 400; charsPerToken 仅用于硬上限预估算
+// Soft/hard context limits (percent of the window): soft only tints the indicator; hard>0 rejects with 400; charsPerToken feeds the hard-limit pre-estimate
   const __cl = (cfg.contextLimit && typeof cfg.contextLimit === 'object') ? cfg.contextLimit : {};
   const clSoft = Number(__cl.soft), clHard = Number(__cl.hard);
   cfg.contextLimit = {
@@ -93,14 +93,14 @@ function applyDefaults(cfg) {
     hard: clHard > 0 ? Math.min(100, clHard) : 0,
     charsPerToken: Math.max(1, Number(__cl.charsPerToken) || 4),
   };
-  // TLS 配置解析
+// TLS config parsing
   cfg.tls = cfg.tls || (cfg.listen && cfg.listen.tls) || {};
   if (cfg.tls.enable) {
     cfg.tls.cert = String(cfg.tls.cert || 'cert.pem');
     cfg.tls.key = String(cfg.tls.key || 'key.pem');
-    cfg.tls.port = cfg.tls.port != null ? Number(cfg.tls.port) : null; // null=与HTTP同端口(纯HTTPS)
+cfg.tls.port = cfg.tls.port != null ? Number(cfg.tls.port) : null; // null = same port as HTTP (pure HTTPS)
   }
-  // 迁移: adminKey 已废弃, 自动并入 webToken(唯一管理凭据)
+// Migration: adminKey is deprecated and merges into webToken (the single admin credential)
   if (cfg.adminKey && !cfg.webToken) { cfg.webToken = String(cfg.adminKey); }
   delete cfg.adminKey;
   cfg.webToken = cfg.webToken ? String(cfg.webToken) : '';
@@ -113,8 +113,8 @@ function applyDefaults(cfg) {
     cfg.proxies = norm;
   } else cfg.proxies = {};
   cfg.channels = cfg.channels || [];
-  // 思考链精简: enable 时拦截推理模型的 reasoning 内容, 精简后再发给客户端(不展示完整思维链)
-  // mode: truncate=按段截取开头(零延迟实时) / summarize=用便宜模型逐段总结(有延迟)
+  // thinking-chain condensing: when enabled, intercept reasoning models' reasoning and send the condensed version (full chains are never shown)
+// mode: truncate = keep segment heads (zero latency, real-time) / summarize = per-segment summarization by a cheap model (adds latency)
   cfg.thinkingSummary = cfg.thinkingSummary && typeof cfg.thinkingSummary === 'object' ? cfg.thinkingSummary : { enable: false };
   cfg.thinkingSummary.enable = !!cfg.thinkingSummary.enable;
   cfg.thinkingSummary.mode = cfg.thinkingSummary.mode === 'summarize' ? 'summarize' : 'truncate';
@@ -124,14 +124,14 @@ function applyDefaults(cfg) {
   cfg.thinkingSummary.summarizeModel = String(cfg.thinkingSummary.summarizeModel || '').trim();     // 模型名
   cfg.thinkingSummary.summarizePrompt = String(cfg.thinkingSummary.summarizePrompt || '').trim() || '用一句话中文概括以下思考片段:';
   cfg.thinkingSummary.maxSegments = Math.max(1, Number(cfg.thinkingSummary.maxSegments) || 12);
-  // OpenAI 扩展端点: enable=对外启用 /v1/responses 与 /v1/* 兜底透传端点(含 images/embeddings/audio/files/batches/vector_stores 等),
-  // 并允许 OpenAI 渠道上游走 Responses API; upstreamResponses=全局默认上游用 /v1/responses(渠道级 useResponses 可覆盖)
-  // 2026-10-16: 默认开启(不再需要手动配开关); 显式设 enable:false 可整体关闭
+// OpenAI extended endpoints: enable exposes /v1/responses plus /v1/* fallback passthrough (images/embeddings/audio/files/batches/vector_stores etc.),
+// and lets OpenAI channels use the Responses API upstream; upstreamResponses = the global default of /v1/responses upstreams (channel-level useResponses overrides)
+// 2026-10-16: on by default (no manual switch needed); set enable:false to turn off entirely
   cfg.openaiExtras = cfg.openaiExtras && typeof cfg.openaiExtras === 'object' ? cfg.openaiExtras : {};
   cfg.openaiExtras.enable = cfg.openaiExtras.enable === undefined ? true : !!cfg.openaiExtras.enable;
   cfg.openaiExtras.upstreamResponses = !!cfg.openaiExtras.upstreamResponses;
-  // 余额聚合的汇率口径: cfg.balanceFx = { base:'CNY', rates:{ CNY:1, USD:7.2 } }  (1 <币种> = X <base>)
-  // ⚠️ 不内置任何汇率(写死会过期出错数), 未配置 rates[unit] 的币种不计入合计、单独标注 no_rate
+// Balance aggregation FX convention: cfg.balanceFx = { base:'CNY', rates:{ CNY:1, USD:7.2 } }  (1 <currency> = X <base>)
+// no built-in FX rates (hardcoding them goes stale); currencies without rates[unit] are excluded from totals and tagged no_rate
   cfg.balanceFx = (cfg.balanceFx && typeof cfg.balanceFx === 'object') ? cfg.balanceFx : {};
   cfg.balanceFx.base = String(cfg.balanceFx.base || 'CNY').trim() || 'CNY';
   cfg.balanceFx.rates = (cfg.balanceFx.rates && typeof cfg.balanceFx.rates === 'object') ? cfg.balanceFx.rates : {};
@@ -139,9 +139,9 @@ function applyDefaults(cfg) {
   return cfg;
 }
 
-// 思考链截断(同步, 零延迟): 按行分段, 每段保留开头 maxChars 字; 长行按步长切成多块各取开头
+//// thinking-chain truncation (sync, zero latency): split by lines, keep the first maxChars of each; long lines are cut into strides, each keeping its head
 function loadConfig(file) {
-  redactCache.reset(); // 配置可能变了 extra 正则, 隐私过滤缓存必须作废
+redactCache.reset(); // the config may have changed extra regexes; the privacy-filter cache must be invalidated
   let raw = fs.readFileSync(file, 'utf8');
   if (crypt && crypt.isEncText(raw)) {
     const pass = crypt.loadPass();
@@ -178,11 +178,11 @@ function loadConfig(file) {
       modelMap: (ch.modelMap && typeof ch.modelMap === 'object' && !Array.isArray(ch.modelMap)) ? ch.modelMap : null,
       default: !!ch.default,
       delayMs: Math.max(0, Number(ch.delayMs) || 0),
-      // 渠道锁定(loop: chan lock/unlock) 与 DSML 清洗覆盖(loop: chan edit transcreet)
-      lockAt: Number(ch.lockAt) > 0 ? Number(ch.lockAt) : null,   // 何时开始锁(ms epoch)
-      lockUntil: Number(ch.lockUntil) > 0 ? Number(ch.lockUntil) : null, // 何时自动解锁(ms epoch, 空=手动解锁)
+      // channel locking (loop: chan lock/unlock) and DSML scrub override (loop: chan edit transcreet)
+lockAt: Number(ch.lockAt) > 0 ? Number(ch.lockAt) : null,   // when the lock starts (ms epoch)
+lockUntil: Number(ch.lockUntil) > 0 ? Number(ch.lockUntil) : null, // when it auto-unlocks (ms epoch; empty = manual unlock)
       transcreet: ['on', 'off', 'res-only'].includes(String(ch.transcreet || '').toLowerCase()) ? String(ch.transcreet).toLowerCase() : null,
-      // 渠道级上下文策略(loop: chan ctxp): models=生效的模型通配, mode=force/warn/none
+      // channel-level context policy (loop: chan ctxp): models = model globs in effect, mode = force/warn/none
       ctxp: (ch.ctxp && typeof ch.ctxp === 'object') ? {
         models: Array.isArray(ch.ctxp.models) ? ch.ctxp.models.map(String) : [],
         mode: ['force', 'warn', 'none'].includes(String(ch.ctxp.mode || '').toLowerCase()) ? String(ch.ctxp.mode).toLowerCase() : 'force',
@@ -191,11 +191,11 @@ function loadConfig(file) {
       probe: !!ch.probe,
       addUsage: ch.addUsage !== false,
       anthropicVersion: ch.anthropicVersion ? String(ch.anthropicVersion) : null,
-      // 余额透传(渠道级覆盖内置预设) —— 必须进白名单, 否则运行态拿不到, persistRuntimeCfg 落盘时还会把配置文件里的值抹掉
+// Balance passthrough (channel-level overrides of built-in presets) -- must be whitelisted, otherwise the runtime cannot see it and persistRuntimeCfg wipes the value from the config file
       balanceUrl: ch.balanceUrl ? String(ch.balanceUrl) : null,
       balancePath: ch.balancePath ? String(ch.balancePath) : null,
       balanceUnit: ch.balanceUnit ? String(ch.balanceUnit) : null,
-      // 余额预警阈值(渠道级, 纯展示用, 网关不解释): "5" 或 "CNY=5,USD=1"
+// Balance warning threshold (channel-level, display only, not interpreted by the gateway): "5" or "CNY=5,USD=1"
       warnBelow: ch.warnBelow == null || ch.warnBelow === '' ? null
         : (typeof ch.warnBelow === 'string' ? String(ch.warnBelow) : JSON.stringify(ch.warnBelow)),
     });

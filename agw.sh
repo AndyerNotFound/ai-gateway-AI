@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# [2026-10-21 eMudhra] node 改用系统证书库(已剔除 emSign ECC Root CA - G3)
+# [2026-10-21 eMudhra] node now uses the system cert store (emSign ECC Root CA - G3 removed)
 export NODE_OPTIONS="${NODE_OPTIONS//--use-openssl-ca/} --use-openssl-ca"
 export SSL_CERT_FILE="${SSL_CERT_FILE:-${PREFIX:-/data/data/com.termux/files/usr}/etc/tls/cert.pem}"
-# ai-gateway 网关管理脚本 (单进程多实例模式)
-# 一个 node 进程托管目录下全部 config*.json:
-#   - 主端口(default 实例 listen.port)按 /实例名/ 路径前缀路由, 无前缀 = default
-#   - 各实例原有端口继续监听(兼容旧客户端)
-#   - 实例增删改/启停/改名 全部在面板内热生效, 无需重启进程
-# 用法: agw.sh <start|stop|restart|status|list|logs>
-#   (实例名参数保留兼容, 但单进程模式下不再需要)
+# ai-gateway gateway management script (single-process, multi-instance mode)
+# One node process hosts every config*.json in the directory:
+#   - the main port (default instance listen.port) routes by /<instance>/ path prefix; no prefix = default
+#   - each instance keeps its original port listening (compatible with old clients)
+#   - instance create/delete/edit/start/stop/rename all apply hot from the panel, no process restart
+# Usage: agw.sh <start|stop|restart|status|list|logs>
+#   (instance-name arg kept for compatibility, but unneeded in single-process mode)
 set -u
-# 解引用软链($0 可能是 ~/bin/agw 之类), 否则 DIR 会指到软链所在目录
+# Dereference the symlink ($0 may be ~/bin/agw etc.), otherwise DIR would point at the symlink's directory
 _self="$0"
 while [ -L "$_self" ]; do
   _link="$(readlink "$_self")"
@@ -30,7 +30,7 @@ is_running() {
   pid="$(cat "$PIDFILE" 2>/dev/null)"
   [ -n "$pid" ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
-  # 防 PID 复用: 确认该进程确实是本网关 (2026-10-10 事故: PID 被 u1s1-proxy 复用导致误判"已在运行")
+# PID-reuse guard: confirm the process really is this gateway (2026-10-10 incident: PID reused by u1s1-proxy caused a false "already running")
   grep -q "ai-gateway/gateway[.]js" "/proc/$pid/cmdline" 2>/dev/null
 }
 
@@ -43,7 +43,7 @@ show_config() {
 }
 
 health_ok() {
-  # /health 端点已关闭(白名单只留 /v1 /v1beta /auth /profile /admin) → TCP 端口探测
+# The /health endpoint is closed (whitelist keeps only /v1 /v1beta /auth /profile /admin) -> probe the TCP port instead
   local port="$1"
   node -e 'const s=require("net").connect(+process.argv[1],"127.0.0.1");
 const f=c=>{try{s.destroy()}catch(_){}process.exit(c)};
@@ -66,12 +66,12 @@ start_gw() {
     echo "  单进程模式: 实例增删/启停/改名请在面板内操作(热生效, 无需重启)"
     return 0
   fi
-  # 清理孤儿主进程(用 [.] 正则避免匹配自身)
+# Clean up orphan main processes (the [.] regex avoids matching this command itself)
   pkill -f "ai-gateway/gateway[.]js" 2>/dev/null
   if [ ! -f "$DATA/config.json" ]; then echo "✗ 主配置不存在: $DATA/config.json"; return 1; fi
   nohup node "$DIR/gateway.js" >> "$LOGFILE" 2>&1 &
   echo $! > "$PIDFILE"
-  # 等进程就位 + 轮询 /health(实例多时加载要几秒)
+# Wait for the process to come up + poll /health (loading takes seconds with many instances)
   local waited=0
   while [ $waited -lt 4 ] && ! is_running; do sleep 0.5; waited=$((waited+1)); done
   if ! is_running; then
@@ -107,7 +107,7 @@ stop_gw() {
     fi
     rm -f "$PIDFILE"
   fi
-  # 兜底清孤儿
+# Fallback orphan cleanup
   pkill -f "ai-gateway/gateway[.]js" 2>/dev/null
   echo "✓ 网关已停止"
 }

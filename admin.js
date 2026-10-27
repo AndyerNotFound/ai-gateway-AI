@@ -1,8 +1,8 @@
 'use strict';
 /**
- * ai-gateway Web 管理面板 (Material Design 3 风格)
- * 被 gateway.js 引用, 在每个实例的 /admin 路径提供管理界面
- * 管理 API 需 webToken(访问令牌)鉴权, 可跨实例管理所有 config.*.json
+ * ai-gateway Web admin panel (Material Design 3 style)
+ * Referenced by gateway.js; provides the admin UI under each instance's /admin path
+ * The admin API requires webToken (access token) auth and can manage every config.*.json across instances
  */
 const fs = require('fs');
 const path = require('path');
@@ -15,34 +15,34 @@ const https2 = require('https');
 const ctxp = require('./ctxp');
 const { VERSION } = require('./util');
 
-// cloudflared 隧道全局状态
+// cloudflared tunnel global state
 let tunnelProc = null, tunnelUrl = '', tunnelLog = [], tunnelTimer = null, tunnelNext = null;
 
-// DIR 优先用当前实例配置文件所在目录, 回落到 ~/ai-gateway
+// DIR prefers the current instance's config directory, falling back to ~/ai-gateway
 let crypt = null; try { crypt = require('./crypt.js'); } catch (_) {}
 let DIR = path.join(os.homedir(), 'ai-gateway');
 function setDir(dir) { DIR = dir; }
-const CORE = __dirname; // 代码根: m3/ui/ball-editor/agw.sh 等静态资源与脚本
-const DATA = () => DIR; // 数据根: config*/ball*/log/.run/plugins-data (gateway setDir 注入)
+const CORE = __dirname; // code root: static assets and scripts like m3/ui/ball-editor/agw.sh
+const DATA = () => DIR; // data root: config*/ball*/log/.run/plugins-data (injected by gateway setDir)
 const MRUN = () => path.join(DIR, '.run');
 const MLOG = () => path.join(DIR, 'log');
 let upstreamModelsFn = null;
-function setUpstreamModels(fn) { upstreamModelsFn = fn; } // 由 gateway 注入: ch -> Promise<模型id数组>
+function setUpstreamModels(fn) { upstreamModelsFn = fn; } // injected by gateway: ch -> Promise<model id array>
 let syncFn = null;
-function setSyncFn(fn) { syncFn = fn; } // 由 gateway 注入: (实例名?) -> Promise<同步摘要>
-// 渠道余额代查实现: 由 gateway 注入 (cfg, ch, cb) — 走渠道代理/insecure, 见 gateway.js fetchChannelBalance
+function setSyncFn(fn) { syncFn = fn; } // injected by gateway: (instance?) -> Promise<sync summary>
+//// channel balance lookup implementation: injected by gateway (cfg, ch, cb) -- uses the channel proxy/insecure; see gateway.js fetchChannelBalance
 let BALANCE_FN = null;
 function setBalanceFn(fn) { BALANCE_FN = fn; }
-// 多实例池(单进程模式): 由 gateway 注入; null = 旧多进程模式
+// Multi-instance pool (single-process mode): injected by gateway; null = legacy multi-process mode
 let POOL = null;
 function setPool(p) { POOL = p; }
-// 插件管理器: 由 gateway 注入
+//// plugin manager: injected by gateway
 let PLUGINS = null;
 function setPlugins(p) { PLUGINS = p; }
-// 实例名/路径保留字校验(与 gateway.js 保持一致)
+// Instance name/path reserved-word validation (kept in sync with gateway.js)
 const INST_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
 const RESERVED_PATHS = new Set(['v1', 'v1beta', 'v1alpha', 'admin', 'health', 'status', 'favicon.ico', 'robots.txt', 'dashboard']);
-// 热重载实例配置(pool 模式); 失败抛异常
+//// hot-reload an instance's config (pool mode); throws on failure
 function hotReload(name) {
   if (!POOL) return false;
   POOL.reload(name);
@@ -62,18 +62,18 @@ function listInstances() {
   } catch (_) {}
   return out;
 }
-/* ---- 派生密钥缓存 (性能 / 不缓存明文) ----
- * 背景: 配置落盘即 AGWENC1 加密。解密耗时 100% 在 scrypt 派生密钥(实测 51.7ms/次),
- *       AES-GCM 解密本身只要 0.015ms。loadCfg 在热路径上被反复调用, scryptSync
- *       又是同步的 → 会独占事件循环把并发的 AI 转发冻结。
- * 方案: 只缓存 scrypt 派生出的【32 字节密钥】, 内存中不留任何明文。
- *       命中后仍每次真解密(读最新文件 → AES-GCM → JSON.parse), 拿到的永远是当前文件内容,
- *       因此不存在"缓存过期"问题, 也不需要内容比对/mtime 判定。
- * 失效签名 = sha256(口令)前16位 + 该文件的 salt:
- *       - 文件被重加密(salt 变) → 签名变 → 重新派生
- *       - crypt.js changepass 换口令   → 签名变 → 重新派生
- *       - 签名万一判错 → AES-GCM 认证失败会抛错, 不会静默给出错误数据
- * 内存: 27 文件 × 32 字节 = 864 字节(对比缓存明文约 106KB)。
+/* ---- Derived key cache (performance / never caches plaintext) ----
+ * Background: configs are AGWENC1-encrypted on disk. Decryption cost is 100% scrypt key derivation (~51.7ms measured),
+ *       AES-GCM decryption itself takes ~0.015ms. loadCfg is called repeatedly on the hot path, and scryptSync
+ *       is synchronous -> it would monopolize the event loop and freeze concurrent AI forwarding.
+ * Scheme: cache only the 32-byte scrypt-derived key; no plaintext is ever kept in memory.
+ *       even on a hit it really decrypts every time (read the latest file -> AES-GCM -> JSON.parse), so the content is always current,
+ *       hence no "stale cache" problem and no content/mtime comparisons needed.
+ * Invalidation signature = first 16 hex chars of sha256(passphrase) + the file's salt:
+ *       - file re-encrypted (salt changed) -> signature changes -> re-derive
+ *       - crypt.js changepass -> the signature changes -> re-derive
+ *       - if the signature is ever wrong -> AES-GCM auth fails loudly; wrong data is never returned silently
+ * Memory: 27 files x 32 bytes = 864 bytes (vs ~106KB for caching plaintext).
  */
 const _keyCache = new Map();
 function cfgCacheClear() { _keyCache.clear(); }
@@ -96,7 +96,7 @@ function loadCfg(name) {
       e = { sig, key: crypt.deriveKey(pass, salt) };
       _keyCache.set(f, e);
     }
-    // 用缓存的派生密钥做 AES-GCM 解密(密文格式: salt[16] | iv[12] | tag[16] | ct)
+    // AES-GCM decrypt with the cached derived key (ciphertext layout: salt[16] | iv[12] | tag[16] | ct)
     const iv = b.subarray(16, 28), tag = b.subarray(28, 44), ct = b.subarray(44);
     const d = crypto2.createDecipheriv('aes-256-gcm', e.key, iv);
     d.setAuthTag(tag);
@@ -107,7 +107,7 @@ function loadCfg(name) {
   c._name = name;
   return c;
 }
-/* 隐私过滤自定义规则: 接受数组或换行文本, 只留能编译的正则(最多 50 条) */
+/* Custom privacy-filter rules: accepts an array or newline text; keeps only compilable regexes (max 50) */
 function normalizeRedactExtra(v) {
   const arr = Array.isArray(v) ? v : (typeof v === 'string' ? v.split(/\r?\n/) : []);
   const out = [];
@@ -132,12 +132,12 @@ function saveCfg(name, cfg) {
   const f = cfgFile(name);
   const plain = JSON.stringify(cfg, null, 2) + '\n';
   let text = plain;
-  if (crypt) { const pass = crypt.loadPass(); if (pass) text = crypt.encryptText(plain, pass); } // 有密钥=落盘即加密(每次新 salt)
+if (crypt) { const pass = crypt.loadPass(); if (pass) text = crypt.encryptText(plain, pass); } // with a passphrase, everything is encrypted on write (fresh salt each time)
   fs.writeFileSync(f, text);
-  _keyCache.delete(f); // salt 已变, 让下次读重新派生(仅 51ms 一次)
+_keyCache.delete(f); // salt changed; force re-derivation on next read (~51ms each)
 }
 function readLog(name, lines) {
-  // 单进程模式: 所有实例共享一份 gateway.log
+// Single-process mode: all instances share one gateway.log
   const f = path.join(MLOG(), POOL ? 'gateway.log' : `${name}.log`);
   if (!fs.existsSync(f)) return '(无日志)';
   const txt = fs.readFileSync(f, 'utf8');
@@ -158,7 +158,7 @@ function getInstanceStatus(name) {
   return { name, pid, running };
 }
 
-// 执行 agw.sh 命令(非阻塞, 返回 promise)
+//// run an agw.sh command (non-blocking, returns a promise)
 function runAgw(args) {
   return new Promise(resolve => {
     execFile('bash', [path.join(CORE, 'agw.sh'), ...args], { timeout: 15000 }, (err, stdout, stderr) => {
@@ -167,7 +167,7 @@ function runAgw(args) {
   });
 }
 
-// 保存配置后自动重启实例(300ms 后执行, 先让响应发出去; 自我重启用 setsid 临时脚本脱离进程组)
+// Auto-restart the instance after saving config (after 300ms so the response flushes first; self-restart uses a setsid temp script to escape the process group)
 function scheduleRestart(cfg, name) {
   setTimeout(() => {
     if (name === currentName(cfg)) {
@@ -185,8 +185,8 @@ function scheduleRestart(cfg, name) {
   }, 300);
 }
 
-// 管理鉴权
-/* ---- TOTP (RFC 6238, SHA1, 30s窗口, 6位) ---- */
+//// admin auth
+/* ---- TOTP (RFC 6238, SHA1, 30s window, 6 digits) ---- */
 function base32Decode(s) {
   const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
   s = String(s || '').toUpperCase().replace(/=+$/, '').replace(/[^A-Z2-7]/g, '');
@@ -227,9 +227,9 @@ function totpVerify(secretB32, code) {
   return false;
 }
 
-// 管理端认证: webToken(访问令牌, agw admin login 生成)主验证 + 可选第二验证(adminAuth.secondKey 第二密码 / adminAuth.totpSecret TOTP)
+//// admin auth: webToken (access token, generated by agw admin login) as primary + optional second factor (adminAuth.secondKey second password / adminAuth.totpSecret TOTP)
 function checkAdminAuth(cfg, req, query) {
-  // 面板会话到期(agw admin expire): 到时清空全部会话, 并落盘清零
+// Panel session expiry (agw admin expire): clears all sessions at the deadline and persists the reset
   if (cfg.adminExpireAt > 0 && Date.now() >= cfg.adminExpireAt) {
     cfg.adminExpireAt = 0;
     if (cfg._webSess) cfg._webSess.clear();
@@ -239,7 +239,7 @@ function checkAdminAuth(cfg, req, query) {
   const h = req.headers;
   const auth = h.authorization || '';
   const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
-  // 唯一管理凭据: webToken; 都没设 = 免密管理(局域网自用)
+// Single admin credential: webToken; none set = keyless admin (for personal LAN use)
   const keys = [cfg.webToken].filter(Boolean);
   let mainOk;
   if (!keys.length) mainOk = true;
@@ -248,13 +248,13 @@ function checkAdminAuth(cfg, req, query) {
     mainOk = keys.some(k => supplied.includes(k)
       || (h.cookie || '').includes(`agwWeb=${k}`));
   }
-  // 面板会话: /auth?key= 签发的 HttpOnly cookie(见 m3KeyOk), 有效期内浏览器免带令牌
+// Panel session: HttpOnly cookie issued by /auth?key= (see m3KeyOk); the browser needs no token while valid
   if (!mainOk && cfg._webSess) {
     const m = String(h.cookie || '').match(/(?:^|;\s*)agwSID=([A-Za-z0-9_-]{16,})/);
     if (m) { const exp = cfg._webSess.get(m[1]); if (exp && exp > Date.now()) mainOk = true; }
   }
   if (!mainOk) return false;
-  // ---- 第二验证(已设置才校验) ----
+// ---- Second factor (validated only when configured) ----
   const aa = cfg.adminAuth || {};
   const needSecond = !!(aa.secondKey || aa.totpSecret);
   if (!needSecond) return true;
@@ -273,8 +273,8 @@ function textRes(res, status, text, ct) {
   res.end(text);
 }
 
-// 余额透传三字段的合并规则(统一口径, 供 config 保存 + 单渠道保存复用):
-//   提交体未带该键(undefined) → 继承旧值; 显式空串/null → 清空(不落空串)
+// Merge rules for the three balance-passthrough fields (one convention, reused by config save and single-channel save):
+//   key absent from the body (undefined) -> inherit the old value; explicit empty string/null -> clear (never stores "")
 const BALANCE_KEYS = ['balanceUrl', 'balancePath', 'balanceUnit', 'warnBelow'];
 function mergeBalanceFields(out, prev) {
   for (const k of BALANCE_KEYS) {
@@ -284,7 +284,7 @@ function mergeBalanceFields(out, prev) {
   return out;
 }
 
-// 从配置中提取打码的渠道信息(key 不外泄)
+// Extract masked channel info from the config (the key never leaves)
 function maskedChannels(cfg, reveal) {
   return (cfg.channels || []).map(c => ({
     name: c.name, type: c.type, baseUrl: c.baseUrl,
@@ -292,7 +292,7 @@ function maskedChannels(cfg, reveal) {
     default: c.default, hasKey: !!(c.apiKey && c.apiKey.length),
     useResponses: c.useResponses === undefined ? undefined : !!c.useResponses, delayMs: c.delayMs || 0, probe: !!c.probe,
     lockAt: c.lockAt || null, lockUntil: c.lockUntil || null, transcreet: c.transcreet || null,
-    // 余额透传配置(非敏感, 面板可编辑; 缺省=用内置预设)
+// Balance passthrough config (non-sensitive, panel-editable; default = built-in presets)
     balanceUrl: c.balanceUrl || null, balancePath: c.balancePath || null, balanceUnit: c.balanceUnit || null,
     warnBelow: c.warnBelow || null,
     keyPrefix: c.apiKey ? c.apiKey.slice(0, 4) + '***' : '',
@@ -300,7 +300,7 @@ function maskedChannels(cfg, reveal) {
   }));
 }
 
-// 当前实例名 (config.json → 'default', config.xxx.json → 'xxx')
+//// current instance name (config.json -> 'default', config.xxx.json -> 'xxx')
 function currentName(cfg) {
   if (!cfg._configFile) return 'default';
   const base = path.basename(cfg._configFile, '.json');
@@ -308,18 +308,18 @@ function currentName(cfg) {
   return base.replace(/^config\./, '');
 }
 
-// 本机回环代理到目标实例获取 JSON (跨实例统计/请求)
-// 统一走 /admin/api/<path>(带目标 webToken)
+//// proxy over local loopback to the target instance for JSON (cross-instance stats/requests)
+//// always go through /admin/api/<path> (with the target's webToken)
 function proxyInstance(targetName, adminPath) {
   return new Promise(resolve => {
     const tc = loadCfg(targetName);
     if (!tc) return resolve(null);
-    // 目标实例若启用 TLS(含"同端口纯 HTTPS"), 本机回环必须走 https
+    // when the target instance has TLS on (including same-port pure HTTPS), the local loopback must use https
     const tcTls = tc.tls || {};
     const useTls = !!tcTls.enable;
     const port = useTls && tcTls.port != null ? tcTls.port : ((tc.listen || {}).port || 16384);
     const mod = useTls ? https2 : http;
-    const tlsOpt = useTls ? { rejectUnauthorized: false } : {}; // 回环目标为私有 CA 签发
+const tlsOpt = useTls ? { rejectUnauthorized: false } : {}; // loopback targets are signed by the private CA
     const webToken = tc.webToken || '';
     const tryAdmin = () => {
       const opts = Object.assign({ host: '127.0.0.1', port, path: '/admin/api/' + adminPath, method: 'GET', timeout: 5000 }, tlsOpt);
@@ -338,12 +338,12 @@ function proxyInstance(targetName, adminPath) {
   });
 }
 
-/* ====================== 处理管理请求 ====================== */
-// cfg=当前实例配置, req, res, u=URL对象, p=pathname, bodyStr=请求体
-/* ====================== 悬浮球配置白名单 ======================
- * APP 端悬浮球的外观/文案由 POST /admin/api/ball/<inst> 写入 ball.<inst>.json,
- * APP 每 60s 拉一次 GET /admin/api/ball/<inst>, hash 不变就完全不动作。
- * 白名单外一律 400: 宁可报错, 也不要出现"配置里有、APP 不认、还被静默忽略"的键。
+/* ====================== Handle admin requests ====================== */
+// cfg = current instance config, req, res, u = URL object, p = pathname, bodyStr = request body
+/* ====================== Floating ball config whitelist ======================
+ * The APP-side floating ball's look/labels are written by POST /admin/api/ball/<inst> into ball.<inst>.json,
+ * The APP polls GET /admin/api/ball/<inst> every 60s and does nothing at all when the hash is unchanged.
+ * Anything outside the whitelist gets 400: better to error than to carry keys the APP does not recognize and silently ignores.
  */
 const BALL = (() => {
   const NUM = {
@@ -355,7 +355,7 @@ const BALL = (() => {
   const FLAG = ['snap', 'dim', 'blur', 'lock', 'balanceRow', 'pinExpanded'];
   const STR = { rowsOrder: /^[0-9,]{0,40}$/, iconUri: /^.{0,300}$/ };
   const COLOR = ['gaugeColor', 'bg'];
-  // 结构化的球界面描述: rings / ringStyle / rows / bubble / on / radial
+  // structured ball UI description: rings / ringStyle / rows / bubble / on / radial
   const OBJ_KEYS = ['ringStyle', 'bubble', 'radial', 'perform', 'noti'];
   const TONES = ['ok', 'warn', 'danger', 'info', 'muted', 'primary'];
   const ALL = () => [].concat(Object.keys(NUM), FLAG, Object.keys(STR), COLOR, ['phrases'], OBJ_KEYS);
@@ -364,7 +364,7 @@ const BALL = (() => {
   const isStr = (v, lo, hi) => typeof v === 'string' && v.length >= lo && v.length <= hi;
   const actOk = a => isObj(a) && isStr(a.type, 1, 24);
 
-  /** content_* 组 = 面板一行: {order, label, data, text} */
+/** content_* group = one panel row: {order, label, data, text} */
   function contentGroup(k, v) {
     if (!isObj(v)) return { error: k + ' 必须是对象' };
     const o = {};
@@ -388,7 +388,7 @@ const BALL = (() => {
     return { value: o };
   }
 
-  /** radial_* 组 = 一个按钮 */
+/** radial_* group = one button */
   function radialItem(k, v) {
     if (!isObj(v)) return { error: k + ' 必须是对象' };
     const o = {};
@@ -408,7 +408,7 @@ const BALL = (() => {
     return { value: o };
   }
 
-  /** touch_* 组 = 一个手势 */
+/** touch_* group = one gesture */
   function touchItem(k, v) {
     if (!isObj(v)) return { error: k + ' 必须是对象' };
     const o = {};
@@ -434,7 +434,7 @@ const BALL = (() => {
     return { value: o };
   }
 
-  /** chain_* 组 = 一条连锁规则: 条件同 when, do 是动作数组, delay 是段间隔 */
+/** chain_* group = one chained rule: condition like when, do is an action array, delay is the inter-segment wait */
   function chainGroup(k, v) {
     const base = whenCond(k, v);
     if (base.error) return base;
@@ -450,7 +450,7 @@ const BALL = (() => {
     return { value: o };
   }
 
-  /** when_* 组 = 一条事件规则: {order, on, lt/gt/eq/match, do, cooldown} */
+/** when_* group = one event rule: {order, on, lt/gt/eq/match, do, cooldown} */
   const EV_ACTS = ['expand', 'collapse', 'toggle', 'menu', 'reload', 'open', 'copy', 'toast',
     'mute', 'intent', 'sequence', 'bubble', 'notify'];
   function whenCond(k, v) {
@@ -490,7 +490,7 @@ const BALL = (() => {
     return { value: o };
   }
 
-  /** when_* = 条件 + 单个动作 */
+/** when_* = condition + single action */
   function whenGroup(k, v) {
     const r = whenCond(k, v);
     if (r.error) return r;
@@ -501,7 +501,7 @@ const BALL = (() => {
     return { value: o };
   }
 
-  /** 一个 ring_* 组 = 一个环: {order, data, color} */
+/** ring_* group = one ring: {order, data, color} */
   function ringGroup(name, v) {
     if (!isObj(v)) return { error: name + ' 必须是对象' };
     if (!Number.isFinite(Number(v.order))) return { error: name + '.order 必须是数字' };
@@ -513,7 +513,7 @@ const BALL = (() => {
     return { value: { order: Number(v.order), data: v.data, color: v.color || 'primary' } };
   }
 
-  /** 新四组: perform / thing / bubble / content / touch */
+/** New four groups: perform / thing / bubble / content / touch */
   function structured2(k, v) {
     if (k === 'perform') {
       if (!isObj(v)) return { error: 'perform 必须是对象' };
@@ -609,7 +609,7 @@ const BALL = (() => {
     return { error: '未知键 ' + k };
   }
 
-  /** 所有 ring_* 的 order 不许重复 */
+/** ring_* orders must be unique */
   function orderClash(obj, skipKey) {
     const seen = new Map();
     for (const k of Object.keys(obj)) {
@@ -694,15 +694,15 @@ const BALL = (() => {
 })();
 
 async function handleAdmin(cfg, req, res, u, p, bodyStr) {
-  // /admin 页面(内置HTML)
+// /admin page (built-in HTML)
   if (req.method === 'GET' && (p === '/admin' || p === '/admin/')) {
     return textRes(res, 200, adminHTML(cfg), 'text/html; charset=utf-8');
   }
 
-  // /auth — M3 管理面板入口: /auth?key=<访问令牌>(未设时免密直进)
-  // 令牌校验复用 checkAdminAuth: 兼容 ?key= / Bearer / x-agw-token / cookie(agwWeb=)
+// /auth -- M3 admin panel entry: /auth?key=<access token> (enters keyless when unset)
+// Token checks reuse checkAdminAuth: supports ?key= / Bearer / x-agw-token / cookie (agwWeb=)
   const m3KeyOk = () => checkAdminAuth(cfg, req, u.searchParams);
-  // 带令牌访问成功 → 签发面板会话(HttpOnly cookie, 7 天), 浏览器后续访问(含 /admin/api/*)免带令牌
+// Token access succeeded -> issue a panel session (HttpOnly cookie, 7 days); later browser visits (including /admin/api/*) need no token
   const issueWebSess = (fixedSid) => {
     if (!cfg._webSess) cfg._webSess = new Map();
     const now = Date.now();
@@ -721,8 +721,8 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     + '<body style="font-family:sans-serif;background:#1c1b1f;color:#e6e1e5;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">'
     + '<div>⚠️ 需要访问令牌: 请访问 <code>/auth?key=<访问令牌></code>(agw admin login 生成)</div></body>', 'text/html; charset=utf-8');
 
-  // /auth/<sid>/<token> — 一次性路径式登录(agw admin login 生成):
-  // 令牌校验通过 + 消耗预注册的 sid → 以 sid 为会话 ID 签发 7 天会话, 链接从此作废(防历史记录/分享重放)
+// /auth/<sid>/<token> -- one-time path-based login (generated by agw admin login):
+// Token valid + consume the pre-registered sid -> issue a 7-day session keyed by sid; the link is dead from then on (blocks replay from history/shares)
   const pm = (req.method === 'GET') && p.match(/^\/auth\/([A-Za-z0-9_-]{16,128})\/([A-Za-z0-9_-]{8,256})\/?$/);
   if (pm) {
     const [, sid, tok] = pm;
@@ -732,14 +732,14 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     if (!pend) return textRes(res, 401, '<!doctype html><meta charset="utf-8"><title>401</title>'
       + '<body style="font-family:sans-serif;background:#1c1b1f;color:#e6e1e5;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">'
       + '<div>⚠️ 登录链接已失效或已使用, 请在服务器重新执行 <code>agw admin login</code></div></body>', 'text/html; charset=utf-8');
-    cfg._webSessPend.delete(sid); // 一次性
+cfg._webSessPend.delete(sid); // one-shot
     const f = path.join(CORE, 'm3', 'index.html');
     if (!fs.existsSync(f)) return textRes(res, 404, 'M3 面板未找到, 请把 index.html 放到 ' + path.join(CORE, 'm3'));
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0', 'Access-Control-Allow-Origin': '*', 'Set-Cookie': issueWebSess(sid) });
     return res.end(fs.readFileSync(f, 'utf8'));
   }
 
-  // /auth(面板本体, 带 ?key=<访问令牌> 访问; 同时签发会话 cookie)
+// /auth (the panel itself; visit with ?key=<access token>; also issues a session cookie)
   if (req.method === 'GET' && (p === '/auth' || p === '/auth/')) {
     if (!m3KeyOk()) return authDeny();
     const f = path.join(CORE, 'm3', 'index.html');
@@ -747,7 +747,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0', ...withSess() });
     return res.end(fs.readFileSync(f, 'utf8'));
   }
-  // /admin/ball — 悬浮球可视化编辑器（单文件, 不鉴权, 密码在页面内输）
+// /admin/ball -- floating-ball visual editor (single file, unauthenticated; password entered in the page)
   if (req.method === 'GET' && (p === '/admin/ball' || p === '/admin/ball/')) {
     const f = path.join(CORE, 'ball-editor.html');
     if (!fs.existsSync(f)) return textRes(res, 404, 'ball-editor.html 未找到: ' + f);
@@ -755,8 +755,8 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return res.end(fs.readFileSync(f, 'utf8'));
   }
 
-  // /auth/<静态资源> — vendor JS / 字体等(不含敏感信息, 不做令牌校验, 利于浏览器缓存)
-  // 安全: 必须落在 m3 目录内(禁 .. 穿越), 且必须是文件
+// /auth/<static> -- vendor JS / fonts etc. (nothing sensitive, no token check, browser-cache friendly)
+// Safety: must stay inside the m3 directory (no .. traversal) and must be a file
   if (req.method === 'GET' && p.startsWith('/auth/')) {
     let rel;
     try { rel = decodeURIComponent(p.slice('/auth/'.length)); } catch (e) { rel = ''; }
@@ -773,12 +773,12 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       let buf = fs.readFileSync(f);
       const hdr = {
         'Content-Type': MIME[ext] || 'application/octet-stream',
-        // 面板本体不缓存; vendor 资源可缓存一天(体积大且按内容变更命名)
+// The panel itself is never cached; vendor assets cache for a day (large and content-named)
         'Cache-Control': (ext === '.html' || isApp) ? 'no-store, no-cache, must-revalidate' : 'public, max-age=86400',
         'Access-Control-Allow-Origin': '*', 'Vary': 'Accept-Encoding',
       };
       if (isApp) { hdr['Pragma'] = 'no-cache'; hdr['Expires'] = '0'; }
-      // 文本类资源 >1KB 且客户端支持 → gzip(288KB 的组件包压到 ~56KB)
+      // text assets >1KB when the client supports it -> gzip (the 288KB component bundle shrinks to ~56KB)
       if (buf.length > 1024 && ['.js', '.mjs', '.css', '.json', '.map'].includes(ext)
           && /\bgzip\b/.test(req.headers['accept-encoding'] || '')) {
         buf = zlib.gzipSync(buf, { level: 9 });
@@ -788,12 +788,12 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       res.writeHead(200, hdr);
       return res.end(buf);
     }
-    // 文件不存在/穿越尝试: 明确 404, 不能返回 null(调用方不会再写响应, 请求会一直挂着)
+    // missing file / traversal attempt: explicit 404, never null (callers would not write a response and the request would hang)
     return textRes(res, 404, '面板资源不存在: ' + rel);
   }
   if (p.startsWith('/auth/')) return textRes(res, 405, '不支持的方法: ' + req.method + ' ' + p);
 
-  // 以下都是 /admin/api/* → 需要 adminKey 鉴权
+// Everything below is /admin/api/* -> requires adminKey auth
   if (!p.startsWith('/admin/api/')) return null; // 不是管理路由, 交给后续
 
   if (!checkAdminAuth(cfg, req, u.searchParams)) {
@@ -802,7 +802,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
 
   const api = p.slice('/admin/api/'.length);
 
-  // POST /admin/api/web-expired — 注销全部面板会话(agw admin expire)
+// POST /admin/api/web-expired -- log out every panel session (agw admin expire)
   if (api === 'web-expired') {
     let j = {}; try { j = JSON.parse(bodyStr || '{}'); } catch (_) {}
     const sid = String(j.sid || '');
@@ -815,7 +815,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     if (cfg._webSessPend) cfg._webSessPend.clear();
     return jsonRes(res, 200, { ok: true, cleared: true });
   }
-  // POST /admin/api/admin-expire {at|sid|0} — 定时/立即注销面板会话(agw admin expire -t/-w/-d)
+// POST /admin/api/admin-expire {at|sid|0} -- schedule/immediate panel-session logout (agw admin expire -t/-w/-d)
   if (api === 'admin-expire') {
     let j = {}; try { j = JSON.parse(bodyStr || '{}'); } catch (_) {}
     if (j.sid) {
@@ -843,7 +843,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     try { const disk = loadCfg(nm); if (disk) { disk.adminExpireAt = at; saveCfg(nm, disk); } } catch (e) { return jsonRes(res, 500, { error: '保存失败: ' + e.message }); }
     return jsonRes(res, 200, { ok: true, at });
   }
-  // POST /admin/api/web-session {sid} — 注册一次性登录链接的会话UID(agw admin login, 15 分钟有效)
+// POST /admin/api/web-session {sid} -- register the session UID behind a one-time login link (agw admin login, valid 15 minutes)
   if (api === 'web-session') {
     let j = null; try { j = JSON.parse(bodyStr || '{}'); } catch (_) {}
     const sid = String((j && j.sid) || '');
@@ -856,7 +856,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, { ok: true, ttl: 900 });
   }
 
-  // GET /admin/api/web-sessions — 面板会话一览(有效会话 / 待用一次性登录链接 / 定时注销)
+// GET /admin/api/web-sessions -- panel session overview (active sessions / pending one-time login links / scheduled logout)
   if (api === 'web-sessions') {
     if (req.method !== 'GET') return jsonRes(res, 405, { error: '只支持 GET' });
     const now = Date.now();
@@ -873,10 +873,10 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     });
   }
 
-  // GET /admin/api/mdu — Material You 壁纸主色(取色桥)
-  // 桥的契约: 输出 #RRGGBB / {"primary":"#RRGGBB"} / {"tokens":{"primary":"#RRGGBB"}}
-  // 来源顺序: ① config.mduCmd 或环境变量 AGW_MDU_CMD ② DIR/mdu.json(桥定时落盘)
-  // 说明: 命令来自本实例配置, 只有通过 webToken 鉴权的管理端能触发, 且 2.5s 超时
+// GET /admin/api/mdu -- Material You wallpaper primary color (color-bridge)
+  // bridge contract: outputs #RRGGBB / {"primary":"#RRGGBB"} / {"tokens":{"primary":"#RRGGBB"}}
+  // source order: (1) config.mduCmd or env AGW_MDU_CMD (2) DIR/mdu.json (periodically written by the bridge)
+// Note: commands come from this instance's config; only the webToken-authenticated admin can trigger them, with a 2.5s timeout
   if (api === 'mdu') {
     if (req.method !== 'GET') return jsonRes(res, 405, { error: '只支持 GET' });
     const pickHex = (v) => {
@@ -918,10 +918,10 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     }
   }
 
-  // ===== SDUI 页面 (手写 JSON, 先跑通渲染再谈数据源) =====
+// ===== SDUI pages (hand-written JSON; get rendering working before data sources) =====
   // GET /admin/api/ui            → { pages: ["demo","requests"] }
-  // GET /admin/api/ui/<name>     → 原样返回 DIR/ui/<name>.json
-  // 文件名白名单 [a-z0-9_-]{1,32}: 拒绝任何路径穿越
+// GET /admin/api/ui/<name>     -> returns DIR/ui/<name>.json verbatim
+  // filename whitelist [a-z0-9_-]{1,32}: rejects every traversal attempt
   if (api === 'ui' || api.startsWith('ui/')) {
     if (req.method !== 'GET') return jsonRes(res, 405, { error: '只支持 GET' });
     const dir = path.join(CORE, 'ui');
@@ -940,11 +940,11 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, j);
   }
 
-  // ===== 悬浮球外观/文案热配置 =====
+// ===== Floating-ball appearance/label hot config =====
   // GET  /admin/api/ball/<inst> → { ok, inst, hash, look:{...}, src:[...] }
-  // POST /admin/api/ball/<inst> → 白名单校验后写 ball.<inst>.json;  {clear:true} 删除该文件
-  // 文件在 DIR 下, 每次请求现读: 改完立即生效, 不重启网关, 更不重编 APP
-  // POST /admin/api/ball-trigger → 让 APP 立刻收到一条事件（走 rish am broadcast）
+// POST /admin/api/ball/<inst> -> writes ball.<inst>.json after whitelist validation; {clear:true} deletes the file
+  // files live under DIR and are read per request: edits apply instantly, no gateway restart, no app rebuild
+// POST /admin/api/ball-trigger -> deliver an event to the APP immediately (via rish am broadcast)
   if (api === 'ball-trigger') {
     if (req.method !== 'POST') return jsonRes(res, 405, { error: '只支持 POST' });
     let b = {};
@@ -998,12 +998,12 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
   }
 
 
-  // GET /admin/api/instances — 所有实例状态
+// GET /admin/api/instances -- status of all instances
   if (req.method === 'GET' && api === 'instances') {
     const insts = listInstances().map(name => {
       let port = 0, tlsOn = false, chCount = 0, running = false, disabled = false, loadError = false, pid = 0;
-      // ⚠ 顺序很关键: 单进程模式下池里已有内存态配置, 必须直接读, 不要先 loadCfg。
-      //    原先先 loadCfg 再被池数据覆盖 = 白读 27 个加密文件(≈1.8s, 且 scryptSync 阻塞事件循环拖慢 AI 转发)。
+// warning: order matters -- in single-process mode the pool already holds in-memory configs; read those directly, do not loadCfg first.
+//    loadCfg followed by pool overwrite meant 27 encrypted files read for nothing (~1.8s, and scryptSync blocked the event loop, slowing AI forwarding).
       const inst = POOL ? POOL.instances.get(name) : null;
       if (inst) {
         running = !inst._disabled;
@@ -1011,7 +1011,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
         port = inst.listen.port; tlsOn = !!(inst.tls && inst.tls.enable);
         chCount = inst.channels.length; disabled = !!inst._disabled;
       } else if (POOL) {
-        // 池里没有(未启动/加载失败) → 回退读文件, 保持与改动前一致的展示
+        // not in the pool (not started / failed to load) -> read the file as fallback, keeping the display identical to before the change
         loadError = true; pid = process.pid;
         try { const c = loadCfg(name); port = (c.listen || {}).port || 16384; tlsOn = !!(c.tls && c.tls.enable); chCount = (c.channels || []).length; disabled = !!c.disabled; } catch (_) {}
       } else {
@@ -1027,8 +1027,8 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, out);
   }
 
-  // ===== 插件管理 =====
-  // GET /admin/api/plugins/:inst — 已安装插件列表+状态+推荐插件
+// ===== Plugin management =====
+// GET /admin/api/plugins/:inst -- installed plugin list + status + recommended plugins
   if (req.method === 'GET' && /^plugins\/[^/]+$/.test(api)) {
     const name = decodeURIComponent(api.slice('plugins/'.length));
     if (!PLUGINS) return jsonRes(res, 500, { error: '插件系统未初始化' });
@@ -1037,7 +1037,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, { plugins: PLUGINS.listForInstance(name, c), requiredPlugins: c.requiredPlugins || [] });
   }
 
-  // POST /admin/api/plugins-install/:inst — {url|localPath, sha256?} 安装插件(.tar.gz)
+// POST /admin/api/plugins-install/:inst -- {url|localPath, sha256?} install a plugin (.tar.gz)
   if (req.method === 'POST' && api.startsWith('plugins-install/')) {
     const name = decodeURIComponent(api.slice('plugins-install/'.length));
     if (!PLUGINS) return jsonRes(res, 500, { error: '插件系统未初始化' });
@@ -1056,7 +1056,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     } catch (e) { return jsonRes(res, 400, { error: e.message }); }
   }
 
-  // POST /admin/api/plugins-remove/:inst — {id, keepData?} 卸载
+// POST /admin/api/plugins-remove/:inst -- {id, keepData?} uninstall
   if (req.method === 'POST' && api.startsWith('plugins-remove/')) {
     const name = decodeURIComponent(api.slice('plugins-remove/'.length));
     if (!PLUGINS) return jsonRes(res, 500, { error: '插件系统未初始化' });
@@ -1070,7 +1070,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, { ok: true });
   }
 
-  // POST /admin/api/plugins-enable/:inst — {id, enable} 启用/停用
+// POST /admin/api/plugins-enable/:inst -- {id, enable} enable/disable
   if (req.method === 'POST' && api.startsWith('plugins-enable/')) {
     const name = decodeURIComponent(api.slice('plugins-enable/'.length));
     const c = loadCfg(name);
@@ -1078,7 +1078,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     let data; try { data = JSON.parse(bodyStr || '{}'); } catch { return jsonRes(res, 400, { error: 'JSON 无效' }); }
     let pc = (c.plugins || []).find(p => p.id === data.id);
     if (!pc) {
-      // 手动放进 plugins/ 目录但未登记的插件: 自动登记一条再设置启用状态
+      // plugins dropped into plugins/ manually but never registered: auto-register, then set the enabled state
       if (!PLUGINS || !PLUGINS.installed.has(data.id)) return jsonRes(res, 404, { error: '插件未安装: ' + data.id });
       c.plugins = Array.isArray(c.plugins) ? c.plugins : [];
       pc = { id: data.id, enable: false, version: (PLUGINS.installed.get(data.id).manifest.version || '?'), config: {} };
@@ -1089,7 +1089,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, { ok: true, enable: pc.enable });
   }
 
-  // GET/POST /admin/api/plugins-config/:inst/:id — 读/写插件设置
+// GET/POST /admin/api/plugins-config/:inst/:id -- read/write plugin settings
   if (api.startsWith('plugins-config/')) {
     const rest = api.slice('plugins-config/'.length);
     const slash = rest.indexOf('/');
@@ -1115,7 +1115,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 405, { error: 'Method Not Allowed' });
   }
 
-  // POST /admin/api/plugins-required/:inst — {requiredPlugins:[{id,name,...}]} 设置首次登录推荐
+// POST /admin/api/plugins-required/:inst -- {requiredPlugins:[{id,name,...}]} set the first-login recommendations
   if (req.method === 'POST' && api.startsWith('plugins-required/')) {
     const name = decodeURIComponent(api.slice('plugins-required/'.length));
     const c = loadCfg(name);
@@ -1126,7 +1126,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, { ok: true, requiredPlugins: c.requiredPlugins });
   }
 
-  // GET /admin/api/plugins-index?url=<indexUrl> — 拉取自定义索引的插件列表(浏览)
+// GET /admin/api/plugins-index?url=<indexUrl> -- fetch a custom index's plugin list (browse)
   if (req.method === 'GET' && api === 'plugins-index') {
     const indexUrl = u.searchParams && u.searchParams.get('url');
     if (!indexUrl) return jsonRes(res, 400, { error: '缺少 url 参数' });
@@ -1138,7 +1138,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     } catch (e) { return jsonRes(res, 400, { error: '索引拉取失败: ' + e.message }); }
   }
 
-  // GET /admin/api/config/:name — 读取某实例配置(?reveal=1 时密钥明文回显, 供面板编辑)
+// GET /admin/api/config/:name -- read an instance's config (with ?reveal=1 secrets come back in plaintext for panel editing)
   if (req.method === 'GET' && api.startsWith('config/')) {
     const name = decodeURIComponent(api.slice('config/'.length));
     const reveal = !!(u.searchParams && u.searchParams.get('reveal') === '1');
@@ -1167,21 +1167,21 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     });
   }
 
-  // POST /admin/api/config/:name — 保存配置(整体替换 channels/port 等)
+// POST /admin/api/config/:name -- save config (wholesale replace of channels/port etc.)
   if (req.method === 'POST' && api.startsWith('config/')) {
     const name = decodeURIComponent(api.slice('config/'.length));
     const c = loadCfg(name);
     if (!c) return jsonRes(res, 404, { error: '实例不存在' });
     let data;
     try { data = JSON.parse(bodyStr || '{}'); } catch (e) { return jsonRes(res, 400, { error: 'JSON 无效' }); }
-    // 只允许修改部分字段, apiKey 保留原值(前端只发 keyPrefix, 不发明文)
+// Only some fields are editable; apiKey keeps its value (the client sends only a keyPrefix, never the secret)
     if (data.port != null) { c.listen = c.listen || {}; c.listen.port = Number(data.port); }
     if (data.host != null) { c.listen = c.listen || {}; c.listen.host = data.host; }
     if (data.gatewayKey !== undefined) c.gatewayKey = data.gatewayKey;
     if (data.webToken !== undefined) c.webToken = data.webToken;
     if (data.tls !== undefined) c.tls = data.tls;
     if (data.redact !== undefined && data.redact && typeof data.redact === 'object') {
-      /* 合并而不是整体替换: 老面板只发 {enable}, 不能把 extra 规则清空 */
+/* Merge instead of wholesale replace: old panels send only {enable}; extra rules must not be wiped */
       const next = Object.assign({}, c.redact || {}, data.redact);
       next.enable = next.enable !== false;
       next.response = !!next.response;
@@ -1203,9 +1203,9 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       };
     }
     if (data.ctxpMode !== undefined) c.ctxpMode = ['force', 'warn', 'none'].includes(String(data.ctxpMode)) ? String(data.ctxpMode) : 'force';
-    // 卡密长度(8-128)
+// Key card length (8-128)
     if (data.keyLength !== undefined) c.keyLength = Math.min(128, Math.max(8, Number(data.keyLength) || 24));
-    // 注册设置
+    // registration settings
     if (data.registration !== undefined && data.registration && typeof data.registration === 'object') {
       const r = data.registration;
       c.registration = {
@@ -1218,7 +1218,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
         emailVerify: { enable: !!(r.emailVerify && r.emailVerify.enable) },
       };
     }
-    // 成功率探测配置
+    // success-rate probe config
     if (data.probe !== undefined && data.probe && typeof data.probe === 'object') {
       c.probe = {
         enable: !!data.probe.enable,
@@ -1226,14 +1226,14 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
         mode: data.probe.mode === 'chat' ? 'chat' : 'models',
       };
     }
-    // OpenAI 扩展端点: enable=对外开 /v1/responses 与 images/embeddings/audio/completions 等; upstreamResponses=全局默认上游用 Responses API
+// OpenAI extended endpoints: enable exposes /v1/responses and images/embeddings/audio/completions etc.; upstreamResponses = the global default of upstreams using the Responses API
     if (data.openaiExtras !== undefined && data.openaiExtras && typeof data.openaiExtras === 'object') {
       c.openaiExtras = {
         enable: !!data.openaiExtras.enable,
         upstreamResponses: !!data.openaiExtras.upstreamResponses,
       };
     }
-    // 请求记录: enable 开关 + server 收集地址(留空=本机 JSONL 文件)
+// Request recording: enable switch + collector server address (empty = local JSONL file)
     if (data.record !== undefined && data.record && typeof data.record === 'object') {
       c.record = {
         enable: !!data.record.enable,
@@ -1241,7 +1241,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
         maxChars: Number(data.record.maxChars) > 0 ? Number(data.record.maxChars) : 200000,
       };
     }
-    // 思考链精简: 拦截推理模型 reasoning, 精简后发给客户端
+    // Thinking-chain condensing: intercept a reasoning model's reasoning and send the condensed version to the client
     if (data.thinkingSummary !== undefined && data.thinkingSummary && typeof data.thinkingSummary === 'object') {
       const ts = data.thinkingSummary;
       c.thinkingSummary = {
@@ -1257,7 +1257,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     }
     if (data.proxies !== undefined) c.proxies = data.proxies;
     if (Array.isArray(data.channels)) {
-      // 保留 apiKey: 前端传的 channel 如果 hasKey 但没 apiKey, 从旧配置取
+// Preserve apiKey: if the submitted channel hasKey but no apiKey, take it from the old config
       const oldMap = {};
       const oldChans = {};
       for (const ch of (c.channels || [])) { oldMap[ch.name] = ch.apiKey; oldChans[ch.name] = ch; }
@@ -1279,7 +1279,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return;
   }
 
-  // POST /admin/api/instance-create/:name — 新建实例(写 config.<name>.json, pool 模式即时生效)
+// POST /admin/api/instance-create/:name -- create an instance (writes config.<name>.json; effective immediately in pool mode)
   if (req.method === 'POST' && api.startsWith('instance-create/')) {
     const name = decodeURIComponent(api.slice('instance-create/'.length));
     if (!INST_NAME_RE.test(name)) return jsonRes(res, 400, { error: '实例名只能含字母/数字/中划线/下划线, 最长32字符' });
@@ -1312,7 +1312,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, { ok: true });
   }
 
-  // POST /admin/api/channel/:name — 添加/修改单个渠道
+// POST /admin/api/channel/:name -- add/edit a single channel
   if (req.method === 'POST' && api.startsWith('channel/')) {
     const name = decodeURIComponent(api.slice('channel/'.length));
     const c = loadCfg(name);
@@ -1320,10 +1320,10 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     let ch;
     try { ch = JSON.parse(bodyStr || '{}'); } catch (e) { return jsonRes(res, 400, { error: 'JSON 无效' }); }
     if (!ch.name) return jsonRes(res, 400, { error: '需要渠道名' });
-    // 改名支持: 带 oldName 且与新名不同 = 重命名渠道(原子替换, 不丢 apiKey)
+    // rename support: oldName present and different from the new name = rename the channel (atomic replace, apiKey kept)
     const oldName = ch.oldName ? String(ch.oldName) : '';
     delete ch.oldName;
-    let prevCh = null; // 旧渠道对象: 用于继承提交体没带的字段(余额透传三字段)
+let prevCh = null; // the previous channel object: inherits fields absent from the body (the balance trio)
     if (oldName && oldName !== ch.name) {
       if ((c.channels || []).some(x => x.name === ch.name)) return jsonRes(res, 409, { error: '渠道名 ' + ch.name + ' 已被占用' });
       const target = (c.channels || []).find(x => x.name === oldName);
@@ -1334,7 +1334,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       c.channels = (c.channels || []).filter(x => x.name !== oldName);
       c.channels.push(ch);
     } else {
-      // 如果是修改(同名存在) 且 没传 apiKey, 保留旧的
+// When editing (same name exists) without a submitted apiKey, keep the old one
       const existing = (c.channels || []).find(x => x.name === ch.name);
       prevCh = existing || null;
       if (existing && (!ch.apiKey || ch.apiKey.includes('***'))) ch.apiKey = existing.apiKey;
@@ -1343,7 +1343,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       if (!ch.apiKey) ch.apiKey = '';
       c.channels.push(ch);
     }
-    // 余额透传三字段: 面板/App 未提交(undefined)=继承旧值, 显式空串=清空 —— 防止「编辑一次渠道就抹掉余额配置」
+// Balance passthrough three fields: omitted by panel/App (undefined) = inherit, explicit empty string = clear -- prevents "one channel edit wipes the balance config"
     mergeBalanceFields(ch, prevCh);
     try { saveCfg(name, c); } catch (e) { return jsonRes(res, 500, { error: '保存失败: ' + e.message }); }
     if (POOL) {
@@ -1355,7 +1355,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return;
   }
 
-  // GET/POST /admin/api/ctxp — 全局上下文上限(按模型名通配, 对所有实例生效)
+// GET/POST /admin/api/ctxp -- global context limits (model-name globs, apply to all instances)
   if (api === 'ctxp') {
     if (req.method === 'GET') return jsonRes(res, 200, { ok: true, rules: ctxp.loadRules() });
     let b2;
@@ -1363,7 +1363,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     const cur = ctxp.loadRules();
     let rules;
     if (b2.rules && typeof b2.rules === 'object') {
-      // 整表替换(HTML 编辑器路径)
+      // whole-table replace (HTML editor path)
       rules = {};
       for (const [pat, r] of Object.entries(b2.rules)) {
         const mx = Math.max(0, ctxp.parseNum(r && r.max) || 0);
@@ -1372,7 +1372,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
         rules[String(pat).trim()] = { max: mx, warn: wn };
       }
     } else {
-      // 单条设置: { model, max, warn } — max/warn 缺省沿用旧值, 0 = 清除该侧
+// Single entry: { model, max, warn } -- omitted max/warn keep the old value, 0 clears that side
       const pat = String(b2.model || '').trim();
       if (!pat) return jsonRes(res, 400, { error: '缺少 model (模型名通配)' });
       const prev = cur[pat] || {};
@@ -1383,19 +1383,19 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       else cur[pat] = { max: mx, warn: wn };
       rules = cur;
     }
-    // warn<=max 校验(整表路径也逐条查)
+// warn<=max validation (checked row by row on the whole-table path too)
     for (const [pat, r] of Object.entries(rules)) {
       if (r.max > 0 && r.warn > r.max) return jsonRes(res, 400, { error: '规则 ' + pat + ': warn (' + r.warn + ') 不得高于 max (' + r.max + ')' });
     }
     try { ctxp.writeRules(rules); } catch (e) { return jsonRes(res, 500, { error: '写入失败: ' + e.message }); }
-    // 热生效: 直接更新进程内全部实例
+    // hot apply: update every in-process instance directly
     let n = 0;
     if (POOL) { for (const [, c] of POOL.instances) { c._ctxpRules = rules; n++; } }
-    else if (cfg) { cfg._ctxpRules = rules; n = 1; } // 单实例模式: 直接热生效当前实例
+else if (cfg) { cfg._ctxpRules = rules; n = 1; } // single-instance mode: hot-apply to the current instance directly
     return jsonRes(res, 200, { ok: true, rules, applied: n });
   }
 
-  // GET/POST /admin/api/context-windows/:name — 上下文窗口匹配表(有序, 支持 * 通配)
+// GET/POST /admin/api/context-windows/:name -- context window match table (ordered, * wildcard supported)
   if (api.startsWith('context-windows/')) {
     const name = decodeURIComponent(api.slice('context-windows/'.length));
     const c = loadCfg(name);
@@ -1408,7 +1408,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       .filter(x => x && String(x.match || '').trim())
       .map(x => ({ match: String(x.match).trim(), window: Math.max(0, Number(x.window) || 0) }))
       .filter(x => x.window > 0);
-    // 软/硬上限(百分比)与估算比例: 没带就沿用旧值
+// Soft/hard limits (percent) and the estimate ratio: omitted values inherit the old ones
     if (b.soft !== undefined || b.hard !== undefined || b.charsPerToken !== undefined) {
       const prev = (c.contextLimit && typeof c.contextLimit === 'object') ? c.contextLimit : {};
       const soft = Number(b.soft !== undefined ? b.soft : prev.soft);
@@ -1433,7 +1433,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, { ok: true, applied: 'saved', windows: c.contextWindows, limit: c.contextLimit || {} });
   }
 
-  // GET/POST /admin/api/route-once/:name — 一次性路由: 只作用于下一次请求, 不落盘, 用后自清
+// GET/POST /admin/api/route-once/:name -- one-shot routing: affects only the next request, never persisted, self-clearing after use
   if (api.startsWith('route-once/')) {
     const name = decodeURIComponent(api.slice('route-once/'.length));
     const live = POOL ? POOL.instances.get(name) : (name === currentName(cfg) ? cfg : null);
@@ -1447,7 +1447,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, { ok: true, channel: ch });
   }
 
-  // GET/POST /admin/api/route/:name — 手动路由(持久): 固定到某个渠道, 空 channel = 恢复自动
+// GET/POST /admin/api/route/:name -- manual routing (persistent): pin to a channel; empty channel = back to auto
   if (api.startsWith('route/')) {
     const name = decodeURIComponent(api.slice('route/'.length));
     const c = loadCfg(name);
@@ -1472,7 +1472,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return;
   }
 
-  // DELETE /admin/api/channel/:name/:chname — 删除渠道
+// DELETE /admin/api/channel/:name/:chname -- delete a channel
   if (req.method === 'DELETE' && api.startsWith('channel/')) {
     const parts = api.slice('channel/'.length).split('/');
     const name = decodeURIComponent(parts[0]);
@@ -1494,7 +1494,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 404, { error: '渠道不存在' });
   }
 
-  // DELETE /admin/api/instance/:name — 删除实例(先停止进程, 再删配置/日志/pid; default 与面板宿主不可删)
+// DELETE /admin/api/instance/:name -- delete an instance (stops the process first, then removes config/log/pid; default and the panel host cannot be deleted)
   if (req.method === 'DELETE' && api.startsWith('instance/')) {
     const name = decodeURIComponent(api.slice('instance/'.length));
     if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) return jsonRes(res, 400, { error: '实例名非法' });
@@ -1504,14 +1504,14 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     if (POOL) { try { POOL.removeInst(name); } catch (_) {} }
     else { await runAgw(['stop', name]); } // 旧多进程模式: 运行中先停止
     try { fs.unlinkSync(cfgFile(name)); } catch (e) { return jsonRes(res, 500, { error: '删除配置失败: ' + e.message }); }
-    cfgCacheClear(); // 文件已删除, 清缓存防残留
+cfgCacheClear(); // file deleted; clear the cache to avoid leftovers
     try { fs.unlinkSync(path.join(MLOG(), name + '.log')); } catch (e) {}
     try { fs.unlinkSync(path.join(MRUN(), name + '.pid')); } catch (e) {}
     return jsonRes(res, 200, { ok: true });
   }
 
-  // ============ 管理端第二验证配置 ============
-  // GET /admin/api/admin-auth/:inst — 查看第二验证状态(不返回密钥明文)
+// ============ Admin second-factor config ============
+// GET /admin/api/admin-auth/:inst -- second-factor status (never returns the secret itself)
   if (req.method === 'GET' && api.startsWith('admin-auth/')) {
     const name = decodeURIComponent(api.slice('admin-auth/'.length));
     const c = loadCfg(name);
@@ -1521,13 +1521,13 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       hasWebToken: !!c.webToken,
       secondKeySet: !!aa.secondKey,
       totpEnabled: !!aa.totpSecret,
-      totpSecret: aa.totpSecret || null, // 已设置才返回(供二维码展示)
-      profile: c.adminProfile || {},       // 管理端资料(agw admin profile)
-      expireAt: c.adminExpireAt || 0,      // 面板会话到期时间(agw admin expire)
+totpSecret: aa.totpSecret || null, // returned only when set (for QR display)
+profile: c.adminProfile || {},       // admin profile (agw admin profile)
+expireAt: c.adminExpireAt || 0,      // panel session expiry (agw admin expire)
     });
   }
 
-  // POST /admin/api/admin-auth/:inst — 配置 {secondKey?, totpAction?: 'enable'|'disable'}
+// POST /admin/api/admin-auth/:inst -- configure {secondKey?, totpAction?: 'enable'|'disable'}
   if (req.method === 'POST' && api.startsWith('admin-auth/')) {
     const name = decodeURIComponent(api.slice('admin-auth/'.length));
     const c = loadCfg(name);
@@ -1553,8 +1553,8 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, out);
   }
 
-  // ============ 用户管理(账密登录体系) ============
-  // GET /admin/api/users/:inst — 用户列表
+// ============ User management (credential login system) ============
+// GET /admin/api/users/:inst -- user list
   if (req.method === 'GET' && api.startsWith('users/')) {
     const name = decodeURIComponent(api.slice('users/'.length));
     const c = loadCfg(name);
@@ -1567,7 +1567,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, { users });
   }
 
-  // POST /admin/api/users/:inst — 新建用户 {uid?, name, password, note}
+// POST /admin/api/users/:inst -- create a user {uid?, name, password, note}
   if (req.method === 'POST' && /^users\/[^/]+$/.test(api)) {
     const name = decodeURIComponent(api.slice('users/'.length));
     const c = loadCfg(name);
@@ -1590,7 +1590,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, { ok: true, uid });
   }
 
-  // POST /admin/api/users-update/:inst — 改用户 {uid, name?, password?, note?}
+// POST /admin/api/users-update/:inst -- edit a user {uid, name?, password?, note?}
   if (req.method === 'POST' && api.startsWith('users-update/')) {
     const name = decodeURIComponent(api.slice('users-update/'.length));
     const c = loadCfg(name);
@@ -1610,7 +1610,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, { ok: true });
   }
 
-  // DELETE /admin/api/users/:inst/:uid — 删用户(不删其卡密)
+// DELETE /admin/api/users/:inst/:uid -- delete a user (their key cards stay)
   if (req.method === 'DELETE' && api.startsWith('users/')) {
     const rest = api.slice('users/'.length);
     const idx = rest.indexOf('/');
@@ -1630,13 +1630,13 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     }
   }
 
-  // ============ 卡密管理(多用户Key) ============
-  // GET /admin/api/keys/:inst — 卡密列表(管理员全量可见, 含用量)
+// ============ Key card management (multi-user keys) ============
+// GET /admin/api/keys/:inst -- key card list (fully visible to admins, including usage)
   if (req.method === 'GET' && api.startsWith('keys/')) {
     const name = decodeURIComponent(api.slice('keys/'.length));
     const c = loadCfg(name);
     if (!c) return jsonRes(res, 404, { error: '实例不存在' });
-    // 池内实例用量以内存为准(落盘有延迟)
+    // in-pool usage counts come from memory (disk lags)
     const live = POOL && POOL.instances.get(name);
     const liveMap = {};
     if (live && Array.isArray(live.apiKeys)) for (const k of live.apiKeys) liveMap[k.key] = k.usedTokens || 0;
@@ -1651,7 +1651,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, { keys, gatewayKeySet: !!c.gatewayKey });
   }
 
-  // POST /admin/api/keys/:inst — 发卡 {name, quotaTokens, models, channels, expiresAt, note} → 返回完整key
+// POST /admin/api/keys/:inst -- issue a card {name, quotaTokens, models, channels, expiresAt, note} -> returns the full key
   if (req.method === 'POST' && /^keys\/[^/]+$/.test(api)) {
     const name = decodeURIComponent(api.slice('keys/'.length));
     const c = loadCfg(name);
@@ -1680,7 +1680,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, { ok: true, key: nk });
   }
 
-  // POST /admin/api/keys-update/:inst — 修改卡密 {key, enable?, quotaTokens?, addQuota?, resetUsage?, name?, models?, channels?, expiresAt?, note?}
+// POST /admin/api/keys-update/:inst -- edit a key card {key, enable?, quotaTokens?, addQuota?, resetUsage?, name?, models?, channels?, expiresAt?, note?}
   if (req.method === 'POST' && api.startsWith('keys-update/')) {
     const name = decodeURIComponent(api.slice('keys-update/'.length));
     const c = loadCfg(name);
@@ -1697,7 +1697,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     if (data.redact !== undefined) k.redact = (data.redact == null) ? null : !!data.redact;
     if (data.expiresAt !== undefined) k.expiresAt = String(data.expiresAt || '').trim();
     if (data.note !== undefined) k.note = String(data.note).trim().slice(0, 200);
-    // 内存态调整(用量/加额度), 落盘以内存为准
+// In-memory adjustments (usage/quota); memory wins over disk
     const live = POOL && POOL.instances.get(name);
     const lk = live && (live.apiKeys || []).find(x => x.key === data.key);
     if (data.resetUsage) { k.usedTokens = 0; if (lk) lk.usedTokens = 0; }
@@ -1707,7 +1707,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, { ok: true, hotReload: !!POOL });
   }
 
-  // DELETE /admin/api/keys/:inst/:key — 删除卡密
+// DELETE /admin/api/keys/:inst/:key -- delete a key card
   if (req.method === 'DELETE' && api.startsWith('keys/')) {
     const rest = api.slice('keys/'.length);
     const idx = rest.indexOf('/');
@@ -1727,9 +1727,9 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     }
   }
 
-  // ============ 渠道余额代查 ============
-  // 实现由 gateway.js 注入(setBalanceFn): 走渠道 proxy/insecure/超时, 预设 + 渠道级 balanceUrl/balancePath/balanceUnit 覆盖
-  // GET /admin/api/balance/:inst/:ch — 代查渠道余额(用渠道 apiKey)
+// ============ Channel balance proxy lookup ============
+// Implementation injected by gateway.js (setBalanceFn): uses the channel proxy/insecure/timeouts; presets + channel-level balanceUrl/balancePath/balanceUnit overrides
+// GET /admin/api/balance/:inst/:ch -- proxy-lookup a channel balance (uses the channel apiKey)
   if (req.method === 'GET' && api.startsWith('balance/')) {
     const rest = api.slice('balance/'.length);
     const idx = rest.indexOf('/');
@@ -1747,7 +1747,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     });
   }
 
-  // ============ cloudflared 公网隧道(免费临时域名) ============
+// ============ cloudflared public tunnel (free temporary domain) ============
   if (api === 'tunnel' || api.startsWith('tunnel?')) {
     const mainPort = () => (POOL && POOL.mainPort) || (cfg.listen && cfg.listen.port) || 16384;
     const doStart = () => {
@@ -1805,7 +1805,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     }
   }
 
-  // POST /admin/api/probe/:inst — 立即对开启 probe 的渠道探测一轮
+// POST /admin/api/probe/:inst -- run a probe round immediately on channels with probe enabled
   if (req.method === 'POST' && /^probe\/[^/]+$/.test(api)) {
     const name = decodeURIComponent(api.slice('probe/'.length));
     const tc = POOL && POOL.instances.get(name);
@@ -1816,7 +1816,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, { ok: true, probe: tc._stats.probe || {}, debug: (tc.channels || []).map(c => ({ name: c.name, probe: !!c.probe })) });
   }
 
-  // POST /admin/api/instance-rename/:name — 实例改名(单进程模式热生效; body {newName})
+// POST /admin/api/instance-rename/:name -- rename an instance (hot in single-process mode; body {newName})
   if (req.method === 'POST' && api.startsWith('instance-rename/')) {
     const name = decodeURIComponent(api.slice('instance-rename/'.length));
     let data; try { data = JSON.parse(bodyStr || '{}'); } catch (e) { return jsonRes(res, 400, { error: 'JSON 无效' }); }
@@ -1827,18 +1827,18 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     if (newName === name) return jsonRes(res, 400, { error: '新旧名称相同' });
     if (!fs.existsSync(cfgFile(name))) return jsonRes(res, 404, { error: '实例不存在: ' + name });
     if (fs.existsSync(cfgFile(newName))) return jsonRes(res, 409, { error: '实例名已存在: ' + newName });
-    // 1) 改配置文件名(内容不动, 加密文件同样适用)
+// 1) rename the config file (content untouched; works for encrypted files too)
     try { fs.renameSync(cfgFile(name), cfgFile(newName)); }
     catch (e) { return jsonRes(res, 500, { error: '重命名配置文件失败: ' + e.message }); }
-    cfgCacheClear(); // 文件名变了 → 缓存键失效, 清掉防串味
-    // 2) 顺带改日志/pid/卡密用量文件名(尽力而为)
+cfgCacheClear(); // the file name changed -> cache keys are stale; clear to avoid cross-contamination
+// 2) also rename log/pid/key-usage files (best effort)
     try { fs.renameSync(path.join(MLOG(), name + '.log'), path.join(MLOG(), newName + '.log')); } catch (_) {}
     try { fs.renameSync(path.join(MRUN(), name + '.pid'), path.join(MRUN(), newName + '.pid')); } catch (_) {}
     try { fs.renameSync(path.join(MLOG(), 'keyusage-' + name + '.json'), path.join(MLOG(), 'keyusage-' + newName + '.json')); } catch (_) {}
-    // 3) 单进程模式: 池内热改名(立即生效, 旧端口关闭新端口监听)
+// 3) single-process mode: hot rename inside the pool (effective immediately; old port closed, new port listening)
     if (POOL) {
       try { POOL.renameInst(name, newName); }
-      catch (e) { /* 池内没有就冷加载 */ try { POOL.reload(newName); } catch (_) {} }
+catch (e) { /* cold-load when not in the pool */ try { POOL.reload(newName); } catch (_) {} }
       return jsonRes(res, 200, { ok: true, hotReload: true, name: newName, url: '/' + newName + '/v1' });
     }
     jsonRes(res, 200, { ok: true, name: newName, restarting: true });
@@ -1846,7 +1846,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return;
   }
 
-  // POST /admin/api/sync-models[?instance=X] — 立即同步指定实例(缺省=承载实例)的渠道模型列表
+// POST /admin/api/sync-models[?instance=X] -- sync channel model lists immediately for the given instance (default = the hosting instance)
   if (req.method === 'POST' && api === 'sync-models') {
     if (!syncFn) return jsonRes(res, 501, { error: '网关未提供同步能力' });
     let inst = (u.searchParams && u.searchParams.get('instance')) || '';
@@ -1858,7 +1858,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     } catch (e) { return jsonRes(res, 502, { error: e.message }); }
   }
 
-  // POST /admin/api/channel-models/:inst — 拉取渠道上游模型列表(服务端代 fetch: 避免浏览器CORS, 用真实apiKey与渠道代理)
+// POST /admin/api/channel-models/:inst -- fetch a channel's upstream model list (server-side fetch: avoids browser CORS, uses the real apiKey and channel proxy)
   if (req.method === 'POST' && api.startsWith('channel-models/')) {
     const inst = decodeURIComponent(api.slice('channel-models/'.length));
     const c = loadCfg(inst);
@@ -1884,7 +1884,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     const name = decodeURIComponent(parts[0]);
     const action = parts[1];
     if (!['start', 'stop', 'restart'].includes(action)) return jsonRes(res, 400, { error: '未知操作' });
-    // ===== 单进程多实例模式: 启停=热加载/摘除, 瞬间完成, 不需要 setsid 重启脚本 =====
+// ===== Single-process multi-instance mode: start/stop = hot load/detach, instant, no setsid restart script =====
     if (POOL) {
       if (action === 'stop' && name === 'default') return jsonRes(res, 400, { error: 'default 是主实例(主端口所在), 不能停止; 要全停用 shutdown-all' });
       if (action === 'stop') {
@@ -1892,16 +1892,16 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
         POOL.removeInst(name);
         return jsonRes(res, 200, { ok: true, hot: true, output: '实例 ' + name + ' 已从池中摘除(配置保留, start 可恢复)' });
       }
-      // start / restart 都是 (重新)加载
+// both start and restart (re)load
       const c = POOL.reload(name);
       if (!c) return jsonRes(res, 404, { error: '实例配置不存在: ' + name });
       return jsonRes(res, 200, { ok: true, hot: true, output: (action === 'start' ? '已加载' : '已热重载') + '实例 ' + name + ' (' + c.channels.length + ' 渠道)' });
     }
-    // 操作目标是当前实例自己: stop/restart 会导致进程自杀, 响应中断 + start 可能执行不到
-    // → 先回复客户端, 再用 setsid 启动完全独立的子进程执行 stop/start (脱离父进程组, 父死不影响)
+    // the target is this very instance: stop/restart would kill our own process (response cut off + start may never run)
+// -> reply to the client first, then run stop/start in a fully detached setsid child (leaves the parent's process group; survives the parent's death)
     if (name === currentName(cfg) && (action === 'stop' || action === 'restart')) {
       jsonRes(res, 200, { ok: true, output: action + ' ' + name + ' (自我' + (action==='restart'?'重启':'停止') + ', 稍候生效, 请刷新页面)', self: true });
-      // 写临时脚本: setsid + nohup 确保脱离进程组, 父进程死亡后仍能执行完
+// Write a temp script: setsid + nohup so it escapes the process group and finishes even if the parent dies
       const tmpScript = path.join(os.tmpdir() || CORE, '.agw-self-' + action + '.sh');
       const agwPath = path.join(CORE, 'agw.sh');
       if (action === 'restart') {
@@ -1910,7 +1910,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
         fs.writeFileSync(tmpScript, '#!/bin/bash\nsleep 1\nbash "' + agwPath + '" stop ' + name + ' 2>/dev/null\nrm -f "' + tmpScript + '"\n');
       }
       fs.chmodSync(tmpScript, 0o755);
-      // setsid 开新会话, stdio ignore, unref — 父进程被杀后这个脚本继续跑
+// setsid opens a new session, stdio ignored, unref -- the script keeps running after the parent is killed
       const cp = exec('setsid bash "' + tmpScript + '" </dev/null >/dev/null 2>&1 &', { stdio: 'ignore' }, () => {});
       try { cp.unref(); } catch (e) {}
       return;
@@ -1919,10 +1919,10 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return jsonRes(res, 200, { ok: r.ok, output: (r.stdout + r.stderr).trim() });
   }
 
-  // POST /admin/api/shutdown-all — 关闭所有实例(含自己, 面板随之失效)
-  // 直接 process.kill 各实例 pid(先杀别人, 最后杀自己), 不依赖 bash 子进程(避免父进程死亡导致子进程中断)
+// POST /admin/api/shutdown-all -- shut down all instances (including itself; the panel dies with it)
+  // process.kill each instance pid directly (others first, itself last), no bash child (so a dying parent cannot interrupt the children)
   if (req.method === 'POST' && api === 'shutdown-all') {
-    // 单进程模式: 一个进程托管全部实例, 关闭=本进程退出
+// Single-process mode: one process hosts all instances; shutdown = this process exits
     if (POOL) {
       jsonRes(res, 200, { ok: true, message: '单进程模式: 正在关闭网关进程(所有实例随之停止)...' });
       setTimeout(() => { try { process.kill(process.pid, 'SIGTERM'); } catch (e) {} }, 500);
@@ -1932,20 +1932,20 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     const myPid = process.pid;
     setTimeout(() => {
       for (const name of listInstances()) {
-        if (name === currentName(cfg)) continue; // 自己最后杀
+if (name === currentName(cfg)) continue; // kill ourselves last
         try {
           const pid = parseInt(fs.readFileSync(path.join(MRUN(), name + '.pid'), 'utf8').trim(), 10);
           if (pid && pid !== myPid) { try { process.kill(pid, 'SIGTERM'); } catch (e) {} }
         } catch (e) {}
       }
-      // 1秒后杀自己(给其他实例留时间优雅退出)
+// kill ourselves after 1s (leaves other instances time to exit gracefully)
       setTimeout(() => { try { process.kill(myPid, 'SIGTERM'); } catch (e) {} }, 1000);
     }, 500);
     return;
   }
 
-  // POST /admin/api/chat — 聊天测试(代理到目标实例 /v1/chat/completions, 自动注入 gatewayKey, 透传流式)
-  // body 里可带 instance 指定目标实例(面板顶栏选中的实例), 缺省=本实例
+// POST /admin/api/chat -- chat test (proxies to the target instance's /v1/chat/completions, injects gatewayKey automatically, streaming passes through)
+// body may carry instance to pick the target (the panel's top-bar selection); default = this instance
   if (req.method === 'POST' && api === 'chat') {
     let target = cfg, bodyOut = bodyStr || '{}';
     try {
@@ -1962,17 +1962,17 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     let port = (target.listen || {}).port || 16384;
     let apiPath = '/v1/chat/completions';
     const gwKey = target.gatewayKey || '';
-    // 单进程模式: 直接打主端口的 /实例名/ 前缀路径(各实例旧端口可能已不开)
+// Single-process mode: hit the main port's /<instance>/ prefix directly (old instance ports may no longer be open)
     if (POOL) {
       port = POOL.mainPort;
       const tname = target._name || currentName(target);
       if (tname && tname !== 'default') apiPath = '/' + tname + '/v1/chat/completions';
     }
-    // 目标监听若为 TLS(含同端口纯 HTTPS), 回环改走 https
+    // when the target listener is TLS (including same-port pure HTTPS), loopback switches to https
     const chatTls = ((POOL ? cfg : target).tls) || {};
     const chatUseTls = !!chatTls.enable;
     const opts = { host: '127.0.0.1', port, path: apiPath, method: 'POST', headers: { 'Content-Type': 'application/json' } };
-    if (chatUseTls) opts.rejectUnauthorized = false; // 私有 CA 签发
+if (chatUseTls) opts.rejectUnauthorized = false; // signed by the private CA
     if (gwKey) opts.headers['authorization'] = 'Bearer ' + gwKey;
     const up = (chatUseTls ? https2 : http).request(opts, upRes => {
       res.writeHead(upRes.statusCode, { 'Content-Type': upRes.headers['content-type'] || 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS' });
@@ -1984,7 +1984,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return;
   }
 
-  // GET /admin/api/logs/:name — 读日志
+// GET /admin/api/logs/:name -- read logs
   if (req.method === 'GET' && api.startsWith('logs/')) {
     const name = decodeURIComponent(api.slice('logs/'.length));
     const lines = parseInt(u.searchParams.get('lines') || '50', 10) || 50;
@@ -1996,11 +1996,11 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     if (!m || !m.size) return 0;
     const now = Date.now();
     let n = 0;
-    for (const [, t] of m) if (now - t < 120000) n++;   // 2 分钟没结算的算脏数据
+for (const [, t] of m) if (now - t < 120000) n++;   // unsettled for 2 minutes counts as dirty
     return n;
   }
 
-// 实例仪表字段(供 agw inst/admin 等 CLI 用; 原 /status 已删除)
+// Instance dashboard fields (for CLI commands like agw inst/admin; the old /status was removed)
 function dashOf(c) {
   return {
     version: VERSION, listen: c.listen,
@@ -2009,7 +2009,7 @@ function dashOf(c) {
   };
 }
 
-  // GET /admin/api/stats?instance=X — 实例实时统计(支持跨实例本机代理)
+// GET /admin/api/stats?instance=X -- live instance stats (cross-instance local proxy supported)
   if (req.method === 'GET' && api === 'stats') {
     const inst = u.searchParams.get('instance') || currentName(cfg);
     if (inst === currentName(cfg)) {
@@ -2020,7 +2020,7 @@ function dashOf(c) {
         uptime: Math.round(process.uptime()),
       }));
     }
-    // 单进程模式: 池内直读, 无需 HTTP 回环
+// Single-process mode: read the pool directly, no HTTP loopback
     if (POOL) {
       const tc = POOL.instances.get(inst);
       if (!tc) return jsonRes(res, 404, { error: '实例未在运行: ' + inst });
@@ -2032,7 +2032,7 @@ function dashOf(c) {
     return jsonRes(res, 200, Object.assign({ requests: st.requests || 0, errors: st.errors || 0, byChannel: st.byChannel || {}, startedAt: j.startedAt, uptime: j.uptime || 0 }, { version: j.version, listen: j.listen, channels: j.channels, probe: j.probe }));
   }
 
-  // GET /admin/api/active — 最近活跃实例(只读各实例内存里的 _lastCtx, 不打上游)
+// GET /admin/api/active -- most recently active instance (reads in-memory _lastCtx only; never hits the upstream)
   if (req.method === 'GET' && api === 'active') {
     const out = [];
     if (POOL) {
@@ -2052,13 +2052,13 @@ function dashOf(c) {
     return jsonRes(res, 200, { current: currentName(cfg), active: out.slice(0, 12) });
   }
 
-  // GET /admin/api/requests/:name — 请求记录(环形缓冲, 支持跨实例代理)
+// GET /admin/api/requests/:name -- request log (ring buffer, cross-instance proxy supported)
   if (req.method === 'GET' && api.startsWith('requests/')) {
     const inst = decodeURIComponent(api.slice('requests/'.length));
     if (inst === currentName(cfg)) {
       return jsonRes(res, 200, cfg._stats.recent || []);
     }
-    // 单进程模式: 池内直读
+// Single-process mode: read the pool directly
     if (POOL) {
       const tc = POOL.instances.get(inst);
       if (!tc) return jsonRes(res, 200, []);
@@ -2069,7 +2069,7 @@ function dashOf(c) {
     return jsonRes(res, 200, Array.isArray(j) ? j : (j.recent || []));
   }
 
-  // GET /admin/api/record-body/:name?id=req_xxx — 从本机 JSONL 记录文件里按 id 查请求/响应正文
+// GET /admin/api/record-body/:name?id=req_xxx -- look up a request/response body by id in the local JSONL record file
   if (req.method === 'GET' && api.startsWith('record-body/')) {
     const name = decodeURIComponent(api.slice('record-body/'.length));
     const id = (u.searchParams && u.searchParams.get('id')) || '';
@@ -2091,7 +2091,7 @@ function dashOf(c) {
   return jsonRes(res, 404, { error: '未知 API: ' + api });
 }
 
-/* ====================== MD3 风格 HTML ====================== */
+/* ====================== MD3-style HTML ====================== */
 function adminHTML(cfg) {
   const instName = cfg._configFile ? path.basename(cfg._configFile, '.json').replace(/^config\./, '') : 'default';
   return `<!DOCTYPE html>
@@ -2214,7 +2214,7 @@ const adminKey = new URLSearchParams(location.search).get('key') || (document.co
 const hdr = { 'x-agw-token': adminKey, 'Content-Type': 'application/json' };
 let curTab='instances', curInst='\${instName}';
 
-// 如果没密码, 弹框输入并写 cookie
+// With no password set, prompt for one and store the cookie
 if(!adminKey){
   const input = prompt('请输入访问令牌 (webToken, agw admin login 生成):');
   if(input){
@@ -2322,7 +2322,7 @@ function openChannelModal(ch){
     <div class="field"><label><input type="checkbox" id="ch-default" \${ch.default?'checked':''} style="width:auto;margin-right:6px">设为 default (兜底渠道)</label></div>
     <div class="flex" style="margin-top:16px"><button class="btn" onclick="saveChannel()">保存</button><button class="btn outline" onclick="closeModal()">取消</button></div>\`;
   document.getElementById('modal-bg').classList.add('show');
-  // 填充代理选项
+// Fill the proxy options
   api('GET','config/'+curInst).then(c=>{const sel=document.getElementById('ch-proxy');Object.keys(c.proxies||{}).forEach(p=>{const o=document.createElement('option');o.value=p;o.textContent=p;if(ch.proxy===p)o.selected=true;sel.appendChild(o)})});
 }
 async function saveChannel(){

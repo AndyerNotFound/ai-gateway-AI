@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 'use strict';
 /*
- * 批量给所有实例开/关 TLS。两种形态：
- *   双开(默认)  tls.port = http + 10000，HTTP 原端口保留
- *   单端口      tls.port 留空 → 该实例只在原端口说 HTTPS（HTTP 入口消失）
+ * Toggle TLS for all instances in bulk. Two shapes:
+ *   dual (default)  tls.port = http + 10000, keeping the original HTTP port
+ *   single-port tls.port empty -> the instance serves HTTPS on its original port only (the HTTP entry disappears)
  *
- * 用法:
- *   node tls/batch-tls.js --dry-run          只看方案
- *   node tls/batch-tls.js                    双开（全部实例）
- *   node tls/batch-tls.js --pure             单端口纯 HTTPS（全部实例）
- *   node tls/batch-tls.js --off              全部关闭
- *   node tls/batch-tls.js --only A,B         只处理指定实例
- *   node tls/batch-tls.js --offset 20000     双开时改端口偏移
- *   node tls/batch-tls.js --no-restart       只写配置，不重启
+ * Usage:
+ *   node tls/batch-tls.js --dry-run          preview the plan only
+ *   node tls/batch-tls.js                    dual-stack (all instances)
+ *   node tls/batch-tls.js --pure             single-port pure HTTPS (all instances)
+ *   node tls/batch-tls.js --off              turn off everywhere
+ *   node tls/batch-tls.js --only A,B         process only the given instances
+ *   node tls/batch-tls.js --offset 20000     change the port offset in dual-stack mode
+ *   node tls/batch-tls.js --no-restart       write config only, no restart
  */
 const fs = require('fs');
 const path = require('path');

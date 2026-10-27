@@ -1,7 +1,7 @@
 #!/bin/bash
-# ai-gateway 一键安装脚本 (Linux / macOS / Termux)
-# 用法: curl -fsSL <raw地址>/install.sh | bash
-#    或: bash install.sh [安装目录]
+# ai-gateway one-shot installer (Linux / macOS / Termux)
+# Usage: curl -fsSL <raw-url>/install.sh | bash
+#    or: bash install.sh [install-dir]
 set -e
 
 DIR="${1:-$HOME/ai-gateway}"
@@ -10,7 +10,7 @@ REPO="https://raw.githubusercontent.com/AndyerNotFound/ai-gateway-AI/main"
 echo "=== ai-gateway 一键安装 ==="
 echo "安装目录: $DIR"
 
-# 1. 检查 Node.js
+# 1. Check Node.js
 if ! command -v node >/dev/null 2>&1; then
   echo "✗ 未找到 node。请先安装 Node.js 18+:"
   echo "   Termux:  pkg install nodejs"
@@ -22,7 +22,7 @@ NV=$(node -e 'console.log(process.versions.node.split(".")[0])')
 if [ "$NV" -lt 18 ]; then echo "✗ Node 版本过低 ($(node -v)), 需要 18+"; exit 1; fi
 echo "✓ node $(node -v)"
 
-# 2. 下载源码(已存在则跳过, 用 agw.sh restart 更新)
+# 2. Download the source (skip if present; update with agw.sh restart)
 mkdir -p "$DIR/m3"
 if [ -f "$DIR/gateway.js" ]; then
   echo "• 目录已存在, 跳过下载 (升级请重新运行)"
@@ -37,7 +37,7 @@ else
   echo "✓ 源码就绪"
 fi
 
-# 3. 初始化配置(已有配置跳过)
+# 3. Initialize config (skipped if config already exists)
 if [ -f "$DIR/config.json" ]; then
   echo "• 已有配置, 跳过初始化"
 else
@@ -62,7 +62,7 @@ EOF
   echo "✓ 配置已写入 $DIR/config.json"
 fi
 
-# 4. 启动
+# 4. Start
 mkdir -p "$DIR/log" "$DIR/.run"
 cd "$DIR"
 nohup node gateway.js >> log/gateway.log 2>&1 &

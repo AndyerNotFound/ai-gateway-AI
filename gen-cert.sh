@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# [DEPRECATED] 旧的自签证书生成器 —— 已被 tls/gen-server.sh(配 gen-ca.sh) 取代。
-# 现行链路: agw-tls setup → tls/gen-ca.sh + tls/gen-server.sh(证书落 data/, SAN 自动含全部局域网 IP)
-# 保留本文件仅为兼容旧文档/肌肉记忆; 新部署请勿使用。
+# [DEPRECATED] old self-signed cert generator -- replaced by tls/gen-server.sh (with gen-ca.sh).
+# Current flow: agw-tls setup -> tls/gen-ca.sh + tls/gen-server.sh (certs land in data/, SAN auto-includes all LAN IPs)
+# Kept only for compatibility with old docs/muscle memory; do not use for new deployments.
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 CN="${1:-localhost}"

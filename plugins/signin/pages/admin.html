@@ -28,7 +28,7 @@
 </div>
 <script>
 const $ = id => document.getElementById(id);
-// 推导实例名（/admin/... = default 无前缀；/<inst>/plugins/signin/... 有前缀）
+//// derive the instance name (/admin/... = default, no prefix; /<inst>/plugins/signin/... has one)
 const m = location.pathname.match(/^\/([^/]+)\/plugins\//);
 const INST = m ? m[1] : 'default';
 const API = (INST === 'default' ? '' : '/' + INST) + '/admin/api/plugins-config/' + INST + '/signin';

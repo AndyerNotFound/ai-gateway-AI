@@ -37,11 +37,11 @@
   <div id="msg"></div>
 </div>
 <script>
-// 推导插件 API 前缀（兼容 default 无实例前缀 / /<实例>/plugins/signin 有前缀）
+//// derive the plugin API prefix (handles default without an instance prefix / /<inst>/plugins/signin with one)
 const API = location.pathname.replace(/\/pages\/.*$/, '');
 const $ = id => document.getElementById(id);
 let token = '';
-// 优先从 App JSBridge 取当前登录卡密；否则用 localStorage 记忆
+// Prefer the currently logged-in key card from the App JSBridge; otherwise fall back to localStorage
 try { if (window.AGW && AGW.getToken) token = AGW.getToken() || ''; } catch (e) {}
 if (!token) token = localStorage.getItem('signin_token') || '';
 $('token').value = token;

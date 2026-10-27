@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# 用本地 CA 签发 ai-gateway 服务器证书。
-#   bash gen-server.sh            生成/更新 cert.pem + key.pem（SAN 自动含本机全部非回环 IPv4）
-#   bash gen-server.sh --ensure   仅当证书过期/不被本 CA 签发/SAN 缺当前 IP 时才重签（适合定时任务）
-#   bash gen-server.sh --force    无条件重签
-#   EXTRA_SAN="DNS:agw.local"     追加 SAN
-# 注意: Termux 下 `ip` 命令无法绑定 netlink（Android 11+），只能用 ifconfig 探测地址。
+# Issue the ai-gateway server certificate with the local CA.
+#   bash gen-server.sh            generate/update cert.pem + key.pem (SAN automatically includes all non-loopback IPv4 addresses)
+#   bash gen-server.sh --ensure   re-sign only when expired / not issued by this CA / SAN missing current IP (good for cron)
+#   bash gen-server.sh --force    re-sign unconditionally
+#   EXTRA_SAN="DNS:agw.local"     append extra SANs
+# Note: on Termux the `ip` command cannot bind netlink (Android 11+); probe addresses with ifconfig instead.
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$DIR")"
@@ -17,7 +17,7 @@ export PATH="$PATH:/data/data/com.termux/files/usr/bin"
 
 [ -f "$CA_PEM" ] || { echo "✗ 缺少 $CA_PEM，先运行: bash $DIR/gen-ca.sh"; exit 1; }
 
-# 输出 "接口名 IP"，优先 wlan/eth（局域网主地址）
+# Prints "interface IP", preferring wlan/eth (primary LAN addresses)
 detect_if_ip() {
   ifconfig 2>/dev/null | awk '/^[a-zA-Z0-9_.-]+:/{ifn=$1; sub(":","",ifn)} /inet /{print ifn, $2}' |
     grep -vE ' (127\.|$)' | awk '{print ($1 ~ /^(wlan|eth|ap|swlan)/ ? 0 : 1), $1, $2}' |

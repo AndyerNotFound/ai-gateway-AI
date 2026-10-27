@@ -11,33 +11,33 @@ const zlib = require('zlib');
 const { log, randId, utf8, rpApplyText, safeParse, logErr } = require('./util');
 const { cfgDirOf } = require('./router');
 
-// ================= DSML 工具调用解析/清洗(原 gateway.js 内联) =================
-const DSML_TAG_MAX = 256;      // 单个标签可信的最大长度(超了就当普通文本对待)
-const DSML_WS_MAX = 1024;      // "块尾空白"最多暂缓多少字符(超了直接放行)
-const DSML_BLOCK_MAX = 65536;  // 一个标记块最多吞吃多少字符(超过即 fail-open 放行)
-/* 标记前缀方言(实测三种): ① ｜DSML｜ —— 含 DSML 字样; ② 完全裸写 <invoke …>; ③ 只剩竖线 <｜tool_calls>。
- *   ①② 靠标签名识别; ③ 要求"竖线在关键字之前", 避免把正文里 <div data-k="a|b"> 误判成标记。 */
-const DSML_OPEN_CALLS = /<(?![\/])[^>]*DSML[^>]*(?:tool_)?calls>/i;         // ① 以 DSML 为准(防误吞正文)
-const DSML_OPEN_CALLS_WEAK = /<(?![\/])[^>]*[｜|][^>]*(?:tool_)?calls>/i;   // ③ 缺 DSML 字样、只剩竖线前缀
+// ================= DSML tool-call parsing/scrubbing (formerly inlined in gateway.js) =================
+const DSML_TAG_MAX = 256;      // max believable length of a single tag (longer = treat as plain text)
+const DSML_WS_MAX = 1024;      // max trailing whitespace deferred (beyond that, just release)
+const DSML_BLOCK_MAX = 65536;  // max characters swallowed per markup block (beyond that, fail open)
+/* Markup prefix dialects (three observed): (1) the bar with DSML in it (2) fully bare <invoke ...> (3) only the bar left, like <|tool_calls>.
+ *   (1)(2) are recognized by tag name; (3) requires "bar before the keyword" so content like <div data-k="a|b"> is not misread as markup. */
+const DSML_OPEN_CALLS = /<(?![\/])[^>]*DSML[^>]*(?:tool_)?calls>/i;         // (1) DSML-bearing is authoritative (avoids eating content)
+const DSML_OPEN_CALLS_WEAK = /<(?![\/])[^>]*[｜|][^>]*(?:tool_)?calls>/i;   // (3) no DSML text left, only the bar prefix
 const DSML_OPEN_INVOKE = /<(?![\/])(?:[^>]*[｜|][^>]*)?invoke\b[^>]*>/i;
-/* ★结束标记/内部标签允许"无 DSML 前缀"的裸写法: 实测 deepseek-v4.1-flash(NIM) 只给外层标签带 ｜DSML｜,
- *   内层是 <invoke name="…"> / <parameter …> / </invoke> / </tool_calls> —— 早期版本按"必须带 DSML"找终止符,
- *   结果永远找不到, 一路吞到流末尾: 内容被删干净了, 却从没构成"块结束", 回填也就无从触发(2026-10-16 实测)。 */
+/* *Closing tags / inner tags may appear bare without the DSML prefix: verified that deepseek-v4.1-flash (NIM) only puts the bar on the outer tag,
+ *   the inner layer is <invoke name="..."> / <parameter ...> / </invoke> / </tool_calls> -- earlier versions demanded a DSML marker on the terminator,
+ *   the terminator was never found, everything got eaten to stream end: content was wiped clean yet never counted as a "block end", so backfill never fired (verified 2026-10-16). */
 const DSML_CLOSE_CALLS = /<\/(?:[^>]*[｜|][^>]*)?(?:tool_)?calls>/i;
 const DSML_CLOSE_INVOKE = /<\/(?:[^>]*[｜|][^>]*)?invoke>/i;
 const DSML_ANY_TAG = /<[^>]*DSML[^>]*>/i;
-const DSML_BAR_KEY = /<[^>]*[｜|][^>]*(?:calls|invoke|parameter)\b/i;        // ③ 的通用识别(竖线+关键字)
-const DSML_BLOCK_TAG = /<\/?(?:[^>]*[｜|][^>]*)?(?:invoke|parameter|tool_calls|calls)\b[^>]*>/i;   // 块内/块尾标签
+const DSML_BAR_KEY = /<[^>]*[｜|][^>]*(?:calls|invoke|parameter)\b/i;        // generic (3) recognizer (bar + keyword)
+const DSML_BLOCK_TAG = /<\/?(?:[^>]*[｜|][^>]*)?(?:invoke|parameter|tool_calls|calls)\b[^>]*>/i;   // in-block / block-end tag
 const DSML_INVOKE_ANY = /<(?![\/])(?:[^>]*[｜|][^>]*)?invoke\b([^>]*)>([^]*?)<\/(?:[^>]*[｜|][^>]*)?invoke>/ig;
 const DSML_PARAM_ANY = /<(?![\/])(?:[^>]*[｜|][^>]*)?parameter\b([^>]*)>([^]*?)<\/(?:[^>]*[｜|][^>]*)?parameter>/ig;
 const DSML_ATTR_NAME = /name\s*=\s*[\"']([^\"']+)[\"']/i;
 const DSML_CALLS_TAG = /<\/?[^>]*[｜|][^>]*(?:tool_)?calls>/ig;
-/* 文本态调用 → [{name, arguments}]。值按原样取字符串; 若整段是 JSON 对象/数组则解析为对象
- * (MCP 工具有的期望对象参数)。解析不出来返回 null。 */
+/* Textual call -> [{name, arguments}]. Values are taken as raw strings; if the whole block is a JSON object/array it is parsed as such
+ * (some MCP tools expect object arguments). Returns null when unparseable. */
 function dsmlParseCall(block) {
   if (!block) return null;
-  /* ★不再强制要求块内出现 "DSML": 上游变体会写成裸 tag(tool_calls/invoke/parameter), 甚至整块只是 JSON。
-   *   只要求"结构上像一次调用"(含 invoke/parameter/tool_calls 标签, 或有 name= 属性), 否则不碰。 */
+/* *No longer strictly requires "DSML" inside a block: upstream variants emit bare tags (tool_calls/invoke/parameter), or even just JSON.
+   *   requires only "structurally call-like" (invoke/parameter/tool_calls tags, or a name= attribute); otherwise untouched. */
   const _raw = String(block);
   if (!/<(?![\/])(?:[^>]*[｜|][^>]*)?(?:invoke|function|tool|call|parameter|tool_calls|calls)\b/i.test(_raw)
       && !/name\s*=\s*["']/.test(_raw)) return null;
@@ -63,13 +63,13 @@ function dsmlParseCall(block) {
     out.push({ name: nm[1], arguments: JSON.stringify(args) });
   }
   if (out.length) return out;
-  return dsmlParseCallLoose(body);       // ② 宽松兜底: 缺 </invoke> / 自闭合 / 裸 JSON 形态
+return dsmlParseCallLoose(body);       // (2) loose fallback: missing </invoke> / self-closing / bare JSON shapes
 }
-/* ② 宽松兜底 —— 专门对付"结构不完整"的上游变体(小概率出现, 实测会造成整块被丢弃=空白):
- *     a) 模型漏写 </invoke> 或用了自闭合 <invoke name="x"/> → 标准配对正则配不上;
- *     b) <parameter …> 同样可能漏写 </parameter>;
- *     c) 整块其实是 JSON: {"name":"x","arguments":{…}} / [{"name":…}] / {"tool_calls":[…]}
- *   这里不再要求成对闭合: 取块内第一个 invoke/function/tool/call 标签的 name= 当函数名, 其后所有 parameter 归它。 */
+/* (2) Loose fallback -- targets "structurally incomplete" upstream variants (rare, but they demonstrably cause whole blocks to be dropped = blank output):
+ *     a) the model omits </invoke> or uses self-closing <invoke name="x"/> -> standard pairing regexes fail;
+ *     b) <parameter ...> may likewise omit </parameter>;
+ *     c) the whole block is actually JSON: {"name":"x","arguments":{...}} / [{"name":...}] / {"tool_calls":[...]}
+ *   paired closing is no longer required: the first invoke/function/tool/call tag's name= in the block becomes the function name, and all parameters after it belong to it. */
 function dsmlParseCallLoose(body) {
   const args = dsmlLooseParams(body);
   const nameTag = /<(?![\/])(?:[^>]*[｜|][^>]*)?(?:invoke|function|tool|call)\b([^>]*)>/i.exec(body);
@@ -95,7 +95,7 @@ function dsmlParseCallLoose(body) {
   }
   return null;
 }
-/* 宽松参数扫描: 不要求 </parameter> 闭合 —— 一个 <parameter …> 到下一个 <parameter 或块尾算它的值 */
+/* Loose parameter scan: </parameter> is not required -- a parameter's value runs from one <parameter ...> to the next <parameter or the block end */
 function dsmlLooseParams(body) {
   const re = /<(?![\/])(?:[^>]*DSML[^>]*)?parameter\b([^>]*)>/ig;
   const marks = [];
@@ -120,9 +120,9 @@ function dsmlLooseParams(body) {
   }
   return Object.keys(args).length ? args : null;
 }
-/* 回填闸: 函数名必须命中客户端本次声明的工具, 否则不回填(防"讨论 DSML 语法"被凭空造出一次调用) */
-/* ★留证: 任何"吞掉了标记块却没回填"的情况都写一行到 log/dsml-miss.log
- *   (默认开; AGW_DSML_MISS_LOG=off 可关, 也可指定绝对路径)。写盘失败自动闭嘴, 不影响主流程。 */
+/* Backfill gate: the function name must match a tool the client declared this round, otherwise no backfill (prevents "discussing DSML syntax" from conjuring a call) */
+/* *Evidence: every case of "markup block eaten but not backfilled" writes a line to log/dsml-miss.log
+ *   (on by default; AGW_DSML_MISS_LOG=off disables, or set an absolute path). Write failures silence it automatically without touching the main flow. */
 let _dsmlMissOff = false;
 function dsmlMissPath() {
   try {
@@ -141,12 +141,12 @@ function dsmlMissDump(reason, raw, extra) {
   } catch (_) { _dsmlMissOff = true; }
 }
 function dsmlNormName(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ''); }
-/* 回填闸: 函数名优先命中客户端本次声明的工具(防"讨论 DSML 语法"被凭空造出一次调用)。
- *   ★2026-10-16 放宽(实测完全同名会因大小写/命名空间差异漏掉 → 整块静默丢失):
- *     完全同名 → 规范化同名 → 单调用兜底(宁可回填也不静默丢正文); 每次放宽/失败都留证。 */
+/* Backfill gate: the function name must match a tool the client declared this round (prevents "discussing DSML syntax" from conjuring a call).
+ *   *2026-10-16 relaxation (verified: identical names still missed due to case/namespace differences -> whole blocks silently lost):
+ *     fully identical names -> normalized names -> single-call fallback (prefer backfill over silently losing content); every relaxation/failure leaves evidence. */
 function dsmlPickCall(calls, toolNames) {
   if (!calls || !calls.length) return null;
-  if (!toolNames) return null;                                       // 客户端没声明工具 → 不凭空白造
+if (!toolNames) return null;                                       // no tools declared by the client -> conjure nothing
   if (toolNames.size === 0) { dsmlMissDump('pick-no-declared-tools', calls.map(c => c.name).join(','), null); return null; }
   for (const c of calls) if (c && toolNames.has(c.name)) return c;
   for (const c of calls) {
@@ -158,25 +158,25 @@ function dsmlPickCall(calls, toolNames) {
       if (tn && (n === tn || n.endsWith(tn) || tn.endsWith(n))) { dsmlMissDump('pick-normalized', c.name, '→ ' + t); return c; }
     }
   }
-  if (calls.length === 1) {                                          // 单调用: 名字没对上, 也回填(否则 = 整块丢失)
+if (calls.length === 1) {                                          // single call: backfill even when the name misses (otherwise the whole block is lost)
     dsmlMissDump('pick-single-fallback', calls[0].name, 'declared=' + [...toolNames].join('|'));
     return calls[0];
   }
   dsmlMissDump('pick-rejected', calls.map(c => c.name).join('|'), 'declared=' + [...toolNames].join('|'));
   return null;
 }
-const DSML_TEXT_FIELD_RE = /^(content|text)$/;                              // 正文类字段
-const DSML_THINK_FIELD_RE = /^(reasoning_content|reasoning|thinking)$/;     // 思考类字段
+const DSML_TEXT_FIELD_RE = /^(content|text)$/;                              // content-type fields
+const DSML_THINK_FIELD_RE = /^(reasoning_content|reasoning|thinking)$/;     // thinking-type fields
 
 function dsmlNewState(canCall) { return { eat: null, held: '', pool: '', pend: '', polar: false, warned: false, canCall: !!canCall, call: null, openTag: '' }; }
 function dsmlActive(st) { return !!(st && (st.pend || st.held || st.eat)); }
-/* 喂一个内容片段 → 返回"现在就能发给客户端"的文本(可能为空: 被吞吃或被暂缓)
- * 状态字段:
- *   eat   非空 = 正在吞吃一个标记块('calls' | 'invoke')
- *   pool  已经吞掉、只为 fail-open 时原样放回的块内文本
- *   held  未闭合的标签尾巴(等后续片段把标签补全)
- *   pend  还没定性的尾巴(空白 [+ 半截结束标记]): 若跟着来的是 "</…calls>" 这种块尾, 就一起丢掉
- *   polar = 刚从"块内"出来且是靠内层结束标记兜底的 —— 此阶段才暂缓空白(等到看清是不是块尾)
+/* Feed a content fragment -> returns the text that can go to the client right now (may be empty: eaten or deferred)
+ * State fields:
+ *   eat   non-empty = currently swallowing a markup block ('calls' | 'invoke')
+ *   pool  block text already swallowed, kept only to be returned verbatim on fail-open
+ *   held  an unclosed tag tail (waiting for later fragments to complete it)
+ *   pend  an unclassified tail (whitespace [+ half a closing tag]): dropped together if a block end like "</...calls>" follows
+ *   polar = just exited a block, bailed out by an inner closing tag -- whitespace is deferred only in this phase (until it is clear whether this is a block end)
  */
 function dsmlFeed(st, s, final) {
   if (!st) return s == null ? '' : String(s);
@@ -191,12 +191,12 @@ function dsmlFeed(st, s, final) {
       let m = prim.exec(scoped), fb = false;
       if (!m && st.eat === 'calls') { m = DSML_CLOSE_INVOKE.exec(scoped); fb = !!m; } // 上游漏了外层结束标记时的兜底
       if (!m) {
-        /* ★结束标记也会被上游切成多段(</ + ｜DSML｜ + tool_calls>), 吞吃态里必须留一段尾巴参与拼接 ——
-         *   整段丢进 pool 的话结束标记永远拼不出来, 块会吃掉后面整条正文(实测复现)。 */
+/* *Closing tags also arrive split across chunks (</ + bar + tool_calls>); the eating state must keep a tail fragment for reassembly --
+         *   the whole segment went into pool, the closing tag could never be reassembled and the block ate all following content (reproduced). */
         const keep = Math.min(scoped.length, DSML_TAG_MAX);
         if (scoped.length > keep) st.pool += scoped.slice(0, scoped.length - keep);
         st.held = scoped.slice(scoped.length - keep);
-        if (st.pool.length + st.held.length > DSML_BLOCK_MAX) {   // ③ fail-open: 原样放回, 不吞正文
+if (st.pool.length + st.held.length > DSML_BLOCK_MAX) {   // (3) fail open: put back verbatim, never eat content
           dsmlMissDump('oversize-failopen', (st.openTag || '') + st.pool + st.held);
           if (!st.warned) { st.warned = true; try { log('[dsml] 吞吃 ' + (st.pool.length + st.held.length) + ' 字符仍未见结束标记, 判定为正文, 原样放行'); } catch (_) {} }
           out += (st.openTag || '') + st.pool + st.held; st.pool = ''; st.held = ''; st.openTag = ''; st.eat = null;
@@ -204,20 +204,20 @@ function dsmlFeed(st, s, final) {
         break;
       }
       const blockTxt = (st.openTag || '') + st.pool + st.held + scoped.slice(0, m.index + m[0].length);
-      if (st.canCall) {                                   // 正文里的标记块 → 先解析(回填要用), 再丢弃
+if (st.canCall) {                                   // markup block inside content -> parse first (backfill needs it), then drop
         let cs = null;
         try { cs = dsmlParseCall(blockTxt); } catch (e) { dsmlMissDump('parse-throw', blockTxt, e && e.message); }
         if (cs) st.call = (st.call || []).concat(cs);
         else dsmlMissDump('block-unparsed', blockTxt, fb ? 'closed-by-</invoke>' : null);   // ★不静默丢: 留证
       }
-      buf = scoped.slice(m.index + m[0].length);          // 整块(含结束标记)丢弃
+buf = scoped.slice(m.index + m[0].length);          // drop the whole block (closing tag included)
       st.pool = ''; st.held = ''; st.openTag = ''; st.eat = null; st.polar = fb; pos = 0;
       if (fb) polarAt = out.length;
       continue;
     }
     let i = buf.indexOf('<', pos);
     const iF = buf.indexOf('＜', pos);
-    if (iF >= 0 && (i < 0 || iF < i)) i = iF;    // ★全角左括号也算标签起点(防漏)
+if (iF >= 0 && (i < 0 || iF < i)) i = iF;    // *full-width opening bracket also counts as a tag start (leak prevention)
     if (i < 0) {
       const t = buf.slice(pos);
       const ws = st.polar ? (/[ \t\r\n]+$/.exec(t) || [''])[0] : '';
@@ -230,13 +230,13 @@ function dsmlFeed(st, s, final) {
     if (j < 0) {
       const ws = st.polar ? (/[ \t\r\n]+$/.exec(pre) || [''])[0] : '';
       out += ws ? pre.slice(0, pre.length - ws.length) : pre;
-      if (buf.length - i > DSML_TAG_MAX) { out += buf.slice(i); break; }   // 长不成标签 → 放行
-      st.pend = ws;                                                      // 空白要排在标签前面
-      st.held = buf.slice(i);                                            // 未闭合: 暂缓, 等后续片段补全
+if (buf.length - i > DSML_TAG_MAX) { out += buf.slice(i); break; }   // cannot grow into a tag -> release
+st.pend = ws;                                                      // whitespace must precede the tag
+st.held = buf.slice(i);                                            // unclosed: defer until later fragments complete it
       break;
     }
     const tag = buf.slice(i, j + 1);
-    const isDsml = DSML_ANY_TAG.test(tag) || DSML_BAR_KEY.test(tag) || DSML_BLOCK_TAG.test(tag);   // ★裸的 calls/invoke/parameter 也算标记(宁可误吞, 绝不让标记漏给客户端)
+const isDsml = DSML_ANY_TAG.test(tag) || DSML_BAR_KEY.test(tag) || DSML_BLOCK_TAG.test(tag);   // *bare calls/invoke/parameter count as markup (prefer over-eating; markup must never leak to the client)
     if (isDsml && tag.charAt(1) === '/') {                 // 孤立的块结束标记 → 连同它前面的空白一起丢
       out += st.polar ? pre.replace(/[ \t\r\n]+$/, '') : pre;
       pos = j + 1;
@@ -244,23 +244,23 @@ function dsmlFeed(st, s, final) {
     }
     out += pre;
     if (!isDsml) {
-      /* ② 全裸方言(<tool_calls> 连竖线都没有): 按设计不放行开始标记(怕吃掉正文里对格式的讨论), 但留证 */
+/* (2) Fully bare dialect (<tool_calls> without even a bar): by design the opening tag is not let through (to avoid eating content that discusses the format), but evidence is kept */
       if (!st.bareWarn && /^<\/?(?:tool_)?calls>$/i.test(tag)) {
         st.bareWarn = true;
         dsmlMissDump('bare-open-tag-leak', buf.slice(i, i + 240), '无前缀开始标记(疑似②全裸方言)');
       }
       out += tag; pos = j + 1; continue;
-    }   // 普通标签(<div>、"a < b") → 原样    // 普通标签(<div>、"a < b>") → 原样
+}   // ordinary tags (<div>, "a < b") -> verbatim    // ordinary tags (<div>, "a < b>") -> verbatim
     st.polar = false;
     if (DSML_OPEN_CALLS.test(tag) || DSML_OPEN_CALLS_WEAK.test(tag)) { st.eat = 'calls'; st.pool = ''; st.openTag = tag; pos = j + 1; continue; }
     if (DSML_OPEN_INVOKE.test(tag)) { st.eat = 'invoke'; st.pool = ''; st.openTag = tag; pos = j + 1; continue; }
-    pos = j + 1; continue;                                 // 其它孤立的 DSML 标签 → 丢掉
+pos = j + 1; continue;                                 // other stray DSML tags -> drop
   }
-  if (st.polar && polarAt >= 0 && /\S/.test(out.slice(polarAt))) st.polar = false; // 已发出非空白内容 → 不再是"块尾阶段"
+if (st.polar && polarAt >= 0 && /\S/.test(out.slice(polarAt))) st.polar = false; // non-whitespace emitted -> no longer in the "block-end phase"
   if (final) {
-    if (st.eat) {                                          // ④ 流结束时仍在块内(上游截断)
+if (st.eat) {                                          // (4) still inside a block at stream end (upstream truncated)
       const tail = (st.openTag || '') + st.pool + st.held;
-      let cs = null;                                       // ★截断也别直接丢: 能拼出调用就回填(小概率变体的主要空白来源)
+let cs = null;                                       // *never discard on truncation either: backfill whenever a call can be assembled (the main blank-output source among rare variants)
       try { cs = dsmlParseCall(tail); } catch (_) {}
       if (cs) st.call = (st.call || []).concat(cs);
       else if (tail.trim()) dsmlMissDump('truncated-drop', tail, 'len=' + tail.length);
@@ -271,17 +271,17 @@ function dsmlFeed(st, s, final) {
       st.pool = ''; st.held = ''; st.pend = ''; st.eat = null; st.openTag = '';
     } else {
       const orphan = st.pend + st.held;
-      /* ★流结束时释放的"未闭合尾巴"若是标记族(<…calls/invoke/parameter 或含 ｜/|/＜), 绝不能当正文发出去 ——
-       *   全角 ’＞’ 会让标签永远"未闭合", 收尾时把 <｜ calls> 原样漏给客户端(2026-10-16 用户实锤)。 */
+/* *If the "unclosed tail" released at stream end belongs to the markup family (<...calls/invoke/parameter, or containing full/half-width bars), it must never be emitted as content --
+       *   full-width '>' keeps a tag "unclosed" forever, leaking <| calls> verbatim to the client at finalization (user-confirmed 2026-10-16). */
       if (orphan && /(?:<|＜)[^]{0,80}(?:calls|invoke|parameter)\b|(?:<|＜)[^]{0,40}[｜|＜]/.test(orphan)) {
         dsmlMissDump('orphan-tag-released', orphan, 'hex=' + Buffer.from(orphan, 'utf8').toString('hex').slice(0, 300));
-      } else if (orphan) out += orphan;                    // 未闭合的普通尾巴当正文发出(不丢字)
+} else if (orphan) out += orphan;                    // an unclosed ordinary tail goes out as content (no loss)
       st.pend = ''; st.held = '';
     }
   }
   return out;
 }
-/* 清洗后这条流式分块是否已经"什么都不剩"(没有 delta 内容、没有 finish_reason/usage/message) */
+/* Whether the streaming chunk is left with "nothing at all" after scrubbing (no delta content, no finish_reason/usage/message) */
 function dsmlChunkPayloadEmpty(j) {
   const cs = j && j.choices;
   if (!Array.isArray(cs) || !cs.length) return false;
@@ -295,8 +295,8 @@ function dsmlChunkPayloadEmpty(j) {
   }
   return true;
 }
-/* 按字段路径(choices[0].delta.content 这种)各自一个状态机, 清洗响应对象里的正文/思考字段。
- * 只动白名单字段 —— role/id/model/finish_reason/tool 参数一律不碰。返回是否发生过改写。 */
+/* One state machine per field path (e.g. choices[0].delta.content); scrubs content/thinking fields in the response object.
+ * Only whitelisted fields are touched -- role/id/model/finish_reason/tool args are never modified. Returns whether any rewrite happened. */
 function dsmlCleanRespObj(j, states, final, withReasoning) {
   let changed = false;
   const walk = (v, path, depth) => {
@@ -317,8 +317,8 @@ function dsmlCleanRespObj(j, states, final, withReasoning) {
       const nt = dsmlFeed(s2, val, final);
       if (nt !== val) {
         changed = true;
-        /* ★清洗后只剩空白(整条 delta 就是标记 ± 换行) → 字段直接去掉。
-         *   留着 content:"" 会让客户端在"思考"和"工具调用"之间多插一段空正文(2026-10-16 实测复现)。 */
+/* *If only whitespace remains after scrubbing (the whole delta was markup +/- newlines) -> drop the field entirely.
+         *   keeping content:"" made clients insert an empty content segment between thinking and tool calls (reproduced 2026-10-16). */
         if (nt.trim() === '' && p.indexOf('.delta.') >= 0) delete v[k];
         else v[k] = nt;
       }
@@ -327,7 +327,7 @@ function dsmlCleanRespObj(j, states, final, withReasoning) {
   walk(j, '', 0);
   return changed;
 }
-/* canonical 事件层清洗(跨格式转换路径): 正文/思考各自一个状态机, tool_* 事件原样透传 */
+/* Canonical-event-level scrubbing (cross-format conversion path): one state machine each for content/thinking; tool_* events pass through untouched */
 function wrapDsmlClean(writer, cleanText, cleanReasoning, opts) {
   const toolNames = (opts && opts.toolNames) || null;
   const onDiag = (opts && opts.onDiag) || null;
@@ -371,7 +371,7 @@ function wrapDsmlClean(writer, cleanText, cleanReasoning, opts) {
         const r = stThink ? dsmlFeed(stThink, '', true) : '';
         if (r) writer.onEvent({ type: 'reasoning', t: r });
         stat.finishIn = ev.finish_reason || 'stop';
-        if (pending && toolNames && !sawTool) {                     // ★回填
+if (pending && toolNames && !sawTool) {                     // *backfill
           const pick = dsmlPickCall(pending, toolNames);
           if (pick) {
             writer.onEvent({ type: 'tool_start', i: 0, id: randId('call_dsml_'), name: pick.name });
@@ -390,12 +390,12 @@ function wrapDsmlClean(writer, cleanText, cleanReasoning, opts) {
     },
   };
 }
-/* 直通路径改写管道(2026-10-15): 同时承载 inc 文本替换与内置 DSML 清洗
- * ★收尾(末行残留 + 状态机残留)全在本管道内做: 上游最后一行没有换行时也不会丢字(旧版先 res.end() 会丢)。
- * ★只在真的需要改写时才重新序列化那一行, 其余行逐字节原样透传。 */
-/* ---- DSML 诊断日志(碰一下 <实例目录>/.dsml-diag 才记; 只记"形状", 不记正文) ----
- * 目的: 排查"文本态调用/空分块/回填有没有发生"——记录每轮响应的字段块数、是否见到 DSML、
- * 解析出的函数名、结构化调用数、finish 进出值、是否回填。不写任何正文内容。 */
+/* Passthrough rewrite pipe (2026-10-15): carries both inc text replacement and built-in DSML scrubbing
+ * *finalization (trailing partial line + state-machine residue) happens entirely inside this pipe: no bytes are lost even when the upstream's last line lacks a newline (the old res.end()-first version lost them).
+ * *only the line that truly needs a rewrite is re-serialized; every other line passes through byte-for-byte. */
+/* ---- DSML diagnostics log (records only while <instance-dir>/.dsml-diag exists; logs "shape" only, never content) ----
+ * Purpose: diagnosing whether textual calls / empty chunks / backfill happened -- logs per response the field chunk count, whether DSML was seen,
+ * the parsed function name, structured call count, finish in/out values, and whether backfill ran. No content is ever written. */
 let dsmlDiagCache = { t: 0, on: false, file: null };
 function dsmlDiagOn(cfg) {
   if (Date.now() - dsmlDiagCache.t < 5000) return dsmlDiagCache.on;
@@ -411,7 +411,7 @@ function dsmlDiagOn(cfg) {
 function dsmlDiag(cfg, rec) {
   try {
     if (!dsmlDiagOn(cfg) || !dsmlDiagCache.file) return;
-    fs.mkdirSync(path.dirname(dsmlDiagCache.file), { recursive: true });   // 没有 log 目录时建出来, 否则静默失败
+fs.mkdirSync(path.dirname(dsmlDiagCache.file), { recursive: true });   // create the log dir when missing, otherwise the write fails silently
     fs.appendFileSync(dsmlDiagCache.file, JSON.stringify(Object.assign({ t: new Date().toISOString() }, rec)) + '\n');
   } catch (_) {}
 }
@@ -419,12 +419,12 @@ function dsmlDiag(cfg, rec) {
 function makeDirectPipe(res, rpInc, dsmlOn, dsmlThink, isStream, opts) {
   const u8 = utf8();
   const states = new Map();
-  const toolNames = (opts && opts.toolNames) || null;   // 客户端本次声明的工具名(回填必须命中它)
+const toolNames = (opts && opts.toolNames) || null;   // tool names the client declared this round (backfill must match one)
   const onDiag = (opts && opts.onDiag) || null;
   let buf = '', lastObj = null, closed = false, pending = null, sawDone = false, ring = [], wireLogged = false;
   const stat = { reasoning: 0, content: 0, emptied: 0, blocks: 0, structured: 0, finishIn: null, finishOut: null, backfill: null, dsmlSeen: false, names: [] };
   const anyActive = () => { for (const st of states.values()) if (dsmlActive(st)) return true; return false; };
-  /* 以最后一条分块为模板造一条 tool_calls 分块发出去 */
+/* Synthesize a tool_calls chunk from the last chunk as a template and emit it */
   const writeEvent = (deltaObj, ci) => {
     try {
       const t = lastObj ? JSON.parse(JSON.stringify(lastObj)) : { object: 'chat.completion.chunk', choices: [] };
@@ -450,16 +450,16 @@ function makeDirectPipe(res, rpInc, dsmlOn, dsmlThink, isStream, opts) {
     if (dsmlOn && out.length >= 6 && out.slice(0, 6) === 'data: ') {
       const bodyTxt = out.slice(6);
       if (bodyTxt === '[DONE]') sawDone = true;
-      ring.push(bodyTxt); if (ring.length > 12) ring.shift();   // ★留证环: 截断/孤儿标记时把最后几个上游载荷一起落盘
-      /* ★线缆采样: 每流第一条带 calls/invoke/parameter 字样的上游载荷原文+hex 落盘 ——
-       *   用于抓"客户端能看到的漏网标记"的确切字节(全角括号/特殊前缀等变体), 2026-10-16 */
+ring.push(bodyTxt); if (ring.length > 12) ring.shift();   // *evidence ring: on truncation/orphan markup, persist the last few upstream payloads too
+/* *Wire sampling: the first upstream payload per stream containing calls/invoke/parameter is dumped raw + hex to disk --
+       *   captures the exact bytes of "markup the client could see" (full-width brackets / special prefixes and other variants), 2026-10-16 */
       if (!wireLogged && bodyTxt.length < 3000 && /calls\b|invoke\b|parameter\b/i.test(bodyTxt)) {
         wireLogged = true;
         dsmlMissDump('wire-chunk-sample', bodyTxt, 'hex=' + Buffer.from(bodyTxt, 'utf8').toString('hex').slice(0, 500));
       }
-      /* ★快路径: 只在"可能有标记/需要判断结构化调用"的分块上解析 JSON。
-       *   早期版本只认 '<' → 携带 tool_calls/finish_reason 的分块被跳过, 导致
-       *   闸门失效(重复回填) + 上游的 finish=stop 先发出去(实测, 2026-10-16)。 */
+/* *Fast path: parse JSON only on chunks that might contain markup or need structured-call decisions.
+       *   earlier versions only looked for '<' -> chunks carrying tool_calls/finish_reason were skipped, causing
+       *   gate failure (duplicate backfill) + the upstream's finish=stop going out first (observed 2026-10-16). */
       if (bodyTxt !== '[DONE]' && (anyActive() || bodyTxt.indexOf('<') >= 0
           || bodyTxt.indexOf('tool_calls') >= 0 || bodyTxt.indexOf('finish_reason') >= 0 || bodyTxt.indexOf('"usage"') >= 0)) {
         const j = safeParse(bodyTxt);
@@ -480,7 +480,7 @@ function makeDirectPipe(res, rpInc, dsmlOn, dsmlThink, isStream, opts) {
             if (Array.isArray(d.tool_calls) && d.tool_calls.length) stat.structured++;
             if (ch.finish_reason) {
               stat.finishIn = ch.finish_reason;
-              if (pending && toolNames && !stat.structured) {          // ★回填: 该响应没有结构化调用时才用文本态调用顶替
+if (pending && toolNames && !stat.structured) {          // *backfill: substitute a textual call only when the response has no structured one
                 const pick = dsmlPickCall(pending, toolNames);
                 if (pick) {
                   try { emitCalls([pick], ci); } catch (_) {}
@@ -493,7 +493,7 @@ function makeDirectPipe(res, rpInc, dsmlOn, dsmlThink, isStream, opts) {
             }
           }
           if (dirty) {
-            if (dsmlChunkPayloadEmpty(j)) return;                      // 整条分块就是被清掉的标记 → 不发
+if (dsmlChunkPayloadEmpty(j)) return;                      // the whole chunk was scrubbed markup -> send nothing
             out = 'data: ' + JSON.stringify(j);
           }
         }
@@ -518,7 +518,7 @@ function makeDirectPipe(res, rpInc, dsmlOn, dsmlThink, isStream, opts) {
         let tail = buf; buf = '';
         if (rpInc.length) tail = rpApplyText(tail, rpInc);
         if (dsmlOn && tail) {
-          if (isStream) {                                   /* 末行残留(上游没给结尾换行) */
+if (isStream) {                                   /* trailing partial line (upstream sent no final newline) */
             const bodyTxt = tail.slice(0, 6) === 'data: ' ? tail.slice(6) : null;
             const j = (bodyTxt && bodyTxt !== '[DONE]') ? safeParse(bodyTxt) : undefined;
             if (j && typeof j === 'object') {
@@ -528,7 +528,7 @@ function makeDirectPipe(res, rpInc, dsmlOn, dsmlThink, isStream, opts) {
               collect();
               if (dirty) tail = dsmlChunkPayloadEmpty(j) ? '' : 'data: ' + JSON.stringify(j);
             }
-          } else {                                          /* 非流式: 整份 JSON 一次清洗 + 回填 */
+} else {                                          /* non-streaming: scrub the whole JSON once + backfill */
             const j = safeParse(tail);
             if (j && typeof j === 'object') {
               lastObj = j;
@@ -555,7 +555,7 @@ function makeDirectPipe(res, rpInc, dsmlOn, dsmlThink, isStream, opts) {
         }
         if (tail) { try { res.write(tail); } catch (_) {} }
         if (dsmlOn && isStream) {
-          if (pending && toolNames && !stat.structured) {              /* 流末尾没等到 finish 分块 → 补发调用 */
+if (pending && toolNames && !stat.structured) {              /* no finish chunk by stream end -> emit the call */
             const pick = dsmlPickCall(pending, toolNames);
             if (pick) {
               try {
@@ -570,8 +570,8 @@ function makeDirectPipe(res, rpInc, dsmlOn, dsmlThink, isStream, opts) {
             }
           }
           pending = null;
-          const wasActive = anyActive();                                  /* ★流结束时状态机还挂着(截断/孤儿标记) → 把最后几个上游载荷与 finish_reason 留证 */
-          const extra = [];                                            /* 暂缓的未闭合标签补一条 delta, 不丢字 */
+const wasActive = anyActive();                                  /* *state machine still attached at stream end (truncation/orphan markup) -> keep the last few upstream payloads and finish_reason as evidence */
+const extra = [];                                            /* deferred unclosed tags get a delta appended, no loss */
           for (const st of states.values()) { const t = dsmlFeed(st, '', true); if (t) extra.push(t); }
           if (wasActive) {
             const fin = (lastObj && lastObj.choices && lastObj.choices[0]) ? lastObj.choices[0].finish_reason : null;
@@ -593,15 +593,15 @@ function makeDirectPipe(res, rpInc, dsmlOn, dsmlThink, isStream, opts) {
   };
 }
 
-function dsmlExtractCall(t) {  // 非流式/跨格式: 从一段完整文本里抽取文本态调用
+function dsmlExtractCall(t) {  // non-streaming/cross-format: extract textual calls from a complete text
   if (typeof t !== 'string' || t.indexOf('DSML') < 0) return null;
   const st = dsmlNewState(true);
   try { dsmlFeed(st, t, true); } catch (_) {}
   return st.call || null;
 }
-function dsmlCleanText(t) {   // 非流式/跨格式: 一次性清洗一段文本(整段喂入 = final)
+function dsmlCleanText(t) {   // non-streaming/cross-format: scrub a whole text at once (full input = final)
   return dsmlFeed(dsmlNewState(), t, true);
 }
 
-/* ---- 配置加解密(可选, 由 crypt.js 提供) ---- */
+/* ---- Config encryption (optional, provided by crypt.js) ---- */
 module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, DSML_TAG_MAX, DSML_WS_MAX, DSML_BLOCK_MAX, DSML_OPEN_CALLS, DSML_OPEN_CALLS_WEAK, DSML_OPEN_INVOKE, DSML_CLOSE_CALLS, DSML_CLOSE_INVOKE, DSML_ANY_TAG, DSML_BAR_KEY, DSML_BLOCK_TAG, DSML_INVOKE_ANY, DSML_PARAM_ANY, DSML_ATTR_NAME, DSML_CALLS_TAG, dsmlParseCall, dsmlParseCallLoose, dsmlLooseParams, _dsmlMissOff, dsmlMissPath, dsmlMissDump, dsmlNormName, dsmlPickCall, DSML_TEXT_FIELD_RE, DSML_THINK_FIELD_RE, dsmlNewState, dsmlActive, dsmlFeed, dsmlChunkPayloadEmpty, dsmlCleanRespObj, wrapDsmlClean, dsmlDiagCache, dsmlDiagOn, dsmlDiag, makeDirectPipe, dsmlExtractCall, dsmlCleanText };

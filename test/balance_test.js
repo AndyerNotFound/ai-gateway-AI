@@ -1,10 +1,10 @@
 'use strict';
-/* 渠道余额透传测试
- * 覆盖: ① 目标解析(渠道级覆盖 / 内置预设)  ② 运行态白名单不再丢 balance* 字段(否则 persistRuntimeCfg 会把配置抹掉)
- *       ③ fetchChannelBalance(相对地址拼接 / 无预设 / 坏路径 / 走渠道代理)
- *       ④ 客户端端点 /v1/dashboard/billing/{credit_grants,subscription}(认证 / 渠道选择 / 卡密白名单 / 缓存)
- *       ⑤ 管理端 /admin/api/balance/:inst/:ch + 「面板保存渠道不抹余额字段」
- * 跑法: node test/balance_test.js
+/* Channel balance passthrough test
+ * Coverage: (1) target resolution (channel overrides / built-in presets)  (2) the runtime whitelist no longer drops balance* fields (otherwise persistRuntimeCfg would wipe them from the config)
+ *       (3) fetchChannelBalance (relative URL joining / no preset / bad path / channel proxy)
+ *       (4) client endpoints /v1/dashboard/billing/{credit_grants,subscription} (auth / channel pick / card whitelist / cache)
+ *       (5) admin /admin/api/balance/:inst/:ch + "panel channel saves never wipe balance fields"
+ * Run: node test/balance_test.js
  */
 const http = require('http');
 const https = require('https');
@@ -31,7 +31,7 @@ function get(port, p, headers = {}) {
   });
 }
 
-// 假上游: OpenAI 兼容中转站的两种余额端点 + 请求计数
+// Fake upstream: the two balance endpoints of an OpenAI-compatible relay + request counting
 function fakeUpstream() {
   return new Promise(resolve => {
     const hits = [];
@@ -58,14 +58,14 @@ function fakeRes() {
   return o;
 }
 const fakeReq = () => ({ method: 'GET', headers: {}, on() {}, destroy() {} });
-// handleAdmin 的余额分支是回调式(查上游后回调才写响应) → 断言前必须等响应落地
+// handleAdmin's balance branch is callback-style (the response is written only after the upstream query) -> tests must wait for the response to land before asserting
 async function waitRes(res, ms = 4000) {
   const t0 = Date.now();
   while (!res.status && Date.now() - t0 < ms) await new Promise(r => setTimeout(r, 10));
   return res;
 }
 
-// 与 admin.js loadCfg 同口径读配置(可能被加密)
+// Reads config with the same semantics as admin.js loadCfg (may be encrypted)
 function readCfg(file) {
   const raw = fs.readFileSync(file, 'utf8');
   let plain = raw;
@@ -74,7 +74,7 @@ function readCfg(file) {
 }
 
 (async () => {
-  /* ============ 1. 目标解析 ============ */
+/* ============ 1. Target resolution ============ */
   console.log('── Part 1: 余额目标解析 ──');
   const t1 = G.balanceTarget({ name: 'x', type: 'openai', baseUrl: 'https://api.deepseek.com' });
   eq(t1 && t1.url, '/user/balance', '预设: deepseek 命中 baseUrl');
@@ -87,7 +87,7 @@ function readCfg(file) {
   const sf = G.balanceTarget({ name: 'sf', type: 'openai', baseUrl: 'https://api.siliconflow.cn' });
   eq(sf && sf.unit, 'CNY', '预设: siliconflow.cn → CNY');
 
-  /* ============ 2. 运行态白名单保留 balance* ============ */
+/* ============ 2. Runtime whitelist preserves balance* fields ============ */
   console.log('── Part 2: 运行态渠道字段白名单 ──');
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agw-balance-'));
   const tmpCfg = path.join(tmpDir, 'config.json');
@@ -133,7 +133,7 @@ function readCfg(file) {
   const rBadUrl = await call(lc, Object.assign({}, lcCustom, { balanceUrl: 'http://:/bad' }));
   eq(rBadUrl.status, 400, '地址非法 → 400(旧实现 500 Invalid URL)');
 
-  /* ============ 4. 客户端端点(OpenAI 语义) ============ */
+/* ============ 4. Client endpoints (OpenAI semantics) ============ */
   console.log('── Part 4: /v1/dashboard/billing/* ──');
   const cfgE2E = readCfg(tmpCfg);
   const gw = await G.startServer(cfgE2E, { port: 0 });
@@ -152,17 +152,17 @@ function readCfg(file) {
   const rAuto = await get(port, '/v1/dashboard/billing/credit_grants', H);
   eq(rAuto.status, 200, '不传 ?ch= → 自动选(default 渠道)');
   eq(rAuto.json && rAuto.json.channel, 'relay-custom', '自动选的渠道名(附在响应里)');
-  // 常见别名(one-api/new-api/中转面板等): 都应命中余额查询
+// Common aliases (one-api/new-api/relay panels): all should hit the balance lookup
   for (const alias of ['/v1/balance', '/v1/user/balance', '/v1/quota', '/v1/billing/usage', '/v1/usage', '/v1/wallet']) {
     const ra = await get(port, alias + '?ch=relay-custom', H);
     eq(ra.status, 200, '余额别名 ' + alias + ' 200');
   }
-  // 白名单只留 /v1 /v1beta /auth /profile /admin → 非 /v1 的老别名一律 404
+  // whitelist keeps only /v1 /v1beta /auth /profile /admin -> legacy non-/v1 aliases all 404
   for (const alias of ['/balance', '/user/balance', '/dashboard/billing/usage']) {
     const rb = await get(port, alias + '?ch=relay-custom', H);
     eq(rb.status, 404, '白名单外别名 ' + alias + ' 404');
   }
-  // 客户端「余额获取路径=/credits + JSON 键=total_remain」场景(base 带 /v1 → 实际请求 /v1/credits)
+// The "balance path=/credits + JSON key=total_remain" case (base includes /v1 -> actually requests /v1/credits)
   const rV1Credits = await get(port, '/v1/credits?ch=relay-custom', H);
   eq(rV1Credits.status, 200, '/v1/credits 200(原为 404: 未路由)');
   eq(rV1Credits.json && rV1Credits.json.total_remain, 42.5, '/v1/credits 顶层 total_remain = 上游余额');
@@ -171,10 +171,10 @@ function readCfg(file) {
   const rV1CreditsAuto = await get(port, '/v1/credits', H);
   eq(rV1CreditsAuto.status, 200, '/v1/credits 不传 ch 也 200');
 
-  /* ============ 4b. 多渠道聚合 + 汇率折算 ============ */
+/* ============ 4b. Multi-channel aggregation + FX conversion ============ */
   console.log('── Part 4b: 多渠道聚合(汇率统一单位) ──');
   const near = (a, b, msg) => ok(typeof a === 'number' && Math.abs(a - b) < 1e-6, msg + ' (got=' + a + ', want=' + b + ')');
-  // 未配 USD 汇率: 只加总 CNY 渠道, USD 渠道标 no_rate
+  // no USD FX rate: only CNY channels are summed; USD channels tagged no_rate
   const agg1 = await get(port, '/v1/credits', H);
   eq(agg1.status, 200, '聚合: 200');
   eq(agg1.json && agg1.json.unit, 'CNY', '聚合: 默认基准币种 CNY');
@@ -188,7 +188,7 @@ function readCfg(file) {
   ok(plainItem && plainItem.ok === false && /无余额接口预设/.test(plainItem.error || ''), '聚合: 没配余额接口的渠道带原因');
   ok(agg1.json && agg1.json.data && Array.isArray(agg1.json.data.channels), '聚合: data.* 嵌套同构(嵌套键客户端)');
 
-  // 配了汇率: USD 折算进合计
+// With an FX rate: USD is converted into the total
   const cfgFx = { ...cfgE2E, balanceFx: { base: 'CNY', rates: { CNY: 1, USD: 7.2 } } };
   const gwFx = await G.startServer(cfgFx, { port: 0 });
   const agg2 = await get(gwFx.port, '/v1/credits', H);
@@ -198,10 +198,10 @@ function readCfg(file) {
   near(usd2 && usd2.remain_base, 72, '聚合: 明细带折算值 remain_base');
   eq(usd2 && usd2.no_rate, undefined, '聚合: 配了汇率不再标 no_rate');
   ok(!((agg2.json && agg2.json.unconverted_units) || []).length, '聚合: 无 unconverted_units');
-  // 卡密白名单同样约束聚合范围
+// The key card whitelist constrains aggregation too
   const aggWl = await get(gwFx.port, '/v1/credits', { Authorization: 'Bearer sk-card-one' });
   eq(aggWl.json && aggWl.json.channels && aggWl.json.channels.length, 1, '聚合: 绑定卡只见白名单渠道');
-  // OpenAI 官方语义路径不带 ch 仍是单渠道(保持官方形状, 不聚合)
+// Official OpenAI semantic paths stay single-channel without ch (official shape preserved, no aggregation)
   const sg = await get(gwFx.port, '/v1/dashboard/billing/credit_grants', H);
   eq(sg.json && sg.json.object, 'credit_summary', 'OpenAI 路径不带 ch 仍单渠道(不聚合)');
   const rNoKey = await get(port, '/v1/dashboard/billing/credit_grants');
@@ -214,17 +214,17 @@ function readCfg(file) {
   eq(rWlOut.status, 403, '绑定卡查白名单外渠道 → 403');
   const rWlIn = await get(port, '/v1/dashboard/billing/credit_grants?ch=relay-custom', { Authorization: 'Bearer sk-card-one' });
   eq(rWlIn.status, 200, '绑定卡查白名单内渠道 → 200');
-  // 缓存: 连着再打 3 次, 上游不应新增请求
+  // cache: three more consecutive calls must not add upstream requests
   const hitsAfterFirst = up.hits.length;
   await get(port, '/v1/dashboard/billing/credit_grants?ch=relay-custom', H);
   await get(port, '/v1/dashboard/billing/subscription?ch=relay-custom', H);
   eq(up.hits.length, hitsAfterFirst, '30s 缓存命中: 客户端连打不再打上游');
   ok(up.hits.length - hitsBefore > 0, '至少真实查过一次上游');
-  // 2026-10-27 路由白名单: /health 已关闭, 只留 /v1 /v1beta /auth /profile /admin
+// 2026-10-27 route whitelist: /health closed; only /v1 /v1beta /auth /profile /admin remain
   eq((await get(port, '/health')).status, 404, '/health 已按白名单关闭');
   eq((await get(port, '/v1/models', H)).status, 200, '/v1/models 不受白名单影响');
 
-  /* ============ 5. 管理端 + 面板保存不抹字段 ============ */
+/* ============ 5. Admin side + panel saves must not wipe fields ============ */
   console.log('── Part 5: 管理端余额路由 + 面板保存防抹 ──');
   adminMod.setDir(tmpDir);
   adminMod.setBalanceFn((c, ch, cb) => G.fetchChannelBalance(c, ch, cb));
@@ -239,7 +239,7 @@ function readCfg(file) {
   await adminMod.handleAdmin({}, fakeReq(), res2, new URL('http://x/admin/api/balance/default/relay-plain'), '/admin/api/balance/default/relay-plain', '');
   await waitRes(res2);
   eq(res2.status, 400, 'admin 余额路由: 无预设 → 400');
-  // 面板旧版本(不认识余额三字段)保存渠道 → 字段必须保留
+// Old panels (unaware of the balance trio) saving a channel -> the fields must be preserved
   const res3 = fakeRes();
   const bodyOld = JSON.stringify({ name: 'relay-custom', type: 'openai', baseUrl: `http://127.0.0.1:${up.port}`, proxy: '-', models: ['m2'], apiKey: '', default: true, useResponses: false, probe: false });
   await adminMod.handleAdmin({}, { method: 'POST', headers: {}, on() {} }, res3, new URL('http://x/admin/api/channel/default'), '/admin/api/channel/default', bodyOld);
@@ -247,14 +247,14 @@ function readCfg(file) {
   const afterSave = readCfg(tmpCfg).channels.find(c => c.name === 'relay-custom');
   eq(afterSave.balanceUrl, '/v1/user/info', '旧面板保存: balanceUrl 未被抹掉');
   eq(afterSave.balanceUnit, 'CNY', '旧面板保存: balanceUnit 未被抹掉');
-  // 面板新版本提交空串 = 显式清空
+// New panel submits an empty string = explicit clear
   const res4 = fakeRes();
   const bodyClear = JSON.stringify({ name: 'relay-custom', type: 'openai', baseUrl: `http://127.0.0.1:${up.port}`, models: ['m2'], apiKey: '', balanceUrl: '', balancePath: '', balanceUnit: '' });
   await adminMod.handleAdmin({}, { method: 'POST', headers: {}, on() {} }, res4, new URL('http://x/admin/api/channel/default'), '/admin/api/channel/default', bodyClear);
   const cleared = readCfg(tmpCfg).channels.find(c => c.name === 'relay-custom');
   eq(cleared.balanceUrl, undefined, '显式空串 = 清空 balanceUrl');
   eq(cleared.balanceUnit, undefined, '显式空串 = 清空 balanceUnit');
-  // maskedChannels 必须回传三字段(否则面板看不到也编辑不了)
+// maskedChannels must return all three fields (otherwise the panel can neither see nor edit them)
   const res5 = fakeRes();
   await adminMod.handleAdmin({}, fakeReq(), res5, new URL('http://x/admin/api/config/default'), '/admin/api/config/default', '');
   const cfgOut = res5.json();
@@ -263,7 +263,7 @@ function readCfg(file) {
   eq(chOut && chOut.balancePath, 'data.balance', '面板读取: 回传 balancePath');
   ok(chOut && chOut.apiKey === undefined, '面板读取: apiKey 仍打码(不因新增字段泄漏)');
 
-  /* ============ 收尾 ============ */
+/* ============ Finalize ============ */
   await new Promise(r => setTimeout(r, 50));
   up.close();
   try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}

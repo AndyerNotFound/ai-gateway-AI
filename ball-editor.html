@@ -127,7 +127,7 @@ function setPath(path, val) {
   dirty = true;
 }
 
-/* ---------- 渲染 ---------- */
+/* ---------- Rendering ---------- */
 function render() {
   const r = $('#root');
   r.innerHTML = '';
@@ -252,7 +252,7 @@ function refreshDatalist() {
   dl.innerHTML = `<datalist id="evnames">${EVENTS.map(e=>`<option>${e}</option>`).join('')}</datalist>`;
 }
 
-/* ---------- 交互 ---------- */
+/* ---------- Interaction ---------- */
 document.addEventListener('input', ev => {
   const t = ev.target;
   const path = t.getAttribute('data-k');
@@ -272,7 +272,7 @@ document.addEventListener('change', ev => {
     const path = t.getAttribute('data-k');
     const parts = path.split('.');
     const objPath = parts.slice(0, -1).join('.');
-    // 换动作类型时清掉旧参数
+    // clear stale params when the action type changes
     const old = path.split('.').length ? getPath(objPath) : null;
     if (old) { delete old.text; delete old.page; delete old.minutes; delete old.endpoint; }
     setPath(path, t.value);
@@ -324,7 +324,7 @@ document.addEventListener('click', async ev => {
   }
 });
 
-/* ---------- 顶部/底部 ---------- */
+/* ---------- Header/footer ---------- */
 $('#inst').value = inst;
 $('#inst').addEventListener('change', e => { inst = e.target.value.trim(); localStorage.setItem('ballInst', inst); });
 

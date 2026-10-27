@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 证书续签包装：只在证书真的变化时才动网关。
-#   bash tls/renew.sh              检查 + 必要时重签 + 重启 + 回验
-#   bash tls/renew.sh --no-restart 只检查/重签（交给 ops/guard.sh 统一重启）
-# 退出码: 0=无需变更或已完成, 2=重签失败
+# Certificate renewal wrapper: only touches the gateway when the certificate actually changed.
+#   bash tls/renew.sh              check + re-sign if needed + restart + verify
+#   bash tls/renew.sh --no-restart check/re-sign only (leave the restart to ops/guard.sh)
+# Exit codes: 0=no change needed or done, 2=re-sign failed
 set -uo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$DIR")"

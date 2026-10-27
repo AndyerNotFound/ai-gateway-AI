@@ -10,13 +10,13 @@ const os = require('os');
 const zlib = require('zlib');
 const { logErr } = require('./util');
 
-// ================= 脱敏(redact) =================
+// ================= Redaction (redact) =================
 const redactCache = require('./redact-cache.js'); // CDC 增量分块缓存: 干净内容只算 hash, 命中跳过正则
 const ctxp = require('./ctxp'); // 全局上下文上限(warn/max), 规则由 admin 热推 + 文件变更自检
 
-/* ---- 隐私过滤: 请求体里的密钥/token 替换为 *** ---- */
+/* ---- Privacy filter: replace secrets/tokens in the request body with *** ---- */
 const REDACT_PATTERNS = [
-  /\bsk-[A-Za-z0-9_-]{10,}/g,            // OpenAI/DeepSeek/Anthropic 风格
+/\bsk-[A-Za-z0-9_-]{10,}/g,            // OpenAI/DeepSeek/Anthropic style
   /\bgh[pou]_[A-Za-z0-9]{20,}/g,          // GitHub
   /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
   /\bxox[baprs]-[A-Za-z0-9-]{10,}/g,      // Slack
@@ -24,14 +24,14 @@ const REDACT_PATTERNS = [
   /\bAIza[0-9A-Za-z_-]{30,}/g,            // Google
   /\bglpat-[A-Za-z0-9_-]{15,}/g,          // GitLab
   /\bhf_[A-Za-z0-9]{20,}/g,               // HuggingFace
-  /\bBearer\s+[A-Za-z0-9._~-]{16,}/g,     // 文本里粘贴的 Bearer 头
+/\bBearer\s+[A-Za-z0-9._~-]{16,}/g,     // Bearer headers pasted into text
 ];
 const REDACT_FIELD_RE = /api[-_]?key|apikey|secret|password|passwd|token|authorization/i;
 function redactText(s, extra) {
   return redactCache.redactSmart(s, extra);
 }
-/* 响应方向过滤开关(实例级 redact.enable 为上限, 再叠加 redact.response;
- * 卡密 redact=false 与请求方向一致, 单卡关闭) */
+/* Response-direction filter switch (instance redact.enable is the ceiling, further ANDed with redact.response;
+ * a card's redact=false mirrors the request direction, disabling it per card) */
 function respRedactOn(cfg, urlInfo) {
   if (!(cfg && cfg.redact && cfg.redact.enable !== false && cfg.redact.response)) return false;
   return !(urlInfo && urlInfo.userKey && urlInfo.userKey.redact === false);
@@ -51,8 +51,8 @@ function redactDeep(v, extra, depth) {
   }
   return v;
 }
-/* 流式响应过滤: 文本/思考/工具参数各自缓冲, 密钥跨分片也不会漏;
- * 只回压尾部可能继续生长的 token, 其余照常边收边发。 */
+/* Streaming response filter: text/thinking/tool args buffered separately; secrets split across chunks are still caught;
+ * Only tail tokens that might still grow are held back; everything else streams as it arrives. */
 function wrapRedactWriter(baseWriter, extra) {
   const textF = redactCache.createStreamFilter(extra);
   const reasF = redactCache.createStreamFilter(extra);
@@ -77,7 +77,7 @@ function wrapRedactWriter(baseWriter, extra) {
         return;
       }
       if (ev.type === 'end') { flushAll(); send(ev); return; }
-      flushText(); flushReas(); send(ev);   // start/tool_start/usage: 先冲暂存, 保事件顺序
+flushText(); flushReas(); send(ev);   // start/tool_start/usage: flush buffers first to preserve event order
     },
   };
 }

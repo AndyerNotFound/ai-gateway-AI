@@ -9,23 +9,23 @@ const crypto = require('crypto');
 const os = require('os');
 const zlib = require('zlib');
 
-// ================= 小工具(原 gateway.js 内联) =================
+// ================= Small utilities (formerly inlined in gateway.js) =================
 const VERSION = '1.4.8';
 
-/* ================= 小工具 ================= */
+/* ================= Small utilities ================= */
 function ts() { return new Date().toISOString().slice(11, 19); }
 function log(...a) { console.log('[' + ts() + ']', ...a); }
 function logErr(...a) { console.error('[' + ts() + ']', ...a); }
 
 const { StringDecoder } = require('string_decoder');
-/* ★跨分块安全解码（2026-09-18）：多字节字符被 TCP 分块切断时，逐块 toString('utf8') 会解出
- *  U+FFFD 乱码（响应流/请求体都会中招，只取决于分块时机）。用法：const u8 = utf8(); buf += u8(chunk); */
+/* *Chunk-safe decoding (2026-09-18): when a multi-byte character is split across TCP chunks, per-chunk toString('utf8') produces
+ *  U+FFFD mojibake (hits both response streams and request bodies; only chunk timing decides). Usage: const u8 = utf8(); buf += u8(chunk); */
 function utf8() { const sd = new StringDecoder('utf8'); return (buf) => sd.write(buf); }
 
-/* ★HTTP 响应头值只能是 Latin-1：渠道名若是中文(如 "Guili公益")，写进
- *  X-AI-Gateway-Channel 会让 res.writeHead() 抛 ERR_INVALID_CHAR；这里原本用
- *  `catch (_) { return; }` 把异常吞了 → 请求既不回客户端也不读上游，永久悬挂
- *  (2026-09-18 在 ai-gateway-core 上实测复现)。统一百分号编码，decodeURIComponent 可还原。 */
+/*/* *HTTP header values must be Latin-1: a channel name containing CJK (e.g. a Chinese relay's name) written into
+ *  X-AI-Gateway-Channel makes res.writeHead() throw ERR_INVALID_CHAR; this code used to
+ *  swallow the throw with `catch (_) { return; }` -> the request neither answered the client nor read the upstream, hanging forever
+ *  (reproduced on ai-gateway-core 2026-09-18). Percent-encode uniformly; decodeURIComponent restores it. */
 function hdrName(s) {
   const t = String(s == null ? '' : s);
   let out = '';
@@ -44,7 +44,7 @@ function randId(prefix) { return prefix + crypto.randomBytes(10).toString('hex')
 function nowSec() { return Math.floor(Date.now() / 1000); }
 function safeParse(s) { try { return JSON.parse(s); } catch (e) { return undefined; } }
 
-/* ---- 文本替换(用户自定义正则规则, config.replace = {out:[{re,to,ci}],inc:[...]}) ---- */
+/* ---- Text replacement (user-defined regex rules, config.replace = {out:[{re,to,ci}],inc:[...]}) ---- */
 function rpCompile(rules) {
   const out = [];
   for (const r of (rules || [])) {
@@ -71,17 +71,17 @@ function rpWalk(v, rules, depth, skipModel) {
   return v;
 }
 
-/* ---- 内置 DSML 工具调用标记清洗(2026-10-15) ----
- * 现象: 部分模型(DeepSeek 与 NVIDIA NIM 上的衍生版等)会在正文里**额外**打印一份工具调用标记文本
+/* ---- Built-in DSML tool-call markup scrubbing (2026-10-15) ----
+ * Symptom: some models (DeepSeek and derivatives on NVIDIA NIM etc.) additionally print tool-call markup text inside the content
  *   <｜DSML｜tool_calls> / <｜DSML｜invoke name="..."> / <｜DSML｜parameter name="...">…</…>
- *   上游同时也给出结构化 tool_calls → 客户端把这段内部标记当正文显示, 思考链与工具调用看着不连贯。
- * 做法: 正文/思考各自独立的极小状态机(按字段隔离 —— 一个字段里没闭合的标记绝不吃掉另一个字段的内容):
- *   ① 未吞吃: 只盯"最后一个还没闭合的 '<'"; 它可能是标记开头 → 暂缓发出(最多 DSML_TAG_MAX 字符),
- *      标签一旦闭合且不含 DSML 就原样吐出 → 普通文本逐字节透传, 无额外缓冲;
- *   ② 见到 DSML 起始标记(…calls> / …invoke …) → 进入吞吃态, 直到配对结束标记(…calls> 优先, …invoke> 兜底);
- *   ③ 吞吃态攒满 DSML_BLOCK_MAX 仍未见结束标记 → 判定"用户就是在讨论这个标记", **原样放回**(fail-open), 绝不吞正文;
- *   ④ 流结束时仍在吞吃态(标记被上游截断) → 丢弃: 内部标记绝不透给用户。
- * 代价: 无标记的普通响应只多一次 indexOf('<'), 零缓冲零延迟。
+ *   the upstream also emitted structured tool_calls -> the client displayed the markup as content, making the chain and calls look disjointed.
+ * Approach: tiny independent state machines for content/thinking (isolated per field -- unclosed markup in one field can never eat another field's content):
+ *   (1) not eating: watch only "the last unclosed '<'"; it may start markup -> hold it back (at most DSML_TAG_MAX chars),
+ *      once a tag closes without DSML inside, it is emitted verbatim -> plain text streams through byte-for-byte with no extra buffering;
+ *   (2) on seeing a DSML opening tag (...calls> / ...invoke ...) -> enter the eating state until the matching closing tag (...calls> preferred, ...invoke> as fallback);
+ *   (3) eating state fills past DSML_BLOCK_MAX with no closing tag -> decide "the user is simply discussing this markup" and **put it back verbatim** (fail open); content is never eaten;
+ *   (4) still eating at stream end (markup truncated by the upstream) -> drop: internal markup never reaches the user.
+ * Cost: a markup-free response pays one extra indexOf('<'); zero buffering, zero latency.
  */
 function toText(content) {
   if (content == null) return '';

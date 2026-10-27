@@ -1,30 +1,30 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * ai-gateway 配置工具 — 交互式 + 参数式
- * 用法:
- *   agw.sh config                           交互式: 选实例 → 主菜单
- *   agw.sh config [实例名]                  直接进某实例的主菜单
- *   agw.sh config [实例名] add              交互式添加渠道
- *   agw.sh config [实例名] list             列出渠道
- *   agw.sh config [实例名] remove [渠道名]  删除渠道
- *   agw.sh config [实例名] add --name X --type openai --baseUrl URL --apiKey K --models a,b,c
- *   agw.sh config [实例名] set-port 16390
- *   agw.sh config [实例名] set-key "密码"
- *   agw.sh config [实例名] add-proxy myproxy --type socks5 --host 127.0.0.1 --port 7890
- *   agw.sh config ctx [实例名]                         查看窗口规则与软/硬上限
- *   agw.sh config ctx [实例名] soft 80                  软上限(%)
- *   agw.sh config ctx [实例名] hard 95                  硬上限(%), 0 = 关闭; 超过直接 400
- *   agw.sh config ctx [实例名] cpt 4                    估算: 1 token 几个字符
- *   agw.sh config ctx [实例名] win "deepseek-*" 128k    加/改一条窗口规则
- *   agw.sh config ctx [实例名] unwin "deepseek-*"       删一条
- *   agw.sh config ctx [实例名] clear                    清空规则
- *   agw.sh ctxp                                         查看全局上下文上限规则(按模型名通配, 所有实例生效)
- *   agw.sh ctxp <模型通配>                               看一条规则
- *   agw.sh ctxp <模型通配> max 200k warn 160k            设置(max=超了400, warn=超了桥通知, warn<=max)
- *   agw.sh ctxp <模型通配> warn 160k                     只设 warn
- *   agw.sh ctxp <模型通配> max 0                         清一条(两侧都清零即删)
- *   agw.sh ctxp clear                                    清空全部
+ * ai-gateway config tool -- interactive + argument-driven
+ * Usage:
+ *   agw.sh config                           interactive: pick an instance -> main menu
+ *   agw.sh config [instance]                jump straight into an instance's main menu
+ *   agw.sh config [instance] add            add a channel interactively
+ *   agw.sh config [instance] list           list channels
+ *   agw.sh config [instance] remove [channel]  remove a channel
+ *   agw.sh config [instance] add --name X --type openai --baseUrl URL --apiKey K --models a,b,c
+ *   agw.sh config [instance] set-port 16390
+ *   agw.sh config [instance] set-key "passphrase"
+ *   agw.sh config [instance] add-proxy myproxy --type socks5 --host 127.0.0.1 --port 7890
+ *   agw.sh config ctx [instance]                         show window rules and soft/hard limits
+ *   agw.sh config ctx [instance] soft 80                  soft limit (%)
+ *   agw.sh config ctx [instance] hard 95                  hard limit (%); 0 = off; exceeding it returns 400
+ *   agw.sh config ctx [instance] cpt 4                    estimate: characters per token
+ *   agw.sh config ctx [instance] win "deepseek-*" 128k    add/edit a window rule
+ *   agw.sh config ctx [instance] unwin "deepseek-*"       delete one rule
+ *   agw.sh config ctx [instance] clear                    clear all rules
+ *   agw.sh ctxp                                         show global context-limit rules (model-name globs; all instances)
+ *   agw.sh ctxp <model-glob>                             show one rule
+ *   agw.sh ctxp <model-glob> max 200k warn 160k            set (max = 400 when exceeded, warn = bridge notification; warn<=max)
+ *   agw.sh ctxp <model-glob> warn 160k                     set warn only
+ *   agw.sh ctxp <model-glob> max 0                       clear one side (both zero = delete)
+ *   agw.sh ctxp clear                                    clear everything
  */
 const fs = require('fs');
 const path = require('path');
@@ -87,7 +87,7 @@ function askYesNo(rl, q, defY) {
   });
 }
 
-// ---- 渠道显示 ----
+// ---- Channel display ----
 function showChannels(cfg) {
   if (!cfg.channels || !cfg.channels.length) { console.log('  (无渠道)'); return; }
   const dup = {};
@@ -106,7 +106,7 @@ function showChannels(cfg) {
   if (rr.length) console.log('  (⚡=多渠道轮询)');
 }
 
-// ---- 交互式添加渠道 ----
+// ---- Interactive channel setup ----
 async function interactiveAdd(rl, cfg) {
   const name = await ask(rl, '渠道名 (如 my-free-key)');
   if (!name) { console.log('✗ 渠道名不能为空'); return null; }
@@ -118,11 +118,11 @@ async function interactiveAdd(rl, cfg) {
 
   const type = await askChoice(rl, '上游格式', TYPES);
   let baseUrl = await ask(rl, 'baseUrl (如 https://api.deepseek.com)');
-  // 自动补全常见 baseUrl
+// Autocomplete common baseUrls
   if (baseUrl && !baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
   const apiKey = await ask(rl, 'apiKey (粘贴密钥, 直接回车=稍后填)');
 
-  // 代理选择
+// Proxy selection
   const proxyNames = Object.keys(cfg.proxies || {});
   const proxyOpts = ['直连 (不走代理)', ...proxyNames.map(p => `${p} (${cfg.proxies[p].type}://${cfg.proxies[p].host}:${cfg.proxies[p].port})`), '+ 新建代理...'];
   let proxy = null;
@@ -144,7 +144,7 @@ async function interactiveAdd(rl, cfg) {
     proxy = proxyNames[proxyOpts.indexOf(proxyChoice) - 1];
   }
 
-  // 模型配置
+  // model config
   console.log('\n模型配置 (两种方式选一):');
   console.log('  A) models 列表: 直接列出上游模型名, 客户端发啥就用啥');
   console.log('  B) modelMap 改名: 把不同上游的模型名统一成一个对外名 (推荐多源轮询时用)');
@@ -169,7 +169,7 @@ async function interactiveAdd(rl, cfg) {
 
   const isDefault = await askYesNo(rl, '设为 default (兜底) 渠道?', !cfg.channels.length);
   if (isDefault) {
-    // 取消其他渠道的 default
+// Remove default from the other channels
     for (const c of cfg.channels) c.default = false;
     channel.default = true;
   }
@@ -178,7 +178,7 @@ async function interactiveAdd(rl, cfg) {
   return cfg;
 }
 
-// ---- 交互式主菜单 ----
+// ---- Interactive main menu ----
 async function mainMenu(rl, name, cfg) {
   while (true) {
     console.log(`\n━━━ 实例 [${name}] 端口=${(cfg.listen||{}).port} 密码=${cfg.gatewayKey ? '已设' : '无'} 渠道=${(cfg.channels||[]).length} ━━━`);
@@ -246,7 +246,7 @@ async function mainMenu(rl, name, cfg) {
         const toDel = await askChoice(rl, '选择要删除的代理', [...pnames, '取消']);
         if (toDel !== '取消') {
           delete cfg.proxies[toDel];
-          // 清理引用该代理的渠道
+          // remove channels referencing this proxy
           for (const c of cfg.channels) if (c.proxy === toDel) { c.proxy = null; console.log(`  ⚠ 渠道 "${c.name}" 的代理被清空`); }
           console.log(`✓ 已删除代理 "${toDel}" (记得保存)`);
         }
@@ -263,7 +263,7 @@ async function mainMenu(rl, name, cfg) {
   }
 }
 
-// ---- 上下文窗口 / 软硬上限 (走 admin API: 立即生效并写回配置) ----
+// ---- Context window / soft+hard limits (via the admin API: applies immediately and writes back the config) ----
 
 function readMainCfg() {
   const f = path.join(DIR, 'config.json');
@@ -389,7 +389,7 @@ async function ctxCmd(argv) {
   console.log('用法: ctx [实例] list|soft N|hard N|cpt N|win "<匹配>" <窗口>|unwin "<匹配>"|clear');
 }
 
-// ---- 全局上下文上限 ctxp (按模型名通配, 所有实例生效; 走 admin API 热生效) ----
+// ---- Global context limit ctxp (model-name globs, applies to all instances; hot via the admin API) ----
 
 async function ctxpCmd(argv) {
   const ctxp = require('./ctxp');
@@ -419,7 +419,7 @@ async function ctxpCmd(argv) {
 
   if (!rest.length || (rest.length === 1 && rest[0].toLowerCase() === 'list')) return showAll(await getRules());
   if (rest.length === 1 && rest[0].toLowerCase() === 'clear') return save({ rules: {} }, '已清空全部规则');
-  if (rest.length === 1) {  // 单看一条
+if (rest.length === 1) {  // view a single entry
     const rules = await getRules();
     const hit = Object.keys(rules).find(k => k === rest[0] || ctxp.globMatch(rest[0], k));
     if (!hit) { console.log('✗ 没有这条规则: ' + rest[0]); process.exitCode = 1; return; }
@@ -428,7 +428,7 @@ async function ctxpCmd(argv) {
     return;
   }
 
-  // ctxp <模型通配> [max <num>] [warn <num>]
+// ctxp <model-glob> [max <num>] [warn <num>]
   const model = rest[0];
   const body = { model };
   let sawKw = false;
@@ -443,7 +443,7 @@ async function ctxpCmd(argv) {
     sawKw = true;
   }
   if (!sawKw) throw new Error('用法: ctxp <模型通配> [max <num>] [warn <num>]');
-  // 客户端预检 warn<=max (API 端也会用沿用旧值复检)
+// Client-side warn<=max precheck (the API side re-validates with inherited old values)
   const cur = (await getRules())[model] || {};
   const mx = body.max !== undefined ? body.max : (cur.max || 0);
   const wn = body.warn !== undefined ? body.warn : (cur.warn || 0);
@@ -451,7 +451,7 @@ async function ctxpCmd(argv) {
   return save(body, '已保存 ' + model);
 }
 
-// ---- 参数模式 ----
+// ---- Argument mode ----
 function parseArgs(argv) {
   const opts = {};
   for (let i = 0; i < argv.length; i++) {
@@ -475,7 +475,7 @@ function paramAdd(name, opts) {
   const type = opts.type || 'openai';
   if (!TYPES.includes(type)) { console.log(`✗ --type 必须是 ${TYPES.join('/')}`); process.exit(1); }
   if (!opts.baseUrl) { console.log('✗ 需要 --baseUrl'); process.exit(1); }
-  // 移除同名旧渠道
+  // remove the old same-named channel
   cfg.channels = (cfg.channels || []).filter(c => c.name !== opts.name);
   const ch = { name: opts.name, type, baseUrl: opts.baseUrl, apiKey: opts.apiKey || '', proxy: opts.proxy || null };
   if (opts.models) ch.models = opts.models.split(',').map(s => s.trim()).filter(Boolean);
@@ -488,7 +488,7 @@ function main() {
   const args = process.argv.slice(2);
   const instances = listInstances();
 
-  // 无参数 → 交互式选实例
+  // no args -> interactive instance picker
   if (!args.length) {
     if (!instances.length) { console.log('✗ 没有任何配置文件, 先手动创建一个 config.json'); process.exit(1); }
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -502,7 +502,7 @@ function main() {
     return;
   }
 
-  // ctx: 上下文窗口/软硬上限(立即生效并写回配置)
+// ctx: context window / soft+hard limits (applies immediately and writes back the config)
   if (args[0] === 'ctx' || args[0] === 'context') {
     ctxCmd(args.slice(1)).catch(e => { console.log('✗ ' + e.message); process.exit(1); });
     return;
@@ -511,7 +511,7 @@ function main() {
     ctxCmd([args[0]].concat(args.slice(2))).catch(e => { console.log('✗ ' + e.message); process.exit(1); });
     return;
   }
-  // ctxp: 全局上下文上限(全局生效, 实例名前缀可省); 也兼容 agw.sh ctxp 直入
+// ctxp: global context limits (global scope; instance prefix optional); also reachable directly as agw.sh ctxp
   if (args[0] === 'ctxp') {
     ctxpCmd(args.slice(1)).catch(e => { console.log('✗ ' + e.message); process.exit(1); });
     return;
@@ -521,15 +521,15 @@ function main() {
     return;
   }
 
-  // 第一个参数 = 实例名
+  // first argument = instance name
   let name = args[0];
   const cmd = args[1] || '';
   const rest = args.slice(2);
 
-  // 如果第一个参数是命令(不是实例名), 则先选实例
+// If the first arg is a command (not an instance name), pick the instance first
   if (['add', 'list', 'remove', 'set-port', 'set-key', 'add-proxy'].includes(name)) {
     const cmd2 = name; name = ''; // 后面处理
-    // 交互式选实例
+// Interactive instance picker
     if (!instances.length) { console.log('✗ 没有配置文件'); process.exit(1); }
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     (async () => {
@@ -547,13 +547,13 @@ function main() {
     return;
   }
 
-  // 正常: name = 实例名, cmd = 命令
+  // normal: name = instance name, cmd = command
   if (cmd === 'add') {
     if (rest.length && rest[0].startsWith('--')) {
-      // 参数模式
+// Argument mode
       paramAdd(name, parseArgs(rest));
     } else {
-      // 交互式
+// Interactive
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
       let cfg = loadCfg(name);
       if (!cfg) { console.log(`✗ 实例 [${name}] 配置不存在`); rl.close(); process.exit(1); }
@@ -614,7 +614,7 @@ function main() {
     saveCfg(name, cfg);
     console.log(`✓ TLS 已关闭, 重启: agw.sh restart ${name}`);
   } else if (!cmd) {
-    // 只有实例名 → 进主菜单
+// instance name only -> enter the main menu
     let cfg = loadCfg(name);
     if (!cfg) { console.log(`✗ 实例 [${name}] 配置不存在`); process.exit(1); }
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });

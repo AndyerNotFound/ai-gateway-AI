@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# 临时文件定时清理：给导出到公共目录（如 /sdcard/Download）的证书设一个到期删除时间。
-#   bash tls/cleanup.sh add <路径> <分钟>   安排删除（支持小数，如 0.5）
-#   bash tls/cleanup.sh list                看还有哪些排着队
-#   bash tls/cleanup.sh cancel <路径>       取消
-#   bash tls/cleanup.sh sweep               把到期的删掉（guard 每 5 分钟兜底调用）
-# 说明：后台会起一个精确计时器；Termux 被杀掉也不会漏 —— guard 会兜底扫描。
+# Scheduled temp-file cleanup: give certificates exported to public dirs (e.g. /sdcard/Download) an expiry deletion time.
+#   bash tls/cleanup.sh add <path> <minutes>   schedule deletion (fractions allowed, e.g. 0.5)
+#   bash tls/cleanup.sh list                show what is still queued
+#   bash tls/cleanup.sh cancel <path>       cancel
+#   bash tls/cleanup.sh sweep               delete whatever is due (guard calls this every 5 minutes as a fallback)
+# Note: a precise timer runs in the background; even if Termux is killed nothing is missed -- guard sweeps as a fallback.
 set -uo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 JOBDIR="$DIR/.run/cleanup"
@@ -66,5 +66,5 @@ case "${1:-}" in
   sweep)  sweep ;;
   list)   list_jobs ;;
   cancel) cancel "${2:-}" ;;
-  *)      echo "用法: cleanup.sh add <路径> <分钟> | list | cancel <路径> | sweep" ;;
+  *)      echo "Usage: cleanup.sh add <path> <minutes> | list | cancel <path> | sweep" ;;
 esac

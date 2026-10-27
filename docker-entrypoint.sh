@@ -1,5 +1,5 @@
 #!/bin/sh
-# ai-gateway 容器入口: 首次启动初始化数据卷配置
+# ai-gateway container entrypoint: initialize the data volume config on first start
 set -e
 DATA=/app/data
 mkdir -p "$DATA/log"

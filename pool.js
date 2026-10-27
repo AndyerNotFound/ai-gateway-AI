@@ -17,22 +17,22 @@ const { setupProbe } = require('./upstream');
 const state = require('./state');
 const rt = require('./runtime');
 
-// ================= 多实例池 =================
-/* ================= 多实例池 (单进程托管全部实例) ================= */
-// 一个进程加载目录下所有 config*.json:
-//   - 主端口(default 实例 listen.port)按 /实例名/ 路径前缀路由到对应实例, 无前缀路径归 default
-//   - 各实例原有 listen.port / tls.port 继续监听(兼容旧客户端, 直达该实例无需路径前缀)
-//   - 配置保存 / 实例增删改 / 启停 全部热生效, 无需重启进程
+// ================= Multi-instance pool =================
+/* ================= Multi-instance pool (one process hosts all instances) ================= */
+// one process loads every config*.json in the directory:
+//   - the main port (default instance listen.port) routes /<instance>/ prefixes to that instance; prefix-less paths belong to default
+//   - each instance keeps listening on its original listen.port / tls.port (compatible with old clients; direct access needs no prefix)
+//   - config saves / instance create-delete-edit / start-stop all apply hot, no process restart
 const INST_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
-// 路径第一段保留字: 永不按实例名路由(避免与 API/管理端点打架)
+// Reserved first path segments: never routed as an instance name (avoids clashing with API/admin endpoints)
 const RESERVED_PATHS = new Set(['v1', 'v1beta', 'v1alpha', 'admin', 'health', 'status', 'favicon.ico', 'robots.txt', 'credits', 'auth', 'plugins', 'user', 'dashboard']);
-// 上游余额透传(OpenAI 语义计费端点): 带/不带 /v1 前缀都认(部分老客户端把 base 配成不带 /v1 的域名)
-// 别名尽量覆盖常见客户端/中转工具的「查余额」路径; 命中即走 fetchBalanceCached 查上游账户余额
+// Upstream balance passthrough (OpenAI-semantics billing endpoints): accepts both with and without the /v1 prefix (some old clients configure base without /v1)
+// Aliases cover common clients/relay tools' balance paths; a hit routes through fetchBalanceCached for the upstream account balance
 const BILLING_PATHS = new Set([
-  // OpenAI 官方 dashboard billing(第三方客户端/中转面板常见)
+// Official OpenAI dashboard billing (common with third-party clients/relay panels)
   '/v1/dashboard/billing/credit_grants', '/dashboard/billing/credit_grants',
   '/v1/dashboard/billing/subscription', '/dashboard/billing/subscription',
-  // 通用别名(one-api/new-api/中转面板/各 AI 客户端 的「余额获取路径」变体)
+// Generic aliases (balance-path variants of one-api/new-api/relay panels/AI clients)
   '/v1/credits', '/credits',
   '/v1/balance', '/balance',
   '/v1/user/balance', '/user/balance',
@@ -44,8 +44,8 @@ const BILLING_PATHS = new Set([
   '/v1/wallet', '/wallet',
   '/v1/dashboard/billing/usage', '/dashboard/billing/usage',
 ]);
-// 这些路径返回「通用余额形态」(带 total_remain / balance / data.*, 兼容各家「JSON 键」配置);
-// 其余(OpenAI dashboard 两个)保持官方形状
+// These paths return the "generic balance shape" (with total_remain / balance / data.*, compatible with any per-client JSON-key config);
+// The rest (the two OpenAI dashboard endpoints) keep the official shape
 const GENERIC_BALANCE_PATHS = new Set([
   '/v1/credits', '/credits',
   '/v1/balance', '/balance',
@@ -64,7 +64,7 @@ function setupModelSync(cfg) {
   if (!(cfg.modelSync && cfg.modelSync.enable !== false)) return;
   const min = Number(cfg.modelSync.intervalMin) > 0 ? Number(cfg.modelSync.intervalMin) : Math.max(1, Number(cfg.modelSync.intervalHours) || 24) * 60;
   const run = () => syncModels(cfg).catch(e => logErr('[sync:' + instName(cfg) + '] 定时任务出错:', e.message));
-  cfg._syncTimer0 = setTimeout(run, 30000); // 启动 30 秒后首次同步, 不阻塞启动
+cfg._syncTimer0 = setTimeout(run, 30000); // first sync 30s after boot; never blocks startup
   cfg._syncTimer = setInterval(run, Math.max(60, min) * 1000);
 }
 function teardownModelSync(cfg) {
@@ -88,7 +88,7 @@ function createInstancePool(dir) {
   return pool;
 }
 
-// 读取实例 TLS 证书(带缓存; 失败返回 null 并警告)
+// Read an instance's TLS certificate (cached; returns null + warning on failure)
 function readTlsCfg(cfg) {
   if (!(cfg.tls && cfg.tls.enable)) return null;
   if (cfg._tlsCache) return cfg._tlsCache;
@@ -104,7 +104,7 @@ function readTlsCfg(cfg) {
   return cfg._tlsCache;
 }
 
-// 计算当前应该监听的端口集合: 主端口(default) + 各启用实例的兼容端口
+// Compute the set of ports that should be listening: main port (default) + compat ports of enabled instances
 function poolDesiredPorts(pool) {
   const d = new Map(); // key → { name, port, tls, tlsCfg, main }
   const def = pool.instances.get('default');
@@ -114,7 +114,7 @@ function poolDesiredPorts(pool) {
   pool.mainTlsPort = 0;
   const defTls = readTlsCfg(def);
   if (defTls && (defTls.port == null || Number(defTls.port) === Number(mainPort))) {
-    // 主端口纯 HTTPS（tls.port 留空或与主端口相同）
+// Main port pure HTTPS (tls.port empty or equal to the main port)
     d.set('https:' + mainPort, { name: 'default', port: mainPort, tls: true, tlsCfg: defTls, main: true });
     pool.mainTlsPort = mainPort;
   } else {
@@ -124,12 +124,12 @@ function poolDesiredPorts(pool) {
       pool.mainTlsPort = defTls.port;
     }
   }
-  // 各启用实例的兼容端口(禁用实例不开)
+// Compatibility ports of enabled instances (disabled instances get none)
   for (const [name, cfg] of pool.instances) {
     if (name === 'default' || cfg._disabled) continue;
     const p = cfg.listen.port;
     const tc = readTlsCfg(cfg);
-    // 同端口纯 HTTPS: tls.port 留空, 或显式等于 listen.port
+// Same-port pure HTTPS: tls.port empty, or explicitly equal to listen.port
     const pureHttps = !!(tc && (tc.port == null || Number(tc.port) === Number(p)));
     if (p && p !== mainPort && !d.has('http:' + p) && !d.has('https:' + p)) {
       if (pureHttps) d.set('https:' + p, { name, port: p, tls: true, tlsCfg: tc });
@@ -141,7 +141,7 @@ function poolDesiredPorts(pool) {
   return d;
 }
 
-// 对比目标端口与实际监听, 增删 server (热加载时端口变化即时生效)
+// Diff target ports against actual listeners and add/remove servers (port changes apply instantly on hot reload)
 function poolReconcilePorts(pool) {
   const desired = poolDesiredPorts(pool);
   for (const [key, srv] of [...pool.servers]) {
@@ -177,8 +177,8 @@ function poolHandler(req, res) {
   });
 }
 
-// 加载/热重载一个实例; 返回 cfg 或 null(配置文件不存在)
-// ===== 统计定时落盘 (2026-10-27) =====
+// Load/hot-reload one instance; returns cfg or null (config file missing)
+// ===== Scheduled stats persistence (2026-10-27) =====
 function statsFlushFile(cfg) {
   const dir = path.join(path.dirname(cfg._configFile || process.cwd()));
   return path.join(dir, 'stats-' + instName(cfg) + '.json');
@@ -201,7 +201,7 @@ function flushStats(cfg) {
 function setupStatsFlush(cfg) {
   if (cfg._statsFlushTimer) { clearInterval(cfg._statsFlushTimer); cfg._statsFlushTimer = null; }
   const min = Number(cfg.statsFlushMin);
-  if (!min || min <= 0) return; // 0/未设 = 关闭
+if (!min || min <= 0) return; // 0/unset = off
   const ms = Math.max(0.2, min) * 60 * 1000;
   cfg._statsFlushTimer = setInterval(() => flushStats(cfg), ms);
   if (cfg._statsFlushTimer.unref) cfg._statsFlushTimer.unref();
@@ -219,14 +219,14 @@ function poolLoadInstance(pool, name) {
   const cfg = loadConfig(f);
   cfg._name = name;
   cfg._disabled = !!cfg.disabled;
-  loadKeyUsage(cfg); // 读回卡密用量
-  // 热重载继承旧 cfg 的 usedTokens(取大值, 防清零用户额度)
+loadKeyUsage(cfg); // read key card usage back
+  // hot reload inherits the old cfg's usedTokens (keeps the larger value so user quotas never reset to zero)
   if (old && Array.isArray(old.apiKeys)) {
     const oldMap = {}; for (const k of old.apiKeys) oldMap[k.key] = k.usedTokens || 0;
     for (const k of (cfg.apiKeys || [])) k.usedTokens = Math.max(k.usedTokens || 0, oldMap[k.key] || 0);
   }
-  cfg._stats = (old && old._stats) || { startedAt: new Date().toISOString(), requests: 0, errors: 0, byChannel: {}, recent: [] }; // 热重载保留统计
-  if (!old) { // 冷启动: 从 data/stats-<inst>.json 读回历史(内存统计在重启后丢失的兜底)
+cfg._stats = (old && old._stats) || { startedAt: new Date().toISOString(), requests: 0, errors: 0, byChannel: {}, recent: [] }; // hot reload keeps stats
+if (!old) { // cold start: restore history from data/stats-<inst>.json (fallback for stats lost across restarts)
     try {
       const sf = statsFlushFile(cfg);
       if (fs.existsSync(sf)) {
@@ -286,7 +286,7 @@ function poolRenameInstance(pool, oldName, newName) {
   return true;
 }
 
-// 请求路由: 兼容端口按端口绑定直达, 主端口按 /实例名/ 路径前缀, 否则 default
+// Request routing: compat ports bind directly by port; main port routes by /<instance>/ prefix; otherwise default
 function poolRoute(pool, req, p) {
   const lp = req.socket && req.socket.localPort;
   if (lp && lp !== pool.mainPort && lp !== pool.mainTlsPort) {

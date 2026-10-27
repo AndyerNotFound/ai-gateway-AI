@@ -1,8 +1,8 @@
 'use strict';
 /**
- * ai-gateway 插件管理器（期1：网关核心）
- * 职责：扫描已装插件 / 按实例激活 server.js / 分发 /plugins 路由 / 数据持久化 / 定时任务
- * 设计见 docs/PLUGIN-DESIGN.md。插件代码全局共享(plugins/<id>/)，数据按实例隔离(plugins-data/<inst>/<id>.json)。
+ * ai-gateway plugin manager (phase 1: gateway core)
+ * Responsibilities: scan installed plugins / activate each instance's server.js / dispatch /plugins routes / data persistence / scheduled tasks
+ * Design in docs/PLUGIN-DESIGN.md. Plugin code is shared globally (plugins/<id>/); data is isolated per instance (plugins-data/<inst>/<id>.json).
  */
 const fs = require('fs');
 const path = require('path');
@@ -11,13 +11,13 @@ const os = require('os');
 const http = require('http');
 const https = require('https');
 
-/** 极简 tar 解压（仅文件/目录，防路径穿越）。插件包用 .tar.gz 格式（零依赖跨平台）。 */
+/** Minimal tar extraction (files/dirs only, path-traversal safe). Plugin packages use .tar.gz (zero-dep, cross-platform). */
 function untar(tarBuf, destDir) {
   let off = 0;
   while (off + 512 <= tarBuf.length) {
     const header = tarBuf.slice(off, off + 512);
     let name = header.slice(0, 100).toString('utf8').replace(/\0.*$/, '');
-    if (!name) break; // 空块 = 结束
+if (!name) break; // empty block = end
     const prefix = header.slice(345, 500).toString('utf8').replace(/\0.*$/, '');
     if (prefix) name = prefix + '/' + name;
     const size = parseInt(header.slice(124, 136).toString('utf8').replace(/\0.*$/, '').trim(), 8) || 0;
@@ -36,7 +36,7 @@ function untar(tarBuf, destDir) {
   }
 }
 
-/** 下载 URL → Buffer（跟随重定向, 30s 超时, 默认上限 50MB） */
+/** Download URL -> Buffer (follows redirects, 30s timeout, 50MB default cap) */
 function downloadBuf(url, maxBytes = 50 * 1024 * 1024, redirects = 5) {
   return new Promise((resolve, reject) => {
     let lib;
@@ -58,7 +58,7 @@ function downloadBuf(url, maxBytes = 50 * 1024 * 1024, redirects = 5) {
 }
 
 class PluginManager {
-  /** @param gwDir ai-gateway 根目录；@param logFn 日志 */
+/** @param gwDir ai-gateway root dir; @param logFn logger */
   constructor(gwDir, logFn) {
     this.gwDir = gwDir;
     this.pluginsDir = path.join(gwDir, 'plugins');
@@ -76,7 +76,7 @@ class PluginManager {
     try { fs.mkdirSync(this.dataDir, { recursive: true }); } catch {}
   }
 
-  /** 扫描 plugins/ 目录登记已安装插件（不激活） */
+/** Scan the plugins/ directory and register installed plugins (without activating) */
   scanInstalled() {
     this.installed.clear();
     if (!fs.existsSync(this.pluginsDir)) return;
@@ -93,9 +93,9 @@ class PluginManager {
     }
   }
 
-  /** 激活某实例 cfg.plugins 里启用的插件。gatewayApi 见 makeCtx。 */
+/** Activates the plugins enabled in an instance's cfg.plugins. See makeCtx for gatewayApi. */
   activateInstance(instName, cfg, gatewayApi) {
-    this.deactivateInstance(instName); // 热重载安全: 先停掉该实例旧的(含已停用的), 再按新配置激活
+this.deactivateInstance(instName); // hot-reload safety: stop the instance's old set (including disabled ones) before activating the new config
     this.scanInstalled();
     const list = Array.isArray(cfg.plugins) ? cfg.plugins : [];
     for (const pc of list) {
@@ -108,7 +108,7 @@ class PluginManager {
 
   activateOne(instName, pluginId, pluginCfg, cfg, gatewayApi) {
     const key = instName + '/' + pluginId;
-    this.deactivateByKey(key); // 重激活前先停
+this.deactivateByKey(key); // stop before re-activating
     const inst = this.installed.get(pluginId);
     if (!inst) return;
     const { manifest, dir } = inst;
@@ -127,7 +127,7 @@ class PluginManager {
       const ctx = this.makeCtx(state, cfg, gatewayApi);
       state.ctx = ctx;
       try {
-        delete require.cache[require.resolve(serverFile)]; // 每实例独立模块对象
+delete require.cache[require.resolve(serverFile)]; // a fresh module object per instance
         const mod = require(serverFile);
         state.module = mod;
         if (mod && typeof mod.activate === 'function') mod.activate(ctx);
@@ -139,7 +139,7 @@ class PluginManager {
     this.active.set(key, state);
   }
 
-  /** ctx 工厂：插件能用的全部能力 */
+/** ctx factory: every capability a plugin may use */
   makeCtx(state, cfg, gatewayApi) {
     const self = this;
     const perms = new Set(state.manifest.permissions || []);
@@ -147,35 +147,35 @@ class PluginManager {
       id: state.pluginId,
       instanceName: state.instName,
       config: state.cfg,
-      /** 注册端点 /plugins/<id><path> */
+/** Registers the endpoint /plugins/<id><path> */
       registerRoute(method, p, handler) {
         if (!p.startsWith('/')) p = '/' + p;
         state.routes.set(method.toUpperCase() + ' ' + p, handler);
       },
-      /** 插件私有 KV（自动持久化 plugins-data/<inst>/<id>.json） */
+/** Plugin-private KV (auto-persisted to plugins-data/<inst>/<id>.json) */
       data: {
         get: k => state.data[k],
         set: (k, v) => { state.data[k] = v; state.dirty = true; },
         del: k => { delete state.data[k]; state.dirty = true; },
         all: () => state.data,
       },
-      /** 定时任务（停用时自动清理） */
+/** Scheduled tasks (cleaned up automatically on disable) */
       cron(ms, fn) {
         const t = setInterval(() => { try { fn(); } catch (e) { self.log(`[${state.pluginId}] cron:`, e.message); } }, ms);
         if (t.unref) t.unref();
         state.timers.push(t);
       },
-      /** hook（预留，期1实现 beforeRequest/afterResponse 注册） */
+/** hook (reserved; phase 1 implements beforeRequest/afterResponse registration) */
       hook(name, fn) {
         state.hooks = state.hooks || {};
         (state.hooks[name] = state.hooks[name] || []).push(fn);
       },
-      /** 网关能力（按 permissions 放行敏感项） */
+/** Gateway capabilities (sensitive items gated by permissions) */
       gateway: {
         instanceName: state.instName,
-        /** 按卡密 token 查 key 记录（插件校验调用者身份用） */
+/** Look up a key record by card token (lets plugins verify the caller's identity) */
         findKey: token => (gatewayApi && gatewayApi.findKey) ? gatewayApi.findKey(token) : null,
-        /** 给卡密加额度（需 gateway:grantQuota 权限） */
+/** Add quota to a key card (requires gateway:grantQuota permission) */
         grantQuota: (keyId, tokens) => {
           if (!perms.has('gateway:grantQuota')) { self.log(`[${state.pluginId}] grantQuota 被拒: 未声明权限`); return false; }
           return (gatewayApi && gatewayApi.grantQuota) ? gatewayApi.grantQuota(keyId, tokens) : false;
@@ -185,7 +185,7 @@ class PluginManager {
     };
   }
 
-  // ---------- 数据持久化 ----------
+// ---------- Data persistence ----------
   dataFile(instName, pluginId) {
     const safe = s => String(s).replace(/[^a-zA-Z0-9._-]/g, '_');
     return path.join(this.dataDir, safe(instName), safe(pluginId) + '.json');
@@ -206,7 +206,7 @@ class PluginManager {
   }
   flushAll() { for (const [, s] of this.active) this.flushData(s); }
 
-  // ---------- 停用 ----------
+// ---------- Disable ----------
   deactivateByKey(key) {
     const state = this.active.get(key);
     if (!state) return;
@@ -221,8 +221,8 @@ class PluginManager {
     for (const key of [...this.active.keys()]) if (key.startsWith(instName + '/')) this.deactivateByKey(key);
   }
 
-  // ---------- 查询 ----------
-  /** 某实例的插件列表（含运行状态） */
+// ---------- Queries ----------
+/** Plugin list for one instance (with run status) */
   listForInstance(instName, cfg) {
     this.scanInstalled();
     const cfgMap = new Map((Array.isArray(cfg.plugins) ? cfg.plugins : []).map(p => [p.id, p]));
@@ -242,19 +242,19 @@ class PluginManager {
     }
     return out;
   }
-  /** 用户端可见插件（启用 + 有 userPage） */
+/** Plugins visible to users (enabled + has userPage) */
   userPlugins(instName, cfg) {
     return this.listForInstance(instName, cfg).filter(p => p.enable && p.running && p.hasUserPage)
       .map(p => ({ id: p.id, name: p.name, icon: p.icon, description: p.description, userPage: p.userPage }));
   }
 
-  // ---------- 安装 / 卸载 / 配置 ----------
+// ---------- Install / uninstall / configure ----------
   /**
-   * 从 Buffer 安装插件包（.tar.gz）。校验 SHA256(可选) → 解压 → 校验 manifest → 移到 plugins/<id>。
-   * 返回 {id, manifest}。已存在同 id 则报错（更新请先卸载）。
+   * Installs a plugin package (.tar.gz) from a Buffer. Verify SHA256 (optional) -> extract -> validate manifest -> move to plugins/<id>.
+   * Returns {id, manifest}. Errors when the id already exists (uninstall first to update).
    */
   installPackage(buf, expectedSha256) {
-    // SHA256 校验（提供了才强校验）
+// SHA256 check (enforced only when provided)
     const crypto = require('crypto');
     const actualSha = crypto.createHash('sha256').update(buf).digest('hex');
     if (expectedSha256 && actualSha !== String(expectedSha256).toLowerCase()) {
@@ -264,7 +264,7 @@ class PluginManager {
     try {
       const tarBuf = zlib.gunzipSync(buf); // .tar.gz
       untar(tarBuf, tmp);
-      // 定位 manifest.json（根目录 或 唯一的第一层子目录）
+// Locate manifest.json (root dir, or the single first-level subdirectory)
       let root = tmp;
       if (!fs.existsSync(path.join(root, 'manifest.json'))) {
         const subs = fs.readdirSync(tmp).filter(d => fs.statSync(path.join(tmp, d)).isDirectory());
@@ -286,13 +286,13 @@ class PluginManager {
     }
   }
 
-  /** 从 URL 下载并安装 */
+/** Download from a URL and install */
   async installFromUrl(url, sha256) {
     const buf = await downloadBuf(url);
     return this.installPackage(buf, sha256);
   }
 
-  /** 卸载插件（先停用所有实例的该插件）。keepData=true 保留数据 */
+/** Uninstall a plugin (first disables it on every instance). keepData=true keeps its data */
   removePlugin(pluginId, keepData) {
     for (const key of [...this.active.keys()]) if (key.endsWith('/' + pluginId)) this.deactivateByKey(key);
     const dir = path.join(this.pluginsDir, pluginId);
@@ -309,7 +309,7 @@ class PluginManager {
     return true;
   }
 
-  /** 读某插件的 configSchema + 当前配置（供管理端渲染设置表单） */
+/** Read a plugin's configSchema + current config (lets the admin panel render its settings form) */
   configSchema(instName, pluginId, cfg) {
     const inst = this.installed.get(pluginId);
     if (!inst) return null;
@@ -317,8 +317,8 @@ class PluginManager {
     return { schema: inst.manifest.configSchema || [], config: pc ? (pc.config || {}) : {} };
   }
 
-  // ---------- HTTP 分发 ----------
-  /** 处理 /plugins[/<id>[/<path...>]]。已在主路由确定实例 cfg 后调用。 */
+// ---------- HTTP dispatch ----------
+/** Handles /plugins[/<id>[/<path...>]]. Called after the main route has resolved the instance cfg. */
   async handle(cfg, req, res, u, p, body) {
     const instName = req._branchName || 'default';
     const segs = p.split('/').filter(Boolean); // ['plugins', ...]
@@ -328,7 +328,7 @@ class PluginManager {
       res.end(s);
     };
 
-    // GET /plugins → 浏览器返回插件中心页(HTML), API 调用返回 JSON
+// GET /plugins -> returns the plugin center page (HTML) to browsers, JSON to API callers
     if (segs.length === 1) {
       if (req.method !== 'GET') return json(405, { error: 'Method Not Allowed' });
       const list = this.userPlugins(instName, cfg);
@@ -339,7 +339,7 @@ class PluginManager {
       }
       return json(200, { ok: true, plugins: list });
     }
-    // GET /plugins/required → 管理端配置的推荐插件（首次登录提示）
+// GET /plugins/required -> admin-configured recommended plugins (first-login prompt)
     if (segs[1] === 'required') {
       if (req.method !== 'GET') return json(405, { error: 'Method Not Allowed' });
       return json(200, { ok: true, required: cfg.requiredPlugins || [] });
@@ -350,7 +350,7 @@ class PluginManager {
     const state = this.active.get(instName + '/' + pluginId);
     if (!state) return json(404, { error: `插件未启用: ${pluginId}` });
 
-    // 1) 先查 server.js 注册的 API 路由
+// 1) check API routes registered by server.js first
     const handler = state.routes.get(req.method.toUpperCase() + ' ' + subPath);
     if (handler) {
       const params = {
@@ -358,7 +358,7 @@ class PluginManager {
         body: tryJson(body),
         rawBody: body,
         headers: req.headers,
-        // 便捷：取调用者卡密（Bearer/x-api-key/?key=）
+// Convenience: fetch the caller's key card (Bearer/x-api-key/?key=)
         token: (() => {
           const a = req.headers.authorization || '';
           if (a.startsWith('Bearer ')) return a.slice(7).trim();
@@ -370,7 +370,7 @@ class PluginManager {
       return;
     }
 
-    // 2) 静态页面/资源（pages/ 与插件根文件，防路径穿越）
+// 2) static pages/assets (pages/ and plugin root files, path-traversal safe)
     const rel = subPath.replace(/^\/+/, '') || state.manifest.userPage || 'index.html';
     const filePath = path.normalize(path.join(state.dir, rel));
     if (!filePath.startsWith(state.dir)) { res.writeHead(403); return res.end('Forbidden'); }
@@ -386,7 +386,7 @@ class PluginManager {
 
 function tryJson(s) { if (!s) return null; try { return JSON.parse(s); } catch { return null; } }
 
-/** 插件中心页（浏览器访问 /plugins 时）：卡片网格，点击进插件。实例前缀由服务端推导，避免相对路径歧义。 */
+/** Plugin center page (browser hits /plugins): card grid, click to open a plugin. Instance prefix is derived server-side to avoid relative-path ambiguity. */
 function renderPluginIndex(list, instName) {
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const base = (instName === 'default' ? '' : '/' + encodeURIComponent(instName)) + '/plugins/';

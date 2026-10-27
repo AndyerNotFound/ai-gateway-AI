@@ -11,8 +11,8 @@ const zlib = require('zlib');
 const { normalizeProxy } = require('./config');
 const { logErr } = require('./util');
 
-// ================= 代理连接层 (SOCKS5 / HTTP CONNECT, 零依赖手写) =================
-/* ================= 代理连接层 (SOCKS5 / HTTP CONNECT, 零依赖手写) ================= */
+// ================= Proxy layer (SOCKS5 / HTTP CONNECT, hand-written, zero deps) =================
+/* ================= Proxy layer (SOCKS5 / HTTP CONNECT, hand-written, zero deps) ================= */
 function dialTcp(host, port, timeout) {
   return new Promise((resolve, reject) => {
     const sock = net.connect({ host, port });
@@ -24,7 +24,7 @@ function dialTcp(host, port, timeout) {
   });
 }
 
-/** 在裸 socket 上做定长/定界读取(仅握手阶段用, 握手完 detach) */
+/** Fixed-length/delimited reads on a raw socket (handshake phase only; detached after the handshake) */
 function makeReader(sock) {
   const st = { buf: Buffer.alloc(0), waiters: [] };
   function pump() {
@@ -118,7 +118,7 @@ async function dialViaProxy(proxy, targetHost, targetPort, timeout) {
   }
 }
 
-/* ================= Agent 缓存 ================= */
+/* ================= Agent cache ================= */
 let directAgents = null;
 function getDirectAgents() {
   if (!directAgents) {
@@ -179,14 +179,14 @@ function getAgents(cfg, ch) {
   return a;
 }
 
-// 连接级错误判定: 对端提前断开/连不上等, 发生在收到任何响应之前 → 同渠道重试安全(不会重复计费)
+// Connection-level error test: peer closed early / unreachable etc., before any response arrives -> same-channel retry is safe (never double-bills)
 function isConnErr(e) {
   const m = String((e && e.message) || e || '');
   return /socket hang up|ECONNRESET|EPIPE|ECONNREFUSED|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|ENOTFOUND/i.test(m);
 }
 
-// 构造一次性 Agent (keepAlive 关闭, 不进缓存): 供同渠道重试用全新连接,
-// 避开已被上游悄悄关闭的 keep-alive 尸体 socket; 不 destroy 共享池, 不影响其他在途请求
+//// build a one-shot Agent (keepAlive off, not cached): gives same-channel retries a brand-new connection,
+// Sidestep keep-alive sockets the upstream already closed; never destroys the shared pool, so other in-flight requests are unaffected
 function makeFreshAgents(cfg, ch) {
   const raw = ch.proxy ? cfg.proxies[ch.proxy] : null;
   const proxy = (raw && typeof raw === 'object' && raw.type) ? raw : (ch.proxy ? normalizeProxy(ch.proxy) : null);
