@@ -4058,7 +4058,8 @@ async function handleHttp(cfg, req, res) {
   }
 
   // ===== Web 管理面板 (/admin + /admin/api/*) =====
-  if (p === '/admin' || p === '/admin/' || p === '/admin/ball' || p.startsWith('/admin/api/') || p === '/auth' || p === '/auth/' || p === '/auth/app.js' || p === '/auth/v2' || p === '/auth/v2/' || p.startsWith('/auth/vendor/')) {
+  if (p === '/admin' || p === '/admin/' || p === '/admin/ball' || p.startsWith('/admin/api/') || p === '/auth' || p === '/auth/' || p === '/auth/app.js' || p === '/auth/v2' || p === '/auth/v2/' || p.startsWith('/auth/vendor/')
+      || /^\/auth\/[A-Za-z0-9_-]{16,128}\/[A-Za-z0-9_-]{8,256}\/?$/.test(p)) {
     // 管理页面不需要收集 body 前置处理, handleAdmin 内部自行处理
     // 但 POST/DELETE 的 body 需要先收集
     if (req.method === 'POST' || req.method === 'DELETE') {

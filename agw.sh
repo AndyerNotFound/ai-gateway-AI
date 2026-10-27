@@ -91,7 +91,7 @@ start_gw() {
   if [ "$port" != "?" ] && health_ok "$port"; then
     echo "✓ 网关启动成功: pid $(cat "$PIDFILE"), 主端口 $port, 日志 $LOGFILE"
     echo "  实例访问: http://127.0.0.1:$port/实例名/v1/... (无前缀=default)"
-    echo "  管理面板: http://127.0.0.1:$port/auth?key=<访问令牌>  (agw web login 生成/查看)"
+    echo "  管理面板: http://127.0.0.1:$port/auth  (一次性登录链接: agw web login)"
   else
     echo "△ 网关进程已启动(pid $(cat "$PIDFILE")) 但 $port/health 未就绪, 查看日志: $LOGFILE"
   fi

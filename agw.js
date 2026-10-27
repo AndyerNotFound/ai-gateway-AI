@@ -882,18 +882,17 @@ function cmdStat(argv) {
  *  agw web — 面板访问令牌(/auth?key=<token>)
  *  webToken: 面板入口与 /admin/api/* 通吃的访问令牌; adminKey 仍然有效(可只留其一)
  * ================================================================ */
-function webURLs(cfg) {
+function webBases(cfg) { // 面板基础地址(不含凭据)
   const port = (cfg.listen || {}).port || 16384;
   const scheme = (cfg.tls && cfg.tls.enable) ? 'https' : 'http';
-  const mk = (host) => cfg.webToken ? `${scheme}://${host}:${port}/auth?key=${encodeURIComponent(cfg.webToken)}` : `${scheme}://${host}:${port}/auth`;
-  const urls = [mk('127.0.0.1')];
+  const bases = [`${scheme}://127.0.0.1:${port}`];
   try {
     const priv = i => i && i.family === 'IPv4' && !i.internal
       && (/^10\./.test(i.address) || /^192\.168\./.test(i.address) || /^172\.(1[6-9]|2\d|3[01])\./.test(i.address));
     const lan = Object.values(os.networkInterfaces()).flat().find(priv);
-    if (lan) urls.push(mk(lan.address));
+    if (lan) bases.push(`${scheme}://${lan.address}:${port}`);
   } catch (_) {}
-  return urls;
+  return bases;
 }
 function openBrowser(url) {
   if (process.env.AGW_NO_OPEN) return null; // 脚本化/测试场景: 不弹浏览器
@@ -903,15 +902,30 @@ function openBrowser(url) {
   }
   return null;
 }
+async function makeLoginLink(inst, cfg) { // 一次性登录链接: 随机会话UID + 令牌, 全走路径
+  const sid = crypto.randomBytes(24).toString('base64url');
+  const bases = webBases(cfg);
+  const tok = encodeURIComponent(cfg.webToken || '');
+  try {
+    await api('POST', '/admin/api/web-session', { sid }); // 预注册一次性会话UID(15分钟内有效, 用一次即废)
+    return { sid, urls: bases.map(b => `${b}/auth/${sid}/${tok}`) };
+  } catch (e) {
+    return { sid, urls: bases.map(b => `${b}/auth?key=${tok}`), fallback: true, err: e.message };
+  }
+}
+function printLinks(label, urls) {
+  console.log(t(label));
+  urls.forEach(u => console.log('  ' + C.cyn(u)));
+}
 function webHelp() {
   console.log(t(`用法:
-  agw web login [--inst <实例>]          生成随机访问令牌, 打印带令牌面板链接并尝试打开浏览器
+  agw web login [--inst <实例>]          生成随机访问令牌+一次性会话UID, 打印登录链接并尝试打开浏览器
   agw web --key <token> [--inst <实例>]  设定固定访问令牌(URL 安全字符 [A-Za-z0-9_-], 固定后 login 不再轮换)
   agw web --key clear [--inst <实例>]    清除固定访问令牌
-  agw web --expired [--inst <实例>]      清除面板认证状态(注销全部已签发会话)
+  agw web --expired [--inst <实例>]      清除面板认证状态(注销全部会话与待用链接)
   agw web [--inst <实例>]                查看当前令牌状态与面板地址`));
 }
-function cmdWeb(argv) {
+async function cmdWeb(argv) {
   const has = f => argv.includes(f);
   if (has('help') || has('--help')) return webHelp();
   const inst = (() => { const i = argv.indexOf('--inst'); return i >= 0 && argv[i + 1] ? argv[i + 1] : 'default'; })();
@@ -922,8 +936,8 @@ function cmdWeb(argv) {
       ? t('访问令牌: ') + C.grn('已设 ' + maskKey(cfg.webToken)) + (cfg.webTokenFixed ? C.dim('(固定, --key clear 可清除)') : C.dim('(自动生成, login 会轮换)'))
       : C.yel('访问令牌: 未设') + C.dim(' (agw web login 生成)'));
     if (!cfg.adminKey && !cfg.webToken) console.log(C.yel('adminKey 也未设: 面板当前免密访问, 公网部署前务必 agw web login'));
-    console.log(t('面板地址:'));
-    webURLs(cfg).forEach(u => console.log('  ' + C.cyn(u)));
+    console.log(t('面板地址(完整登录链接用 agw web login 生成):'));
+    webBases(cfg).forEach(b => console.log('  ' + C.cyn(b + '/auth')));
     return;
   }
 
@@ -938,18 +952,21 @@ function cmdWeb(argv) {
     }
     if (!/^[A-Za-z0-9_-]{8,128}$/.test(v)) die('令牌需为 8~128 位 URL 安全字符([A-Za-z0-9_-]); 建议直接 agw web login 随机生成');
     cfg.webToken = v; cfg.webTokenFixed = true; saveCfg(inst, cfg);
-    ok('固定访问令牌已保存, 面板链接:');
-    webURLs(cfg).forEach(u => console.log('  ' + C.cyn(u)));
+    const r = await makeLoginLink(inst, cfg);
+    printLinks('固定访问令牌已保存, 一次性登录链接:', r.urls);
+    if (r.fallback) console.log(C.dim('网关未在运行, 已退回 ?key= 形式(重启后仍有效)'));
+    const opened = openBrowser(r.urls[0]);
+    if (opened) console.log(C.dim(`已尝试用 ${opened} 打开浏览器`));
     return hotRestart(inst);
   }
   if (has('--expired')) {
     return api('POST', '/admin/api/web-expired')
-      .then(() => ok('已清除面板认证状态(全部会话已注销, 各浏览器需重新带令牌访问)'))
+      .then(() => ok('已清除面板认证状态(全部会话与待用登录链接已注销)'))
       .catch(e => die('清除失败(网关未在运行?): ' + e.message));
   }
   if (argv.length && !has('login')) return webHelp();
 
-  // login: 固定令牌 → 直接用; 自动令牌 → 每次轮换(旧链接失效)
+  // login: 固定令牌 → 直接用; 自动令牌 → 每次轮换(旧令牌+旧链接失效)
   let rotated = false;
   if (!cfg.webTokenFixed) {
     cfg.webToken = crypto.randomBytes(24).toString('base64url');
@@ -958,14 +975,14 @@ function cmdWeb(argv) {
   } else {
     console.log(C.dim('使用固定访问令牌(--key 设定, login 不轮换)'));
   }
-  const urls = webURLs(cfg);
-  console.log(t('面板链接(含令牌, 勿外传):'));
-  urls.forEach(u => console.log('  ' + C.cyn(u)));
+  if (rotated) await hotRestart(inst); // 旧进程内存里的待用链接/会话一并清空
+  const r = await makeLoginLink(inst, cfg);
+  printLinks('登录链接(一次性: 打开即绑定会话, 链接作废; 勿外传):', r.urls);
+  if (r.fallback) console.log(C.dim('一次性链接注册失败(网关未在运行?), 已退回 ?key= 形式: ' + r.err));
   if (rotated) console.log(C.dim('旧令牌/旧链接已失效'));
-  const opened = openBrowser(urls[0]);
+  const opened = openBrowser(r.urls[0]);
   console.log(opened ? C.dim(`已尝试用 ${opened} 打开浏览器`) : C.dim('未找到可用的开浏览器命令, 请手动复制链接'));
   if (!cfg.adminKey && !cfg.webTokenFixed) console.log(C.dim('提示: 面板与 /admin/api/* 均已接受 webToken, 可不再使用 adminKey'));
-  if (rotated) return hotRestart(inst);
 }
 
 /* ==================== main dispatch ==================== */

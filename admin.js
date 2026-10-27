@@ -708,12 +708,12 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
   // 令牌校验复用 checkAdminAuth: 兼容 ?key= / ?adminKey= / Bearer / x-admin-key / cookie
   const m3KeyOk = () => checkAdminAuth(cfg, req, u.searchParams);
   // 带令牌访问成功 → 签发面板会话(HttpOnly cookie, 7 天), 浏览器后续访问(含 /admin/api/*)免带令牌
-  const issueWebSess = () => {
+  const issueWebSess = (fixedSid) => {
     if (!cfg._webSess) cfg._webSess = new Map();
     const now = Date.now();
     for (const [k, exp] of cfg._webSess) if (exp <= now) cfg._webSess.delete(k);
     if (cfg._webSess.size >= 64) cfg._webSess.delete(cfg._webSess.keys().next().value);
-    const sid = require('crypto').randomBytes(32).toString('base64url');
+    const sid = fixedSid || require('crypto').randomBytes(32).toString('base64url');
     cfg._webSess.set(sid, now + 7 * 864e5);
     return `agwSID=${sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`;
   };
@@ -725,6 +725,24 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
   const authDeny = () => textRes(res, 401, '<!doctype html><meta charset="utf-8"><title>401</title>'
     + '<body style="font-family:sans-serif;background:#1c1b1f;color:#e6e1e5;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">'
     + '<div>⚠️ 需要访问令牌: 请访问 <code>/auth?key=<访问令牌></code>(agw web login 生成)</div></body>', 'text/html; charset=utf-8');
+
+  // /auth/<sid>/<token> — 一次性路径式登录(agw web login 生成):
+  // 令牌校验通过 + 消耗预注册的 sid → 以 sid 为会话 ID 签发 7 天会话, 链接从此作废(防历史记录/分享重放)
+  const pm = (req.method === 'GET') && p.match(/^\/auth\/([A-Za-z0-9_-]{16,128})\/([A-Za-z0-9_-]{8,256})\/?$/);
+  if (pm) {
+    const [, sid, tok] = pm;
+    const keys = [cfg.adminKey, cfg.webToken].filter(Boolean);
+    if (keys.length && !keys.includes(tok)) return authDeny();
+    const pend = cfg._webSessPend && cfg._webSessPend.get(sid) > Date.now();
+    if (!pend) return textRes(res, 401, '<!doctype html><meta charset="utf-8"><title>401</title>'
+      + '<body style="font-family:sans-serif;background:#1c1b1f;color:#e6e1e5;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">'
+      + '<div>⚠️ 登录链接已失效或已使用, 请在服务器重新执行 <code>agw web login</code></div></body>', 'text/html; charset=utf-8');
+    cfg._webSessPend.delete(sid); // 一次性
+    const f = path.join(CORE, 'm3', 'index.html');
+    if (!fs.existsSync(f)) return textRes(res, 404, 'M3 面板未找到, 请把 index.html 放到 ' + path.join(CORE, 'm3'));
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0', 'Access-Control-Allow-Origin': '*', 'Set-Cookie': issueWebSess(sid) });
+    return res.end(fs.readFileSync(f, 'utf8'));
+  }
 
   // /auth(面板本体, 带 ?key=<访问令牌> 访问; 同时签发会话 cookie)
   if (req.method === 'GET' && (p === '/auth' || p === '/auth/')) {
@@ -803,7 +821,20 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
   // POST /admin/api/web-expired — 注销全部面板会话(agw web --expired)
   if (api === 'web-expired') {
     if (cfg._webSess) cfg._webSess.clear();
+    if (cfg._webSessPend) cfg._webSessPend.clear();
     return jsonRes(res, 200, { ok: true, cleared: true });
+  }
+  // POST /admin/api/web-session {sid} — 注册一次性登录链接的会话UID(agw web login, 15 分钟有效)
+  if (api === 'web-session') {
+    let j = null; try { j = JSON.parse(bodyStr || '{}'); } catch (_) {}
+    const sid = String((j && j.sid) || '');
+    if (!/^[A-Za-z0-9_-]{16,128}$/.test(sid)) return jsonRes(res, 400, { error: 'sid 格式非法' });
+    if (!cfg._webSessPend) cfg._webSessPend = new Map();
+    const now = Date.now();
+    for (const [k, exp] of cfg._webSessPend) if (exp <= now) cfg._webSessPend.delete(k);
+    if (cfg._webSessPend.size >= 64) cfg._webSessPend.delete(cfg._webSessPend.keys().next().value);
+    cfg._webSessPend.set(sid, now + 15 * 60e3);
+    return jsonRes(res, 200, { ok: true, ttl: 900 });
   }
 
   // ===== SDUI 页面 (手写 JSON, 先跑通渲染再谈数据源) =====
