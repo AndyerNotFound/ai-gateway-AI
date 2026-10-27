@@ -13,6 +13,7 @@ const zlib = require('zlib');
 const crypto2 = require('crypto');
 const https2 = require('https');
 const ctxp = require('./ctxp');
+const { VERSION } = require('./util');
 
 // cloudflared 隧道全局状态
 let tunnelProc = null, tunnelUrl = '', tunnelLog = [];
@@ -1883,27 +1884,36 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return n;
   }
 
+// 实例仪表字段(供 agw loop 等 CLI 用; 原 /status 已删除)
+function dashOf(c) {
+  return {
+    version: VERSION, listen: c.listen,
+    channels: (c.channels || []).map(ch => ({ name: ch.name, type: ch.type, models: (ch.models || []).length })),
+    probe: Object.fromEntries(Object.entries(c._stats.probe || {}).map(([k, v]) => [k, { rate: v.total ? Math.round(v.ok / v.total * 100) : null, total: v.total, lastOk: v.lastOk, lastErr: v.lastErr }])),
+  };
+}
+
   // GET /admin/api/stats?instance=X — 实例实时统计(支持跨实例本机代理)
   if (req.method === 'GET' && api === 'stats') {
     const inst = u.searchParams.get('instance') || currentName(cfg);
     if (inst === currentName(cfg)) {
-      return jsonRes(res, 200, {
+      return jsonRes(res, 200, Object.assign(dashOf(cfg), {
         requests: cfg._stats.requests, inflight: inflightOf(cfg), errors: cfg._stats.errors,
         retries: cfg._stats.retries || 0, onceChannel: cfg._onceChannel || null, context: cfg._lastCtx ? Object.assign({}, cfg._lastCtx, { soft: (cfg.contextLimit||{}).soft || 80, hard: (cfg.contextLimit||{}).hard || 0, history: (cfg._ctxHist || []).slice(-24) }) : null,
         byChannel: cfg._stats.byChannel, byKey: cfg._stats.byKey || {}, byModel: cfg._stats.byModel || {}, daily: cfg._stats.daily || {}, startedAt: cfg._stats.startedAt,
         uptime: Math.round(process.uptime()),
-      });
+      }));
     }
     // 单进程模式: 池内直读, 无需 HTTP 回环
     if (POOL) {
       const tc = POOL.instances.get(inst);
       if (!tc) return jsonRes(res, 404, { error: '实例未在运行: ' + inst });
-      return jsonRes(res, 200, { requests: tc._stats.requests, inflight: inflightOf(tc), errors: tc._stats.errors, retries: tc._stats.retries || 0, onceChannel: tc._onceChannel || null, context: tc._lastCtx ? Object.assign({}, tc._lastCtx, { soft: (tc.contextLimit||{}).soft || 80, hard: (tc.contextLimit||{}).hard || 0 }) : null, byChannel: tc._stats.byChannel, byKey: tc._stats.byKey || {}, startedAt: tc._stats.startedAt, uptime: Math.round(process.uptime()) });
+      return jsonRes(res, 200, Object.assign(dashOf(tc), { requests: tc._stats.requests, inflight: inflightOf(tc), errors: tc._stats.errors, retries: tc._stats.retries || 0, onceChannel: tc._onceChannel || null, context: tc._lastCtx ? Object.assign({}, tc._lastCtx, { soft: (tc.contextLimit||{}).soft || 80, hard: (tc.contextLimit||{}).hard || 0 }) : null, byChannel: tc._stats.byChannel, byKey: tc._stats.byKey || {}, startedAt: tc._stats.startedAt, uptime: Math.round(process.uptime()) }));
     }
     const j = await proxyInstance(inst, 'stats');
     if (!j) return jsonRes(res, 404, { error: '无法获取实例 ' + inst + ' 的统计(可能未运行或无webToken)' });
     const st = j.stats ? j.stats : j;
-    return jsonRes(res, 200, { requests: st.requests || 0, errors: st.errors || 0, byChannel: st.byChannel || {}, startedAt: j.startedAt, uptime: j.uptime || 0 });
+    return jsonRes(res, 200, Object.assign({ requests: st.requests || 0, errors: st.errors || 0, byChannel: st.byChannel || {}, startedAt: j.startedAt, uptime: j.uptime || 0 }, { version: j.version, listen: j.listen, channels: j.channels, probe: j.probe }));
   }
 
   // GET /admin/api/active — 最近活跃实例(只读各实例内存里的 _lastCtx, 不打上游)

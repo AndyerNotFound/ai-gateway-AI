@@ -168,7 +168,7 @@ curl "http://192.168.1.100:16384/v1beta/models/gemini-2.5-flash:streamGenerateCo
 ```
 
 > 模型列表：`GET /v1/models`（OpenAI/Claude 通用）或 `GET /v1beta/models`（Gemini）。健康检查：`GET /health`。
-> 状态统计已收敛到管理面板（webToken 鉴权），无公开状态端点。
+> 公开路径白名单：仅 `/v1`、`/v1beta`、`/auth`、`/profile` 及其子路径，外加 `/admin`（面板，webToken 鉴权）。其余一律 404（`/health`、`/status`、`/user`、`/plugins`、`/credits` 等已关闭，需要时再加回）。
 
 ---
 

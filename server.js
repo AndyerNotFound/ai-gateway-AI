@@ -10,7 +10,6 @@ const os = require('os');
 const zlib = require('zlib');
 const { poolRoute, BILLING_PATHS, GENERIC_BALANCE_PATHS, createInstancePool, poolLoadAll, setupModelSync, statsFlushFile, setupStatsFlush } = require('./pool');
 const { sendError, corsHeaders, jsonErr, checkAuth, keyCreditsJSON, verifyPassword, hashPassword, genApiKey, persistRuntimeCfg, availableBranches, collectJson, modelsResponse, sendJson, loadKeyUsage, makeGatewayApi } = require('./router');
-const { checkAdminAuth } = require('./admin');
 const { VERSION, utf8, log, logErr } = require('./util');
 const { balanceAggregate, pickBalanceChannel, fetchBalanceCached, fetchChannelBalance, setupProbe } = require('./upstream');
 const { openaiExtrasOn, fetchUpstreamModels, syncModels } = require('./sync');
@@ -60,34 +59,14 @@ async function handleHttp(cfg, req, res) {
 
   if (cfg.cors && req.method === 'OPTIONS') { res.writeHead(204, corsHeaders()); return res.end(); }
 
-  if (req.method === 'GET' && p === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify({ ok: true, version: VERSION, uptime: Math.round(process.uptime()) }));
-  }
-  // GET /status/loop — agw loop 模式专用数据源(带 admin 鉴权; 旧 /status 已删除: 泄漏渠道拓扑/统计/路径)
-  if (req.method === 'GET' && (p === '/status/loop' || p === '/status/loop/')) {
-    // 卡密用户 → 只回安全子集(版本/uptime/探测成功率, 无渠道拓扑/统计/路径)
-    if (!checkAdminAuth(cfg, req, u.searchParams)) {
-      const cr = checkAuth(cfg, req, u.searchParams);
-      if (!cr.ok) return sendJson(res, 401, { error: '需要访问令牌 (webToken) 或卡密' });
-      return sendJson(res, 200, {
-        ok: true, version: VERSION, startedAt: cfg._stats.startedAt, uptime: Math.round(process.uptime()),
-        probe: Object.fromEntries(Object.entries(cfg._stats.probe || {}).map(([k, v]) => [k, { rate: v.total ? Math.round(v.ok / v.total * 100) : null, total: v.total, lastOk: v.lastOk, lastErr: v.lastErr }])),
-      });
-    }
-    return sendJson(res, 200, Object.assign({
-      ok: true, version: VERSION, startedAt: cfg._stats.startedAt, uptime: Math.round(process.uptime()),
-      listen: cfg.listen, configFile: cfg._configFile,
-      openaiExtras: cfg.openaiExtras || { enable: true, upstreamResponses: false },
-      channels: cfg.channels.map(c => ({ name: c.name, type: c.type, baseUrl: c.baseUrl, proxy: c.proxy || null, models: c.models, modelMap: c.modelMap, default: c.default, delayMs: c.delayMs || 0, useResponses: c.useResponses === undefined ? undefined : !!c.useResponses })),
-      proxies: Object.entries(cfg.proxies).map(([k, v]) => ({ name: k, type: v.type, host: v.host, port: v.port })),
-      stats: { requests: cfg._stats.requests, errors: cfg._stats.errors, retries: cfg._stats.retries || 0, byChannel: cfg._stats.byChannel, byKey: cfg._stats.byKey || {} },
-      forceChannel: cfg.forceChannel || null,
-      onceChannel: cfg._onceChannel || null,
-      context: cfg._lastCtx ? Object.assign({}, cfg._lastCtx, { soft: (cfg.contextLimit||{}).soft || 80, hard: (cfg.contextLimit||{}).hard || 0, history: (cfg._ctxHist || []).slice(-24) }) : null,
-      probe: Object.fromEntries(Object.entries(cfg._stats.probe || {}).map(([k, v]) => [k, { rate: v.total ? Math.round(v.ok / v.total * 100) : null, total: v.total, lastOk: v.lastOk, lastErr: v.lastErr }])),
-    }, { inst: cfg._name || 'default' }));
-  }
+  // ===== 公开路由白名单(2026-10-27): 仅放行 /v1 /v1beta /auth /profile /admin(面板, webToken 鉴权) =====
+  // 其余一律 404: /health /status* /user /plugins /credits 等全部关闭, 需要时再加回
+  const allowed = p === '/v1' || p.startsWith('/v1/')
+    || p === '/v1beta' || p.startsWith('/v1beta/')
+    || p === '/auth' || p.startsWith('/auth/')
+    || p === '/profile' || p.startsWith('/profile/')
+    || p === '/admin' || p.startsWith('/admin/');
+  if (!allowed) return sendError('openai', res, 404, 'not found: ' + req.method + ' ' + p);
 
   // ===== Web 管理面板 (/admin + /admin/api/*) =====
   if (p === '/admin' || p === '/admin/' || p === '/admin/ball' || p.startsWith('/admin/api/') || p === '/auth' || p === '/auth/' || p === '/auth/app.js' || p === '/auth/v2' || p === '/auth/v2/' || p.startsWith('/auth/vendor/')
@@ -105,39 +84,6 @@ async function handleHttp(cfg, req, res) {
     }
     return;
   }
-  // ===== 用户端网页: GET /user (不需鉴权, 登录在页面内完成) =====
-  if (req.method === 'GET' && (p === '/user' || p === '/user/')) {
-    const f = path.join(__dirname, 'user.html');
-    try {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0', 'Access-Control-Allow-Origin': '*' });
-      return res.end(fs.readFileSync(f, 'utf8'));
-    } catch (e) {
-      return jsonErr(res, { error: '用户端页面未找到, 请把 user.html 放到网关目录: ' + f }, 404);
-    }
-  }
-  // ===== 插件端点: /plugins[/<id>[/<path...>]] =====
-  if (rt.PLUGINS && (p === '/plugins' || p.startsWith('/plugins/'))) {
-    if (req.method === 'GET' || req.method === 'HEAD') {
-      rt.PLUGINS.handle(cfg, req, res, u, p, '').catch(e => jsonErr(res, e));
-    } else {
-      let pbody = '';
-      const u8 = utf8();   /* ★跨分块安全解码(2026-09-18) */
-      req.on('data', c => { pbody += u8(c); if (pbody.length > 8 * 1024 * 1024) req.destroy(); });
-      req.on('end', () => { rt.PLUGINS.handle(cfg, req, res, u, p, pbody).catch(e => jsonErr(res, e)); });
-      req.on('error', () => {});
-    }
-    return;
-  }
-
-  // ===== 卡密余额查询(用户端): GET /credits, 带卡密认证 =====
-  if (req.method === 'GET' && p === '/credits') {
-    const authR = checkAuth(cfg, req, u.searchParams);
-    if (!authR.ok) return sendError('openai', res, authR.status || 401, authR.error || 'invalid key');
-    res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders() });
-    if (authR.userKey) return res.end(JSON.stringify(keyCreditsJSON(authR.userKey)));
-    return res.end(JSON.stringify({ admin: true, unlimited: true })); // 管理员主key
-  }
-
   // ===== 账密登录(用户端): POST /auth/login {uid, password} → 返回该用户卡密+余额 =====
   if (req.method === 'POST' && p === '/auth/login') {
     let body = '';

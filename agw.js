@@ -988,9 +988,8 @@ async function cmdWeb(argv) {
 function loopDash(inst) { // 单屏仪表: 实例列表 + 网关信息/渠道/探测 + 统计
   return Promise.all([
     api('GET', '/admin/api/instances').catch(() => null),
-    api('GET', '/status/loop').catch(() => null),
     api('GET', '/admin/api/stats?instance=' + encodeURIComponent(inst)).catch(() => null),
-  ]).then(([il, st, ss]) => {
+  ]).then(([il, st]) => {
     const W = Math.min(72, process.stdout.columns || 72);
     const line = '─'.repeat(W);
     console.log(C.cyn('┌' + line + '┐'));
@@ -1001,13 +1000,13 @@ function loopDash(inst) { // 单屏仪表: 实例列表 + 网关信息/渠道/�
     if (st) {
       const up = st.uptime >= 3600 ? Math.floor(st.uptime / 3600) + 'h' + Math.floor((st.uptime % 3600) / 60) + 'm' : Math.floor(st.uptime / 60) + 'm';
       console.log('│ 网关 v' + (st.version || '?') + '  uptime ' + up + '  监听 ' + (((st.listen || {}).host) || '?') + ':' + (((st.listen || {}).port) || '?'));
-      console.log('│ 渠道 ' + ((st.channels || []).map(c => c.name + '(' + (c.models || []).length + ')').join('  ') || C.dim('无')));
+      console.log('│ 渠道 ' + ((st.channels || []).map(c => c.name + '(' + (c.models || 0) + ')').join('  ') || C.dim('无')));
       const prs = Object.entries(st.probe || {}).map(([k, v]) => k + ' ' + (v.rate == null ? C.dim('-') : (v.rate >= 90 ? C.grn(v.rate + '%') : C.yel(v.rate + '%')))).join('  ');
       if (prs) console.log('│ 探测 ' + prs);
     }
-    if (ss) {
-      console.log('│ 统计 请求 ' + (ss.requests || 0) + '  错误 ' + (ss.errors || 0) + '  重试 ' + (ss.retries || 0) + '  进行中 ' + (ss.inflight || 0));
-      const tops = Object.entries(ss.byChannel || {}).sort((a, b) => ((b[1] || {}).requests || 0) - ((a[1] || {}).requests || 0)).slice(0, 6)
+    if (st && st.requests != null) {
+      console.log('│ 统计 请求 ' + (st.requests || 0) + '  错误 ' + (st.errors || 0) + '  重试 ' + (st.retries || 0) + '  进行中 ' + (st.inflight || 0));
+      const tops = Object.entries(st.byChannel || {}).sort((a, b) => ((b[1] || {}).requests || 0) - ((a[1] || {}).requests || 0)).slice(0, 6)
         .map(([k, v]) => k + ' ' + ((v || {}).requests || 0) + '次/' + ((v || {}).outputTokens || 0) + 'tok').join('  ');
       if (tops) console.log('│ 用量 ' + tops);
     } else console.log('│ ' + C.dim('统计获取失败(实例未运行?)'));

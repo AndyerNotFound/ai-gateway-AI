@@ -43,13 +43,11 @@ show_config() {
 }
 
 health_ok() {
-  local port="$1" ca="$DIR/tls/ca.pem"
-  if command -v curl >/dev/null 2>&1; then
-    [ -f "$ca" ] && curl -sf -m 3 --cacert "$ca" "https://127.0.0.1:$port/health" >/dev/null 2>&1 && return 0
-    curl -sf -m 3 "http://127.0.0.1:$port/health" >/dev/null 2>&1
-  else
-    node -e 'fetch("http://127.0.0.1:"+process.argv[1]+"/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))' "$port" 2>/dev/null
-  fi
+  # /health 端点已关闭(白名单只留 /v1 /v1beta /auth /profile /admin) → TCP 端口探测
+  local port="$1"
+  node -e 'const s=require("net").connect(+process.argv[1],"127.0.0.1");
+const f=c=>{try{s.destroy()}catch(_){}process.exit(c)};
+s.setTimeout(2000);s.on("connect",()=>f(0));s.on("error",()=>f(1));s.on("timeout",()=>f(1));' "$port" 2>/dev/null
 }
 
 list_instances() {

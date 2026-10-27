@@ -217,8 +217,9 @@ function readCfg(file) {
   await get(port, '/v1/dashboard/billing/subscription?ch=relay-custom', H);
   eq(up.hits.length, hitsAfterFirst, '30s 缓存命中: 客户端连打不再打上游');
   ok(up.hits.length - hitsBefore > 0, '至少真实查过一次上游');
-  const health = await get(port, '/health');
-  eq(health.status, 200, '/health 无回归');
+  // 2026-10-27 路由白名单: /health 已关闭, 只留 /v1 /v1beta /auth /profile /admin
+  eq((await get(port, '/health')).status, 404, '/health 已按白名单关闭');
+  eq((await get(port, '/v1/models', H)).status, 200, '/v1/models 不受白名单影响');
 
   /* ============ 5. 管理端 + 面板保存不抹字段 ============ */
   console.log('── Part 5: 管理端余额路由 + 面板保存防抹 ──');
