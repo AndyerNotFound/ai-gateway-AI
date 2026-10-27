@@ -69,7 +69,10 @@ async function handleHttp(cfg, req, res) {
   if (!allowed) return sendError('openai', res, 404, 'not found: ' + req.method + ' ' + p);
 
   // ===== Web 管理面板 (/admin + /admin/api/*) =====
-  if (p === '/admin' || p === '/admin/' || p === '/admin/ball' || p.startsWith('/admin/api/') || p === '/auth' || p === '/auth/' || p === '/auth/app.js' || p === '/auth/v2' || p === '/auth/v2/' || p.startsWith('/auth/vendor/')
+  // /auth/* 里登录/注册是用户端接口, 必须留给下面的分支, 其余都归面板(HTML/CSS/JS/vendor 静态资源)
+  const isAuthFile = p.startsWith('/auth/') && p !== '/auth/login' && p !== '/auth/register';
+  if (p === '/admin' || p === '/admin/' || p === '/admin/ball' || p.startsWith('/admin/api/')
+      || p === '/auth' || p === '/auth/' || isAuthFile
       || /^\/auth\/[A-Za-z0-9_-]{16,128}\/[A-Za-z0-9_-]{8,256}\/?$/.test(p)) {
     // 管理页面不需要收集 body 前置处理, handleAdmin 内部自行处理
     // 但 POST/DELETE 的 body 需要先收集

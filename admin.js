@@ -744,25 +744,9 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     if (!m3KeyOk()) return authDeny();
     const f = path.join(CORE, 'm3', 'index.html');
     if (!fs.existsSync(f)) return textRes(res, 404, 'M3 面板未找到, 请把 index.html 放到 ' + path.join(CORE, 'm3'));
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...withSess() });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0', ...withSess() });
     return res.end(fs.readFileSync(f, 'utf8'));
   }
-  if (req.method === 'GET' && p === '/auth/app.js') {
-    const f = path.join(CORE, 'm3', 'app.js');
-    if (!fs.existsSync(f)) return textRes(res, 404, 'app.js 未找到');
-    res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0', 'Access-Control-Allow-Origin': '*' });
-    return res.end(fs.readFileSync(f, 'utf8'));
-  }
-
-  // /auth/v2 — Material Web 版面板(与手写版并存, 便于对比回退)
-  if (req.method === 'GET' && (p === '/auth/v2' || p === '/auth/v2/')) {
-    if (!m3KeyOk()) return authDeny();
-    const f = path.join(CORE, 'm3', 'v2', 'index.html');
-    if (!fs.existsSync(f)) return textRes(res, 404, 'M3 v2 面板未找到: ' + f);
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...withSess() });
-    return res.end(fs.readFileSync(f, 'utf8'));
-  }
-
   // /admin/ball — 悬浮球可视化编辑器（单文件, 不鉴权, 密码在页面内输）
   if (req.method === 'GET' && (p === '/admin/ball' || p === '/admin/ball/')) {
     const f = path.join(CORE, 'ball-editor.html');
@@ -781,6 +765,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     if (rel && !rel.includes('\0') && f.startsWith(root + path.sep)
         && fs.existsSync(f) && fs.statSync(f).isFile()) {
       const ext = path.extname(f).toLowerCase();
+      const isApp = rel === 'app.js' || rel === 'app.css'; // 面板本体: 不缓存, 改完刷新即生效
       const MIME = { '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
         '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
         '.map': 'application/json; charset=utf-8', '.woff2': 'font/woff2', '.woff': 'font/woff',
@@ -789,9 +774,10 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       const hdr = {
         'Content-Type': MIME[ext] || 'application/octet-stream',
         // 面板本体不缓存; vendor 资源可缓存一天(体积大且按内容变更命名)
-        'Cache-Control': ext === '.html' ? 'no-store, no-cache, must-revalidate' : 'public, max-age=86400',
+        'Cache-Control': (ext === '.html' || isApp) ? 'no-store, no-cache, must-revalidate' : 'public, max-age=86400',
         'Access-Control-Allow-Origin': '*', 'Vary': 'Accept-Encoding',
       };
+      if (isApp) { hdr['Pragma'] = 'no-cache'; hdr['Expires'] = '0'; }
       // 文本类资源 >1KB 且客户端支持 → gzip(288KB 的组件包压到 ~56KB)
       if (buf.length > 1024 && ['.js', '.mjs', '.css', '.json', '.map'].includes(ext)
           && /\bgzip\b/.test(req.headers['accept-encoding'] || '')) {
@@ -802,7 +788,10 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       res.writeHead(200, hdr);
       return res.end(buf);
     }
+    // 文件不存在/穿越尝试: 明确 404, 不能返回 null(调用方不会再写响应, 请求会一直挂着)
+    return textRes(res, 404, '面板资源不存在: ' + rel);
   }
+  if (p.startsWith('/auth/')) return textRes(res, 405, '不支持的方法: ' + req.method + ' ' + p);
 
   // 以下都是 /admin/api/* → 需要 adminKey 鉴权
   if (!p.startsWith('/admin/api/')) return null; // 不是管理路由, 交给后续
@@ -865,6 +854,68 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     if (cfg._webSessPend.size >= 64) cfg._webSessPend.delete(cfg._webSessPend.keys().next().value);
     cfg._webSessPend.set(sid, now + 15 * 60e3);
     return jsonRes(res, 200, { ok: true, ttl: 900 });
+  }
+
+  // GET /admin/api/web-sessions — 面板会话一览(有效会话 / 待用一次性登录链接 / 定时注销)
+  if (api === 'web-sessions') {
+    if (req.method !== 'GET') return jsonRes(res, 405, { error: '只支持 GET' });
+    const now = Date.now();
+    const dump = (m) => {
+      const out = [];
+      if (m) for (const [sid, exp] of m) { if (exp > now) out.push({ sid, exp }); else m.delete(sid); }
+      return out.sort((x, y) => y.exp - x.exp);
+    };
+    return jsonRes(res, 200, {
+      ok: true, now,
+      sessions: dump(cfg._webSess),
+      pending: dump(cfg._webSessPend),
+      adminExpireAt: Number(cfg.adminExpireAt) || 0,
+    });
+  }
+
+  // GET /admin/api/mdu — Material You 壁纸主色(取色桥)
+  // 桥的契约: 输出 #RRGGBB / {"primary":"#RRGGBB"} / {"tokens":{"primary":"#RRGGBB"}}
+  // 来源顺序: ① config.mduCmd 或环境变量 AGW_MDU_CMD ② DIR/mdu.json(桥定时落盘)
+  // 说明: 命令来自本实例配置, 只有通过 webToken 鉴权的管理端能触发, 且 2.5s 超时
+  if (api === 'mdu') {
+    if (req.method !== 'GET') return jsonRes(res, 405, { error: '只支持 GET' });
+    const pickHex = (v) => {
+      const m = String(v == null ? '' : v).match(/#?([0-9a-f]{6})\b/i);
+      return m ? '#' + m[1].toUpperCase() : '';
+    };
+    const parseHex = (raw) => {
+      let j = null; try { j = JSON.parse(raw); } catch (_) {}
+      if (j && typeof j === 'object') {
+        const hex = pickHex(j.primary || (j.tokens && j.tokens.primary) || (j.colors && j.colors.primary));
+        if (hex) return hex;
+      }
+      return pickHex(raw);
+    };
+    const mduFile = path.join(DATA(), 'mdu.json');
+    const fromFile = () => {
+      try { return fs.existsSync(mduFile) ? parseHex(fs.readFileSync(mduFile, 'utf8')) : ''; } catch (_) { return ''; }
+    };
+    const reply = (hex, source) => jsonRes(res, 200, { ok: true, tokens: { primary: hex }, source });
+    const fail = (hint) => jsonRes(res, 503, { ok: false, error: '取色桥不可用: ' + hint });
+    const cmd = String(cfg.mduCmd || process.env.AGW_MDU_CMD || '').trim();
+    if (!cmd) {
+      const hex = fromFile();
+      if (hex) return reply(hex, 'file');
+      return fail('未配置 mduCmd(或 AGW_MDU_CMD), 也没有 ' + mduFile);
+    }
+    try {
+      const out = await new Promise((resolve, reject) => {
+        execFile('sh', ['-c', cmd], { timeout: 2500, maxBuffer: 64 * 1024 },
+          (e, so) => (e ? reject(e) : resolve(String(so || ''))));
+      });
+      const hex = parseHex(out) || fromFile();
+      if (hex) return reply(hex, 'cmd');
+      return fail('命令输出里没有 #RRGGBB: ' + String(out).trim().slice(0, 120));
+    } catch (e) {
+      const hex = fromFile();
+      if (hex) return reply(hex, 'file');
+      return fail(e.message);
+    }
   }
 
   // ===== SDUI 页面 (手写 JSON, 先跑通渲染再谈数据源) =====

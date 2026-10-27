@@ -167,7 +167,7 @@ curl "http://192.168.1.100:16384/v1beta/models/gemini-2.5-flash:streamGenerateCo
   -d '{"contents":[{"role":"user","parts":[{"text":"你好"}]}]}'
 ```
 
-> 模型列表：`GET /v1/models`（OpenAI/Claude 通用）或 `GET /v1beta/models`（Gemini）。健康检查：`GET /health`。
+> 模型列表：`GET /v1/models`（OpenAI/Claude 通用）或 `GET /v1beta/models`（Gemini）。健康检查：直接 TCP 探测端口（`agw.sh status`）。
 > 公开路径白名单：仅 `/v1`、`/v1beta`、`/auth`、`/profile` 及其子路径，外加 `/admin`（面板，webToken 鉴权）。其余一律 404（`/health`、`/status`、`/user`、`/plugins`、`/credits` 等已关闭，需要时再加回）。
 
 ---
@@ -222,6 +222,33 @@ cp ~/ai-gateway/config.json ~/ai-gateway/config.proxy2.json
 沙箱测试套件 215 项全过：转换器单元测试、9 种组合互转 E2E（流式+非流式）、
 SOCKS5/HTTP 代理隧道（含认证、HTTPS 自签）、网关鉴权、渠道路由、多实例、
 轮询（严格交替）、故障切换（429/连接失败/不可重试400/全失败）。
+
+### 管理面板（/auth）
+
+面板拆成三个文件，改样式/逻辑不用再动 30 万字符的单文件：
+
+```
+m3/index.html   # 结构（约 500 行）+ 两个引用
+m3/app.css      # 全部样式（Material Design 3 令牌 + 响应式）
+m3/app.js       # 全部前端逻辑（数据适配 / 渲染 / 图表，原生 ESM）
+m3/vendor/      # Material Web 组件包与图标字体（本地，零 CDN）
+```
+
+两个文件都按 `no-store` 下发，改完刷新即生效。页面能力：12+2 个页面（总览/提供商/路由/上下文/窗口表/密钥/卡密/端口/会话/替换/统计/请求/日志/聊天），
+手机端底栏放 5 个常用页 + 「更多」抽屉，其余全部可达；统计页有纯 canvas 的每日用量与按模型图表。
+
+**取色桥（Material You 主色）**：面板「主题 → 从手机取色」会请求 `GET /admin/api/mdu`，后端按下面顺序取色：
+
+1. 配置项 `mduCmd`（或环境变量 `AGW_MDU_CMD`）—— shell 命令，2.5s 超时；
+2. `~/ai-gateway/mdu.json`（桥自己定时落盘，免命令开销）。
+
+两种方式都只认这三种输出之一：`#4C6B3C`、`{"primary":"#4C6B3C"}`、`{"tokens":{"primary":"#4C6B3C"}}`。
+取不到时面板自动退回「选一张壁纸图、浏览器内取主色」，不会卡住。
+
+```jsonc
+// config.json
+{ "mduCmd": "my-color-bridge --json" }
+```
 
 ## 八、HTTPS 接入（无 root）
 
