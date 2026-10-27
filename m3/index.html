@@ -649,7 +649,7 @@ md-navigation-tab md-icon[slot=active-icon]{font-variation-settings:'FILL' 1,'wg
         <div class="card-head"><div><div class="card-title">API 密钥</div><div class="card-sub">网关密码与渠道密钥</div></div></div>
         <div class="grid-form" style="margin-bottom:16px">
           <md-outlined-text-field id="ky-gatewayKey" label="网关密码 gatewayKey" type="password" helper="留空=不校验"></md-outlined-text-field>
-          <md-outlined-text-field id="ky-adminKey" label="管理密码 adminKey" type="password" helper="留空=免密管理(不设密码)"></md-outlined-text-field>
+          <md-outlined-text-field id="ky-adminKey" label="管理令牌(adminKey)" type="password" helper="留空=免密管理(不设密码); 面板入口用访问令牌 agw web login"></md-outlined-text-field>
         </div>
         <div id="ky-channels" class="list-gap" style="margin-bottom:16px"></div>
         <md-filled-button id="ky-save">保存密钥</md-filled-button>
@@ -1898,20 +1898,20 @@ function openThemeDialog(){
   });}
 }
 
-// ---- 管理密码(adminKey)输入: 顶栏钥匙按钮 / 接口 401 时自动弹出 ----
-function keyDlgVisible(){ return !$('#dlgOverlay').hidden && $('#dlgTitle').textContent==='管理密码'; }
+// ---- 管理令牌(adminKey/访问令牌)输入: 顶栏钥匙按钮 / 接口 401 时自动弹出 ----
+function keyDlgVisible(){ return !$('#dlgOverlay').hidden && $('#dlgTitle').textContent==='管理令牌'; }
 function openKeyDialog(){
   if(keyDlgVisible()) return;
-  openDialog('管理密码', `
+  openDialog('管理令牌', `
     <div style="display:flex;flex-direction:column;gap:14px;padding-top:8px">
-      <md-outlined-text-field data-f="key" label="adminKey" type="password" value="${escAttr(localStorage.getItem('agw-admin-key')||'')}"
-        helper="实例设了管理密码就填它; 没设则免密无需填; 清空保存=清除记住的密码"></md-outlined-text-field>
+      <md-outlined-text-field data-f="key" label="adminKey / 访问令牌" type="password" value="${escAttr(localStorage.getItem('agw-admin-key')||'')}"
+        helper="填实例的 adminKey 或访问令牌(agw web login); 没设则免密无需填; 清空保存=清除记住的令牌"></md-outlined-text-field>
     </div>`, {okText:'保存', onOk:saveKey});
 }
 async function saveKey(){
   const k=String(dlgValue().key||'').trim();
   if(k) localStorage.setItem('agw-admin-key',k); else localStorage.removeItem('agw-admin-key');
-  snack(k?'密码已记住, 正在刷新…':'已清除记住的密码, 正在刷新…');
+  snack(k?'令牌已记住, 正在刷新…':'已清除记住的令牌, 正在刷新…');
   setTimeout(()=>location.reload(),600);
   return true;
 }

@@ -228,15 +228,22 @@ function totpVerify(secretB32, code) {
 
 // 管理端认证: adminKey 主验证 + 可选第二验证(adminAuth.secondKey 第二密码 / adminAuth.totpSecret TOTP)
 function checkAdminAuth(cfg, req, query) {
-  const key = cfg.adminKey;
   const h = req.headers;
   const auth = h.authorization || '';
   const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  // adminKey 与 webToken(访问令牌, agw web 生成)任一匹配即可; 都没设 = 免密管理(局域网自用)
+  const keys = [cfg.adminKey, cfg.webToken].filter(Boolean);
   let mainOk;
-  if (!key) mainOk = true; // 没设 adminKey = 免密管理(局域网自用); 要安全请给实例设置 adminKey
+  if (!keys.length) mainOk = true;
   else {
-    mainOk = (bearer === key) || (h['x-admin-key'] === key) || (query && query.get('adminKey') === key)
-      || (h.cookie || '').includes(`adminKey=${key}`);
+    const supplied = [bearer, h['x-admin-key'], query && query.get('adminKey'), query && query.get('key')].filter(Boolean);
+    mainOk = keys.some(k => supplied.includes(k)
+      || (h.cookie || '').includes(`adminKey=${k}`) || (h.cookie || '').includes(`agwWeb=${k}`));
+  }
+  // 面板会话: /auth?key= 签发的 HttpOnly cookie(见 m3KeyOk), 有效期内浏览器免带令牌
+  if (!mainOk && cfg._webSess) {
+    const m = String(h.cookie || '').match(/(?:^|;\s*)agwSID=([A-Za-z0-9_-]{16,})/);
+    if (m) { const exp = cfg._webSess.get(m[1]); if (exp && exp > Date.now()) mainOk = true; }
   }
   if (!mainOk) return false;
   // ---- 第二验证(已设置才校验) ----
@@ -697,23 +704,34 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     return textRes(res, 200, adminHTML(cfg), 'text/html; charset=utf-8');
   }
 
-  // /auth — M3 管理面板入口: /auth?key=<adminKey>(未设 adminKey 时免密直进)
+  // /auth — M3 管理面板入口: /auth?key=<访问令牌>(adminKey 或 webToken; 都未设时免密直进)
   // 令牌校验复用 checkAdminAuth: 兼容 ?key= / ?adminKey= / Bearer / x-admin-key / cookie
-  const m3KeyOk = () => {
-    const q2 = new URLSearchParams(u.searchParams);
-    if (!q2.has('adminKey') && q2.has('key')) q2.set('adminKey', q2.get('key'));
-    return checkAdminAuth(cfg, req, q2);
+  const m3KeyOk = () => checkAdminAuth(cfg, req, u.searchParams);
+  // 带令牌访问成功 → 签发面板会话(HttpOnly cookie, 7 天), 浏览器后续访问(含 /admin/api/*)免带令牌
+  const issueWebSess = () => {
+    if (!cfg._webSess) cfg._webSess = new Map();
+    const now = Date.now();
+    for (const [k, exp] of cfg._webSess) if (exp <= now) cfg._webSess.delete(k);
+    if (cfg._webSess.size >= 64) cfg._webSess.delete(cfg._webSess.keys().next().value);
+    const sid = require('crypto').randomBytes(32).toString('base64url');
+    cfg._webSess.set(sid, now + 7 * 864e5);
+    return `agwSID=${sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`;
+  };
+  const withSess = () => {
+    const c = { 'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0', 'Access-Control-Allow-Origin': '*' };
+    if (u.searchParams.has('key') || u.searchParams.has('adminKey')) c['Set-Cookie'] = issueWebSess();
+    return c;
   };
   const authDeny = () => textRes(res, 401, '<!doctype html><meta charset="utf-8"><title>401</title>'
     + '<body style="font-family:sans-serif;background:#1c1b1f;color:#e6e1e5;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">'
-    + '<div>⚠️ 需要管理令牌: 请访问 <code>/auth?key=<adminKey></code></div></body>', 'text/html; charset=utf-8');
+    + '<div>⚠️ 需要访问令牌: 请访问 <code>/auth?key=<访问令牌></code>(agw web login 生成)</div></body>', 'text/html; charset=utf-8');
 
-  // /auth(面板本体, 带 ?key=<adminKey> 访问; 页面内存入 localStorage 后从地址栏抹掉)
+  // /auth(面板本体, 带 ?key=<访问令牌> 访问; 同时签发会话 cookie)
   if (req.method === 'GET' && (p === '/auth' || p === '/auth/')) {
     if (!m3KeyOk()) return authDeny();
     const f = path.join(CORE, 'm3', 'index.html');
     if (!fs.existsSync(f)) return textRes(res, 404, 'M3 面板未找到, 请把 index.html 放到 ' + path.join(CORE, 'm3'));
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0', 'Access-Control-Allow-Origin': '*' });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...withSess() });
     return res.end(fs.readFileSync(f, 'utf8'));
   }
   if (req.method === 'GET' && p === '/auth/app.js') {
@@ -728,7 +746,7 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     if (!m3KeyOk()) return authDeny();
     const f = path.join(CORE, 'm3', 'v2', 'index.html');
     if (!fs.existsSync(f)) return textRes(res, 404, 'M3 v2 面板未找到: ' + f);
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0', 'Access-Control-Allow-Origin': '*' });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...withSess() });
     return res.end(fs.readFileSync(f, 'utf8'));
   }
 
@@ -781,6 +799,12 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
   }
 
   const api = p.slice('/admin/api/'.length);
+
+  // POST /admin/api/web-expired — 注销全部面板会话(agw web --expired)
+  if (api === 'web-expired') {
+    if (cfg._webSess) cfg._webSess.clear();
+    return jsonRes(res, 200, { ok: true, cleared: true });
+  }
 
   // ===== SDUI 页面 (手写 JSON, 先跑通渲染再谈数据源) =====
   // GET /admin/api/ui            → { pages: ["demo","requests"] }

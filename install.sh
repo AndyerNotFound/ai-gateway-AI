@@ -72,7 +72,7 @@ if kill -0 "$(cat .run/main.pid)" 2>/dev/null; then
   echo ""
   echo "=== 安装完成 ==="
   echo "  网关在跑: http://127.0.0.1:$PORT"
-  echo "  管理面板: http://127.0.0.1:$PORT/auth?key=<adminKey>(未设密码时 /auth 直进)"
+  echo "  管理面板: http://127.0.0.1:$PORT/auth?key=<访问令牌>  (agw web login 生成/查看)"
   echo "  客户端 base_url: http://127.0.0.1:$PORT/v1"
   echo "  管理命令: $DIR/agw.sh start|stop|restart|status|logs"
 else

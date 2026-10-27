@@ -145,7 +145,7 @@ async function hotRestart(name) { // 在跑的实例改完配置后重启生效
 let _adminKeyCache;
 function adminKey() {
   if (_adminKeyCache !== undefined) return _adminKeyCache;
-  try { const c = loadCfg('default'); _adminKeyCache = c.adminKey || ''; } catch (_) { _adminKeyCache = ''; }
+  try { const c = loadCfg('default'); _adminKeyCache = c.adminKey || c.webToken || ''; } catch (_) { _adminKeyCache = ''; }
   return _adminKeyCache;
 }
 function api(method, p, body) {
@@ -878,6 +878,94 @@ function cmdStat(argv) {
   });
 }
 
+/* ================================================================
+ *  agw web — 面板访问令牌(/auth?key=<token>)
+ *  webToken: 面板入口与 /admin/api/* 通吃的访问令牌; adminKey 仍然有效(可只留其一)
+ * ================================================================ */
+function webURLs(cfg) {
+  const port = (cfg.listen || {}).port || 16384;
+  const scheme = (cfg.tls && cfg.tls.enable) ? 'https' : 'http';
+  const mk = (host) => cfg.webToken ? `${scheme}://${host}:${port}/auth?key=${encodeURIComponent(cfg.webToken)}` : `${scheme}://${host}:${port}/auth`;
+  const urls = [mk('127.0.0.1')];
+  try {
+    const lan = Object.values(os.networkInterfaces()).flat().find(i => i && i.family === 'IPv4' && !i.internal);
+    if (lan) urls.push(mk(lan.address));
+  } catch (_) {}
+  return urls;
+}
+function openBrowser(url) {
+  if (process.env.AGW_NO_OPEN) return null; // 脚本化/测试场景: 不弹浏览器
+  const q = `'` + String(url).replace(/'/g, `'\\''`) + `'`;
+  for (const c of ['termux-open', 'termux-open-url', 'xdg-open']) {
+    try { execSync(`${c} ${q}`, { stdio: 'ignore' }); return c; } catch (_) {}
+  }
+  return null;
+}
+function webHelp() {
+  console.log(t(`用法:
+  agw web login [--inst <实例>]          生成随机访问令牌, 打印带令牌面板链接并尝试打开浏览器
+  agw web --key <token> [--inst <实例>]  设定固定访问令牌(URL 安全字符 [A-Za-z0-9_-], 固定后 login 不再轮换)
+  agw web --key clear [--inst <实例>]    清除固定访问令牌
+  agw web --expired [--inst <实例>]      清除面板认证状态(注销全部已签发会话)
+  agw web [--inst <实例>]                查看当前令牌状态与面板地址`));
+}
+function cmdWeb(argv) {
+  const has = f => argv.includes(f);
+  if (has('help') || has('--help')) return webHelp();
+  const inst = (() => { const i = argv.indexOf('--inst'); return i >= 0 && argv[i + 1] ? argv[i + 1] : 'default'; })();
+  const cfg = loadCfg(inst);
+
+  if (!argv.length) { // 状态视图
+    console.log(cfg.webToken
+      ? t('访问令牌: ') + C.grn('已设 ' + maskKey(cfg.webToken)) + (cfg.webTokenFixed ? C.dim('(固定, --key clear 可清除)') : C.dim('(自动生成, login 会轮换)'))
+      : C.yel('访问令牌: 未设') + C.dim(' (agw web login 生成)'));
+    if (!cfg.adminKey && !cfg.webToken) console.log(C.yel('adminKey 也未设: 面板当前免密访问, 公网部署前务必 agw web login'));
+    console.log(t('面板地址:'));
+    webURLs(cfg).forEach(u => console.log('  ' + C.cyn(u)));
+    return;
+  }
+
+  if (has('--key')) {
+    const v = argv[argv.indexOf('--key') + 1];
+    if (v === undefined || v === 'help') return webHelp();
+    if (v === 'clear') {
+      if (!cfg.webToken && !cfg.webTokenFixed) return console.log(t('未设置访问令牌, 无需清除'));
+      delete cfg.webToken; delete cfg.webTokenFixed; saveCfg(inst, cfg);
+      ok('已清除访问令牌(旧链接全部失效; adminKey 未动, 仍可用)');
+      return hotRestart(inst);
+    }
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(v)) die('令牌需为 8~128 位 URL 安全字符([A-Za-z0-9_-]); 建议直接 agw web login 随机生成');
+    cfg.webToken = v; cfg.webTokenFixed = true; saveCfg(inst, cfg);
+    ok('固定访问令牌已保存, 面板链接:');
+    webURLs(cfg).forEach(u => console.log('  ' + C.cyn(u)));
+    return hotRestart(inst);
+  }
+  if (has('--expired')) {
+    return api('POST', '/admin/api/web-expired')
+      .then(() => ok('已清除面板认证状态(全部会话已注销, 各浏览器需重新带令牌访问)'))
+      .catch(e => die('清除失败(网关未在运行?): ' + e.message));
+  }
+  if (argv.length && !has('login')) return webHelp();
+
+  // login: 固定令牌 → 直接用; 自动令牌 → 每次轮换(旧链接失效)
+  let rotated = false;
+  if (!cfg.webTokenFixed) {
+    cfg.webToken = crypto.randomBytes(24).toString('base64url');
+    delete cfg.webTokenFixed; saveCfg(inst, cfg); rotated = true;
+    ok('已生成随机访问令牌(webToken)');
+  } else {
+    console.log(C.dim('使用固定访问令牌(--key 设定, login 不轮换)'));
+  }
+  const urls = webURLs(cfg);
+  console.log(t('面板链接(含令牌, 勿外传):'));
+  urls.forEach(u => console.log('  ' + C.cyn(u)));
+  if (rotated) console.log(C.dim('旧令牌/旧链接已失效'));
+  const opened = openBrowser(urls[0]);
+  console.log(opened ? C.dim(`已尝试用 ${opened} 打开浏览器`) : C.dim('未找到可用的开浏览器命令, 请手动复制链接'));
+  if (!cfg.adminKey && !cfg.webTokenFixed) console.log(C.dim('提示: 面板与 /admin/api/* 均已接受 webToken, 可不再使用 adminKey'));
+  if (rotated) return hotRestart(inst);
+}
+
 /* ==================== main dispatch ==================== */
 function help(sub) {
   if (sub && CMDS[sub]) { console.log('agw ' + sub + ' —'); CMDS[sub](['help']); return; }
@@ -919,6 +1007,12 @@ function help(sub) {
   agw card --charge <卡> --balance <n> | --delete <卡> | ban <卡>
   agw card --register <on|off> | --length <8~128>
 
+面板
+  agw web login [--inst <实例>]                 生成随机访问令牌, 打印面板链接并开浏览器
+  agw web --key <token> [--inst <实例>]         设定固定访问令牌(固定后 login 不轮换)
+  agw web --key clear [--inst <实例>]           清除固定访问令牌
+  agw web --expired [--inst <实例>]             清除面板认证状态(注销全部会话)
+
 运维
   agw <start|stop|restart|status>               网关进程启停(agw.sh 同款)
   agw refresh ca                                重签 TLS 证书并重启
@@ -939,7 +1033,7 @@ function help(sub) {
 }
 const CMDS = {
   inst: cmdInst, router: cmdRouter, chan: cmdChan, fetch: cmdFetch, ctxp: cmdCtxp,
-  card: cmdCard, refresh: cmdRefresh, record: cmdRecord, cloudflared: cmdCloudflared,
+  card: cmdCard, refresh: cmdRefresh, record: cmdRecord, cloudflared: cmdCloudflared, web: cmdWeb,
   lang: cmdLang, notice: cmdNotice, stat: cmdStat,
   encrypt: cmdEncrypt, decrypr: cmdDecrypt, decrypt: cmdDecrypt, recrypt: cmdRecrypt,
   export: cmdExport, inport: cmdInport,
