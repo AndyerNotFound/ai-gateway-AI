@@ -214,6 +214,7 @@ function cmdInst(argv) {
   agw inst <name> [start|stop]      启动/停止(缺省=显示状态)
   agw inst <name> --status <kind>   日志/统计: all|requests|error|debug (默认 all, 50 行)
   agw inst <name> --apikey <key>    设置 Gateway-Key(空串=清除)
+  agw inst <name> --adminkey <key>  设置管理令牌(= --webtoken 面板令牌)
   agw inst <name> --tls <port>      启用 TLS(<port>=主端口=纯 HTTPS); 0=关闭 TLS
   agw inst <name> --cold <sec>      上游连接超时秒数
   agw inst <name> --filter <on/off> 隐私过滤(密钥/敏感信息打码)
@@ -248,7 +249,8 @@ function cmdInst(argv) {
   const onlyStatus = flags.length === 0;
   const touch = [];
   if (has('--apikey')) touch.push(() => { const c = loadCfg(name); c.gatewayKey = get('--apikey') || ''; saveCfg(name, c); ok(`gatewayKey ${c.gatewayKey ? '已设置(' + c.gatewayKey.length + ' 字符)' : '已清除'}`); });
-  if (has('--webtoken')) touch.push(() => { const c = loadCfg(name); c.webToken = get('--webtoken') || ''; saveCfg(name, c); ok(`webToken ${c.webToken ? '已设置' : '已清除'}`); });
+  const wtv = get('--webtoken') !== undefined ? get('--webtoken') : get('--adminkey'); // 计划通: --adminkey 即面板管理令牌
+  if (has('--webtoken') || has('--adminkey')) touch.push(() => { const c = loadCfg(name); c.webToken = wtv || ''; saveCfg(name, c); ok(`webToken ${c.webToken ? '已设置' : '已清除'}`); });
   if (has('--tls')) touch.push(() => {
     const c = loadCfg(name); const pv = get('--tls');
     if (!pv || pv === '0' || pv === 'off') { c.tls = { enable: false }; ok('TLS 已关闭'); }
@@ -303,7 +305,7 @@ function cmdInst(argv) {
   };
   if (onlyStatus) return showStatus();
   if (has('--status')) return Promise.all(touch.map(t => t())).then(showStatus); // --status 原先只被 onlyStatus 分支使用, 显式传参时无输出
-  const valFlags = ['--apikey', '--webtoken', '--tls', '--cold', '--filter', '--filter-resp', '--transcreet', '--status'];
+  const valFlags = ['--apikey', '--webtoken', '--adminkey', '--tls', '--cold', '--filter', '--filter-resp', '--transcreet', '--status'];
   const act = flags.find((f, i) => !f.startsWith('--') && !valFlags.includes(flags[i - 1]));
   if (act === 'start' || act === 'stop') {
     return api('POST', `/admin/api/action/${name}/${act}`).then(d => ok(`${name} ${act}${d && d.restarting ? '' : ''}`)).catch(e => die(e.message + ' (单进程池模式下或需 agw.sh restart)'));
@@ -1131,7 +1133,11 @@ const HELP_INST = t(`实例管理 loop 命令:
   new <实例> <端口> [监听地址]   新建实例
   del <实例> -y                 删除实例(default 不可删)
   stat | chan [参数] | router [参数]  转到对应命令
-  改配置: 直接输入 inst 参数, 如 --apikey sk-x / --tls 8443 / --cold 15 / --filter on`);
+  -- 参数也是子命令:
+  --status <kind> | --apikey <key|clear> | --adminkey <key|clear> | --webtoken <key|clear>
+  --tls <port|0=关> | --cold <秒> | --filter <on|off> | --filter-resp <on|off>
+  --transcreet <on|off|res-only>
+  例: --apikey sk-x   --tls 8443   --cold 15   --status requests`);
 function loopInst(startName) {
   let cur = startName || 'default';
   const show = () => {
@@ -1139,6 +1145,15 @@ function loopInst(startName) {
     cmdInst(['list']);
     console.log(C.dim('── ' + cur + ' ──'));
     return cmdInst([cur, '--status', 'all']);
+  };
+  const instFlag = (fl, a) => { // 计划通里的 --参数在 loop 内同样当子命令
+    const keyFlag = ['--apikey', '--webtoken', '--adminkey'].includes(fl);
+    if (a[0] == null) {
+      if (!keyFlag) return cmdInst([cur, fl]); // --filter/--filter-resp/--transcreet 缺省=on
+      return console.log(C.yel('用法: ' + fl + ' <key|clear>'));
+    }
+    const v = keyFlag && /^(clear|off|none|空)$/i.test(a[0]) ? '' : a[0];
+    return cmdInst([cur, fl, v].concat(a.slice(1)));
   };
   const commands = {
     list: () => cmdInst(['list']),
@@ -1159,6 +1174,15 @@ function loopInst(startName) {
       if (!a.includes('-y')) return console.log(C.yel('删除不可撤销, 确认请加 -y: del ' + a[0] + ' -y'));
       return Promise.resolve(cmdInst(['delete', a[0], '-y'])).then(() => { if (cur === a[0]) cur = 'default'; });
     },
+    '--status': a => commands.status(a),
+    '--apikey': a => instFlag('--apikey', a),
+    '--adminkey': a => instFlag('--adminkey', a),
+    '--webtoken': a => instFlag('--webtoken', a),
+    '--tls': a => instFlag('--tls', a),
+    '--cold': a => instFlag('--cold', a),
+    '--filter': a => instFlag('--filter', a),
+    '--filter-resp': a => instFlag('--filter-resp', a),
+    '--transcreet': a => instFlag('--transcreet', a),
     stat: () => cmdStat(['all', cur]),
     chan: a => cmdChan([cur].concat(a)),
     router: a => cmdRouter([cur].concat(a)),
@@ -1170,7 +1194,7 @@ function loopInst(startName) {
     refresh: show,
     commands,
     unknown: parts => {
-      if (parts[0].startsWith('-')) return cmdInst([cur].concat(parts)); // 参数直通当前实例
+      if (parts[0].startsWith('-')) return console.log(C.yel('未知参数: ' + parts[0] + '  (help 查看 -- 子命令)'));
       console.log(C.yel('未知命令: ' + parts[0] + '  (help 查看)'));
     },
   });
@@ -1189,7 +1213,11 @@ const HELP_CHAN = t(`渠道管理 loop 命令:
   fetch <渠道>                  拉取上游模型列表
   balance <渠道>                代查余额
   use <实例>                    切换实例
-  其它 --xxx 参数直通 agw chan`);
+  -- 参数也是子命令:
+  --provider <渠道> "url=…, key=…" [--sdk …]     = add <渠道> …
+  --provider <渠道> --scope "…" | --value … | --proxy … | --warn …   = 对应命令
+  --provider <渠道> --remove                     = rm <渠道> -y
+  --sdk <openai|gemini|claude>                   = sdk <…>`);
 function loopChan(startName) {
   let cur = startName;
   const show = () => cmdChan([cur]);
@@ -1197,7 +1225,19 @@ function loopChan(startName) {
     if (!a[0]) return console.log(C.yel('缺少渠道名'));
     return cmdChan([cur, '--provider', a[0]].concat(rest));
   };
+  const thru = parts => { // --参数原样交给 cmdChan; 依赖渠道的旗标必须带 --provider
+    if (!parts.includes('--provider') && parts[0] !== '--sdk') return console.log(C.yel('用法: ' + parts[0] + ' … 需配合 --provider <渠道>'));
+    return cmdChan([cur].concat(parts));
+  };
   const commands = {
+    provider: a => { if (!a[0]) return console.log('用法: provider <渠道> "url=…, key=…"'); return cmdChan([cur, '--provider'].concat(a)); },
+    '--provider': (a, parts) => thru(parts),
+    '--sdk': (a, parts) => thru(parts),
+    '--scope': (a, parts) => thru(parts),
+    '--value': (a, parts) => thru(parts),
+    '--proxy': (a, parts) => thru(parts),
+    '--warn': (a, parts) => thru(parts),
+    '--remove': (a, parts) => thru(parts),
     list: () => cmdChan([cur]),
     add: a => pv(a, a.slice(1)),
     set: a => pv(a, a.slice(1)),
@@ -1230,7 +1270,7 @@ function loopChan(startName) {
     refresh: show,
     commands,
     unknown: parts => {
-      if (parts[0].startsWith('-')) return cmdChan([cur].concat(parts));
+      if (parts[0].startsWith('-')) return console.log(C.yel('未知参数: ' + parts[0] + '  (help 查看 -- 子命令)'));
       console.log(C.yel('未知命令: ' + parts[0] + '  (help 查看)'));
     },
   });
@@ -1250,7 +1290,10 @@ const HELP_ROUTER = t(`路由管理 loop 命令:
   once <渠道|off>               只作用于下一次请求的路由
   sync                          同步上游模型覆盖本地
   probe                         立即探测渠道
-  chans                         渠道名清单   use <实例>   日志: logs [n]`);
+  chans                         渠道名清单   use <实例>   日志: logs [n]
+  -- 参数也是子命令: --retry <n> | --timeout <秒> | --cold <秒>
+  --models-fetch <小时|0=关> | --filter <on|off> | --filter-resp <on|off>
+  --transcreet <on|off|res-only>`);
 function loopRouter(startName) {
   let cur = startName;
   const show = () => {
@@ -1284,6 +1327,7 @@ function loopRouter(startName) {
     logs: a => tailLog(cur, a[0]),
     use: a => { if (!pickInst(a[0])) return; cur = a[0]; return show(); },
   };
+  for (const k of ['retry', 'timeout', 'cold', 'models-fetch', 'filter', 'filter-resp', 'transcreet']) commands['--' + k] = commands[k]; // 计划通 --参数也是子命令
   return startRepl({
     title: 'agw 路由管理 loop (' + cur + ')',
     prompt: () => 'agw·router ' + cur + '> ',
@@ -1291,7 +1335,7 @@ function loopRouter(startName) {
     refresh: show,
     commands,
     unknown: parts => {
-      if (parts[0].startsWith('-')) return cmdRouter([cur].concat(parts));
+      if (parts[0].startsWith('-')) return console.log(C.yel('未知参数: ' + parts[0] + '  (help 查看 -- 子命令)'));
       console.log(C.yel('未知命令: ' + parts[0] + '  (help 查看)'));
     },
   });
@@ -1305,6 +1349,7 @@ const HELP_STAT = t(`统计面板 loop 命令:
   refresh <分钟>                统计落盘间隔(0=关)
   use <实例>                    切换实例
   watch [秒|off]                定时刷新仪表
+  --refresh <分钟>              = refresh <分钟>  (0=关)
   空行                          刷新仪表`);
 function loopStat(startName) {
   let cur = startName || 'default', timer = null;
@@ -1317,6 +1362,7 @@ function loopStat(startName) {
     models: () => cmdStat(['models', cur]),
     dist: () => cmdStat(['dist', cur]),
     refresh: a => { if (a[0] == null) return console.log('用法: refresh <分钟>  (0=关)'); return cmdStat(['--refresh', a[0], cur]); },
+    '--refresh': a => commands.refresh(a),
     use: a => { if (!pickInst(a[0])) return; cur = a[0]; return dash(); },
     watch: a => {
       if (timer) { clearInterval(timer); timer = null; }
@@ -1335,6 +1381,10 @@ function loopStat(startName) {
     help: HELP_STAT,
     refresh: dash,
     commands,
+    unknown: parts => {
+      if (parts[0].startsWith('-')) return console.log(C.yel('未知参数: ' + parts[0] + '  (help 查看)'));
+      console.log(C.yel('未知命令: ' + parts[0] + '  (help 查看)'));
+    },
     onClose: () => { if (timer) clearInterval(timer); },
   });
 }
@@ -1578,6 +1628,7 @@ function help(sub) {
   agw register [<inst>]                 用户注册 loop(注册开关/额度/人机验证/用户)
   agw admin [<inst>]                    管理体系 loop(令牌/二次验证/告警/日志)
   agw loop [实例]                       综合管理台(stat/inst/chan/card/logs/use/watch)
+  各 loop 内也可直接敲 -- 参数(计划通同款), 如 --status requests / --retry 3 / --apikey sk-x
 
 面板
   agw web login [--inst <实例>]                 生成随机访问令牌, 打印面板链接并开浏览器
