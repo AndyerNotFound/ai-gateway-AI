@@ -1020,7 +1020,8 @@ function cmdLoop(argv) {
   const ii = argv.indexOf('--inst');
   let cur = (ii >= 0 && argv[ii + 1]) ? argv[ii + 1] : (argv[0] && !argv[0].startsWith('-') ? argv[0] : 'default');
   const rl = require('readline').createInterface({ input: process.stdin, output: process.stdout, prompt: '' });
-  let watchTimer = null;
+  let watchTimer = null, closing = false;
+  const P = () => { if (!closing) { try { rl.prompt(); } catch (_) {} } };
   const setPrompt = () => rl.setPrompt(C.cyn('agw·' + cur + '> '));
   setPrompt();
   const H = t('命令: stat 刷新仪表 | stat daily|weekly|monthly|models|dist [实例] | inst list/<名> [start|stop] | chan [args] | card list/--generate | logs [行数] | use <实例> 切换 | watch [秒|off] 定时刷新 | help | exit');
@@ -1048,9 +1049,9 @@ function cmdLoop(argv) {
   };
   console.log(C.dim('agw loop 交互台 — 空行刷新仪表, help 看命令, exit 退出'));
   const first = loopDash(cur); if (first && first.catch) first.catch(e => console.log(C.red(e.message)));
-  first && first.then && first.then(() => rl.prompt());
-  rl.on('line', (l) => { try { const r = run(l); if (r && r.then) r.then(() => rl.prompt()).catch(e => { console.log(C.red(e.message)); rl.prompt(); }); else rl.prompt(); } catch (e) { console.log(C.red(e.message)); rl.prompt(); } });
-  rl.on('close', () => { if (watchTimer) clearInterval(watchTimer); console.log(C.dim('bye')); process.exit(0); });
+  first && first.then && first.then(() => P());
+  rl.on('line', (l) => { try { const r = run(l); if (r && r.then) r.then(() => P()).catch(e => { console.log(C.red(e.message)); P(); }); else P(); } catch (e) { console.log(C.red(e.message)); rl.prompt(); } });
+  rl.on('close', () => { closing = true; if (watchTimer) clearInterval(watchTimer); console.log(C.dim('bye')); setTimeout(() => process.exit(0), 400); }); // 留 400ms 让在途仪表输出落地
 }
 
 /* ==================== main dispatch ==================== */
