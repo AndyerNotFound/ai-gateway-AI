@@ -48,7 +48,7 @@ $('token').value = token;
 
 async function refresh() {
   if (!token) return;
-  const r = await fetch(API + '/status?token=' + encodeURIComponent(token)).then(r => r.json()).catch(() => null);
+  const r = await fetch(API + '/summary?token=' + encodeURIComponent(token)).then(r => r.json()).catch(() => null);
   if (!r || !r.ok) { $('msg').textContent = (r && r.error) || '查询失败'; $('msg').className = 'err'; return; }
   $('reward').textContent = r.reward;
   $('streak').textContent = r.streak;

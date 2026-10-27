@@ -36,8 +36,8 @@ module.exports = {
       json(res, 200, { ok: true, reward: rw, streak: rec.streak, total: rec.total, granted });
     });
 
-    // GET /plugins/signin/status?token=
-    ctx.registerRoute('GET', '/status', async (req, res, params) => {
+    // GET /plugins/signin/summary?token=  (原 /status, 改名避免与网关级 status 撞名)
+    ctx.registerRoute('GET', '/summary', async (req, res, params) => {
       const token = params.query.token || params.token || '';
       if (!token) return json(res, 400, { error: '缺少卡密 token' });
       const key = ctx.gateway.findKey(token);

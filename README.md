@@ -167,8 +167,8 @@ curl "http://192.168.1.100:16384/v1beta/models/gemini-2.5-flash:streamGenerateCo
   -d '{"contents":[{"role":"user","parts":[{"text":"你好"}]}]}'
 ```
 
-> 模型列表：`GET /v1/models`（OpenAI/Claude 通用）或 `GET /v1beta/models`（Gemini）。
-> 状态统计：`GET /status`。健康检查：`GET /health`。
+> 模型列表：`GET /v1/models`（OpenAI/Claude 通用）或 `GET /v1beta/models`（Gemini）。健康检查：`GET /health`。
+> 状态统计已收敛到管理面板（webToken 鉴权），无公开状态端点。
 
 ---
 
