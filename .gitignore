@@ -1,5 +1,6 @@
 # data/ 子目录 = 运行数据(配置/密钥/日志) —— 永不入库
-/data/
+/data/*
+!/data/config.example.json
 
 # 根目录配置(install.sh 会把 gatewayKey/渠道 apiKey 明文写进 config.json)
 /config*.json
@@ -33,3 +34,6 @@ tls/ca.key
 *.deb
 /packaging/ai-gateway/opt/ai-gateway/packaging/
 packaging/ai-gateway/opt/ai-gateway/
+
+# local render proofs, not for the repo
+.preview/
