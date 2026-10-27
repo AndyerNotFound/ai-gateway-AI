@@ -145,19 +145,22 @@ function readCfg(file) {
   eq(rGrants.json && rGrants.json.object, 'credit_summary', 'credit_grants object 名');
   eq(rGrants.json && rGrants.json.total_available, 42.5, 'credit_grants total_available=上游余额');
   eq(rGrants.json && rGrants.json.unit, 'CNY', 'credit_grants 附带单位');
-  const rSub = await get(port, '/dashboard/billing/subscription?ch=relay-custom', H); // 不带 /v1 前缀(老客户端 base 不带 /v1)
-  eq(rSub.status, 200, '无 /v1 前缀的 subscription 200(未被当实例名拦掉)');
-  eq(rSub.json && rSub.json.object, 'billing_subscription', 'subscription object 名');
-  eq(rSub.json && rSub.json.hard_limit_usd, 42.5, 'subscription hard_limit_usd=上游余额');
+  const rSub = await get(port, '/dashboard/billing/subscription?ch=relay-custom', H); // 不带 /v1 前缀
+  eq(rSub.status, 404, '白名单外别名 /dashboard/billing/* 已关闭(404)');
   const rSub2 = await get(port, '/v1/dashboard/billing/subscription?ch=deepseek-alike', H);
   eq(rSub2.status, 200, '带 /v1 前缀同样可用');
   const rAuto = await get(port, '/v1/dashboard/billing/credit_grants', H);
   eq(rAuto.status, 200, '不传 ?ch= → 自动选(default 渠道)');
   eq(rAuto.json && rAuto.json.channel, 'relay-custom', '自动选的渠道名(附在响应里)');
   // 常见别名(one-api/new-api/中转面板等): 都应命中余额查询
-  for (const alias of ['/v1/balance', '/balance', '/v1/user/balance', '/user/balance', '/v1/quota', '/v1/billing/usage', '/v1/usage', '/v1/wallet', '/dashboard/billing/usage']) {
+  for (const alias of ['/v1/balance', '/v1/user/balance', '/v1/quota', '/v1/billing/usage', '/v1/usage', '/v1/wallet']) {
     const ra = await get(port, alias + '?ch=relay-custom', H);
     eq(ra.status, 200, '余额别名 ' + alias + ' 200');
+  }
+  // 白名单只留 /v1 /v1beta /auth /profile /admin → 非 /v1 的老别名一律 404
+  for (const alias of ['/balance', '/user/balance', '/dashboard/billing/usage']) {
+    const rb = await get(port, alias + '?ch=relay-custom', H);
+    eq(rb.status, 404, '白名单外别名 ' + alias + ' 404');
   }
   // 客户端「余额获取路径=/credits + JSON 键=total_remain」场景(base 带 /v1 → 实际请求 /v1/credits)
   const rV1Credits = await get(port, '/v1/credits?ch=relay-custom', H);
