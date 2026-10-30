@@ -329,6 +329,7 @@ function maskedChannels(cfg, reveal) {
     proxy: c.proxy || null, models: c.models, modelMap: c.modelMap,
     default: c.default, hasKey: !!(c.apiKey && c.apiKey.length),
     useResponses: c.useResponses === undefined ? undefined : !!c.useResponses, delayMs: c.delayMs || 0, probe: !!c.probe,
+    insecure: !!c.insecure, addUsage: c.addUsage !== false, anthropicVersion: c.anthropicVersion || null,
     lockAt: c.lockAt || null, lockUntil: c.lockUntil || null, transcreet: c.transcreet || null,
 // Balance passthrough config (non-sensitive, panel-editable; default = built-in presets)
     balanceUrl: c.balanceUrl || null, balancePath: c.balancePath || null, balanceUnit: c.balanceUnit || null,
