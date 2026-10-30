@@ -53,8 +53,10 @@ function applyDefaults(cfg) {
   cfg.gatewayKey = cfg.gatewayKey ? String(cfg.gatewayKey) : '';
 // Key card list normalization
   cfg.apiKeys = Array.isArray(cfg.apiKeys) ? cfg.apiKeys.filter(k => k && k.key) : [];
-  // user table normalization (credential login: uid+password -> that user's key cards)
-  cfg.users = Array.isArray(cfg.users) ? cfg.users.filter(u => u && u.uid && u.passwordHash) : [];
+  // Multi-user support was removed (2026-10-30): drop the legacy credential table and the
+  // self-registration settings so they are never written back to disk.
+  delete cfg.users;
+  delete cfg.registration;
 // Privacy filter: enable is the instance master switch; response filters the response direction; extra is custom regexes (string array)
   cfg.redact = (cfg.redact && typeof cfg.redact === 'object') ? cfg.redact : {};
   cfg.redact.enable = cfg.redact.enable !== false;
@@ -62,18 +64,6 @@ function applyDefaults(cfg) {
   cfg.redact.extra = Array.isArray(cfg.redact.extra) ? cfg.redact.extra.filter(p => typeof p === 'string' && p) : [];
 // Key card length (8-128, default 24; sk- prefix excluded)
   cfg.keyLength = Math.min(128, Math.max(8, Number(cfg.keyLength) || 24));
-  // registration switch (off by default; only public relays enable it)
-  cfg.registration = cfg.registration && typeof cfg.registration === 'object' ? cfg.registration : {};
-  cfg.registration.enable = !!cfg.registration.enable;
-  cfg.registration.defaultQuota = Math.max(0, Number(cfg.registration.defaultQuota) || 0);
-  cfg.registration.minPasswordLen = Math.min(64, Math.max(4, Number(cfg.registration.minPasswordLen) || 8));
-// CAPTCHA: none (default) | turnstile (Cloudflare free tier)
-  cfg.registration.captchaProvider = cfg.registration.captchaProvider === 'turnstile' ? 'turnstile' : 'none';
-  cfg.registration.captchaSecret = String(cfg.registration.captchaSecret || '');
-  cfg.registration.captchaSiteKey = String(cfg.registration.captchaSiteKey || '');
-// Email verification (optional, off by default): {enable, smtp:{host,port,user,pass,from}}
-  cfg.registration.emailVerify = cfg.registration.emailVerify && typeof cfg.registration.emailVerify === 'object' ? cfg.registration.emailVerify : {};
-  cfg.registration.emailVerify.enable = !!cfg.registration.emailVerify.enable;
   // success-rate probe normalization (off by default to save tokens)
   cfg.probe = cfg.probe && typeof cfg.probe === 'object' ? cfg.probe : {};
   cfg.probe.enable = !!cfg.probe.enable;

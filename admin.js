@@ -133,6 +133,9 @@ function saveCfg(name, cfg) {
   // Internal runtime fields (_configFile/_name) must never be persisted into config.json.
   const clean = { ...cfg };
   for (const k of Object.keys(clean)) if (k.startsWith('_')) delete clean[k];
+  // Legacy multi-user data must never be written back (removed 2026-10).
+  delete clean.users;
+  delete clean.registration;
   const plain = JSON.stringify(clean, null, 2) + '\n';
   let text = plain;
 if (crypt) { const pass = crypt.loadPass(); if (pass) text = crypt.encryptText(plain, pass); } // with a passphrase, everything is encrypted on write (fresh salt each time)
@@ -1232,7 +1235,6 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
       record: c.record || { enable: false, server: '' },
       probe: c.probe || { enable: false, intervalMin: 10, mode: 'models' },
       keyLength: c.keyLength || 24,
-      registration: c.registration || { enable: false },
       modelSync: c.modelSync || { enable: true, intervalHours: 24 },
       proxies: c.proxies || {},
       channels: maskedChannels(c, reveal),
@@ -1296,19 +1298,6 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     }
 // Key card length (8-128)
     if (data.keyLength !== undefined) c.keyLength = Math.min(128, Math.max(8, Number(data.keyLength) || 24));
-    // registration settings
-    if (data.registration !== undefined && data.registration && typeof data.registration === 'object') {
-      const r = data.registration;
-      c.registration = {
-        enable: !!r.enable,
-        defaultQuota: Math.max(0, Number(r.defaultQuota) || 0),
-        minPasswordLen: Math.min(64, Math.max(4, Number(r.minPasswordLen) || 8)),
-        captchaProvider: r.captchaProvider === 'turnstile' ? 'turnstile' : 'none',
-        captchaSecret: String(r.captchaSecret || ''),
-        captchaSiteKey: String(r.captchaSiteKey || ''),
-        emailVerify: { enable: !!(r.emailVerify && r.emailVerify.enable) },
-      };
-    }
     // success-rate probe config
     if (data.probe !== undefined && data.probe && typeof data.probe === 'object') {
       c.probe = {
@@ -1556,84 +1545,7 @@ expireAt: c.adminExpireAt || 0,      // panel session expiry (agw admin expire)
     return jsonRes(res, 200, out);
   }
 
-// ============ User management (credential login system) ============
-// GET /admin/api/users/:inst -- user list
-  if (req.method === 'GET' && api.startsWith('users/')) {
-    const name = decodeURIComponent(api.slice('users/'.length));
-    const c = loadCfg(name);
-    if (!c) return jsonRes(res, 404, { error: '实例不存在' });
-    const users = (c.users || []).map(u2 => ({
-      uid: u2.uid, name: u2.name || '', note: u2.note || '', createdAt: u2.createdAt || '',
-      keyCount: (c.apiKeys || []).filter(k => k.uid === u2.uid).length,
-      hasPassword: !!u2.passwordHash,
-    }));
-    return jsonRes(res, 200, { users });
-  }
-
-// POST /admin/api/users/:inst -- create a user {uid?, name, password, note}
-  if (req.method === 'POST' && /^users\/[^/]+$/.test(api)) {
-    const name = decodeURIComponent(api.slice('users/'.length));
-    const c = loadCfg(name);
-    if (!c) return jsonRes(res, 404, { error: '实例不存在' });
-    let data; try { data = JSON.parse(bodyStr || '{}'); } catch (e) { return jsonRes(res, 400, { error: 'JSON 无效' }); }
-    if (!data.password) return jsonRes(res, 400, { error: '密码必填' });
-    const uid = String(data.uid || '').trim() || ('u' + crypto2.randomBytes(4).toString('hex'));
-    c.users = Array.isArray(c.users) ? c.users : [];
-    if (c.users.some(x => x.uid === uid)) return jsonRes(res, 400, { error: 'UID 已存在: ' + uid });
-    const salt = crypto2.randomBytes(16).toString('base64url');
-    const h = crypto2.scryptSync(String(data.password), salt, 32);
-    c.users.push({
-      uid, name: String(data.name || '').trim().slice(0, 64),
-      passwordHash: 'scrypt:' + salt + ':' + h.toString('base64url'),
-      note: String(data.note || '').trim().slice(0, 200),
-      createdAt: new Date().toISOString(),
-    });
-    try { saveCfg(name, c); } catch (e) { return jsonRes(res, 500, { error: '保存失败: ' + e.message }); }
-    if (POOL) { try { hotReload(name); } catch (_) {} }
-    return jsonRes(res, 200, { ok: true, uid });
-  }
-
-// POST /admin/api/users-update/:inst -- edit a user {uid, name?, password?, note?}
-  if (req.method === 'POST' && api.startsWith('users-update/')) {
-    const name = decodeURIComponent(api.slice('users-update/'.length));
-    const c = loadCfg(name);
-    if (!c) return jsonRes(res, 404, { error: '实例不存在' });
-    let data; try { data = JSON.parse(bodyStr || '{}'); } catch (e) { return jsonRes(res, 400, { error: 'JSON 无效' }); }
-    const u2 = (c.users || []).find(x => x.uid === data.uid);
-    if (!u2) return jsonRes(res, 404, { error: '用户不存在' });
-    if (data.name !== undefined) u2.name = String(data.name).trim().slice(0, 64);
-    if (data.note !== undefined) u2.note = String(data.note).trim().slice(0, 200);
-    if (data.password) {
-      const salt = crypto2.randomBytes(16).toString('base64url');
-      const h = crypto2.scryptSync(String(data.password), salt, 32);
-      u2.passwordHash = 'scrypt:' + salt + ':' + h.toString('base64url');
-    }
-    try { saveCfg(name, c); } catch (e) { return jsonRes(res, 500, { error: '保存失败: ' + e.message }); }
-    if (POOL) { try { hotReload(name); } catch (_) {} }
-    return jsonRes(res, 200, { ok: true });
-  }
-
-// DELETE /admin/api/users/:inst/:uid -- delete a user (their key cards stay)
-  if (req.method === 'DELETE' && api.startsWith('users/')) {
-    const rest = api.slice('users/'.length);
-    const idx = rest.indexOf('/');
-    if (idx > 0) {
-      const name = decodeURIComponent(rest.slice(0, idx));
-      const uid = decodeURIComponent(rest.slice(idx + 1));
-      const c = loadCfg(name);
-      if (!c) return jsonRes(res, 404, { error: '实例不存在' });
-      const before = (c.users || []).length;
-      c.users = (c.users || []).filter(x => x.uid !== uid);
-      if (c.users.length < before) {
-        try { saveCfg(name, c); } catch (e) { return jsonRes(res, 500, { error: '保存失败: ' + e.message }); }
-        if (POOL) { try { hotReload(name); } catch (_) {} }
-        return jsonRes(res, 200, { ok: true });
-      }
-      return jsonRes(res, 404, { error: '用户不存在' });
-    }
-  }
-
-// ============ Key card management (multi-user keys) ============
+// ============ Key card management ============
 // GET /admin/api/keys/:inst -- key card list (fully visible to admins, including usage)
   if (req.method === 'GET' && api.startsWith('keys/')) {
     const name = decodeURIComponent(api.slice('keys/'.length));
@@ -1647,7 +1559,7 @@ expireAt: c.adminExpireAt || 0,      // panel session expiry (agw admin expire)
       key: k.key, name: k.name || '', enable: k.enable !== false,
       quotaTokens: Number(k.quotaTokens) || 0,
       usedTokens: liveMap[k.key] !== undefined ? liveMap[k.key] : (Number(k.usedTokens) || 0),
-      models: k.models || [], channels: k.channels || [], uid: k.uid || '', branches: k.branches || [],
+      models: k.models || [], channels: k.channels || [], branches: k.branches || [],
       redact: k.redact == null ? null : !!k.redact,
       expiresAt: k.expiresAt || '', note: k.note || '', createdAt: k.createdAt || '',
     }));
@@ -1674,7 +1586,6 @@ expireAt: c.adminExpireAt || 0,      // panel session expiry (agw admin expire)
       branches: Array.isArray(data.branches) ? data.branches.map(s => String(s).trim()).filter(Boolean) : [],
       expiresAt: String(data.expiresAt || '').trim(),
       note: String(data.note || '').trim().slice(0, 200),
-      uid: String(data.uid || '').trim(),
       createdAt: new Date().toISOString(),
     };
     c.apiKeys.push(nk);

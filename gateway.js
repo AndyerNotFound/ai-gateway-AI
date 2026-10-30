@@ -10,7 +10,7 @@ const os = require('os');
 const zlib = require('zlib');
 const { loadConfig, normalizeProxy } = require('./config');
 const { logErr, VERSION } = require('./util');
-const { saveKeyUsage, pickChannel, pickChannels, collectModels, globMatch, estimatePromptTokens, estimatePromptDist, analyzePrompt, calibRatio, calibUpdate, scaleDist, checkAuth, loadKeyUsage, keyUsageFile, hashPassword, verifyPassword, keyCreditsJSON, genApiKey } = require('./router');
+const { saveKeyUsage, pickChannel, pickChannels, collectModels, globMatch, estimatePromptTokens, estimatePromptDist, analyzePrompt, calibRatio, calibUpdate, scaleDist, checkAuth, loadKeyUsage, keyUsageFile, keyCreditsJSON, genApiKey } = require('./router');
 const { flushStats, createInstancePool, poolLoadAll, poolLoadInstance, poolRemoveInstance, poolRenameInstance, poolRoute, RESERVED_PATHS, INST_NAME_RE } = require('./pool');
 const { startServer } = require('./server');
 const { joinUrl, balanceTarget, presetForChannel, fetchChannelBalance, fetchBalanceCached, pickBalanceChannel, BALANCE_PRESETS, balanceChannelList, balanceAggregate, balanceFxRate, probeRound, probeOnce, setupProbe } = require('./upstream');
@@ -94,6 +94,6 @@ module.exports = {
   createInstancePool, poolLoadAll, poolLoadInstance, poolRemoveInstance, poolRenameInstance, poolRoute,
   RESERVED_PATHS, INST_NAME_RE,
   loadKeyUsage, saveKeyUsage, keyUsageFile,
-  hashPassword, verifyPassword, keyCreditsJSON, genApiKey,
+  keyCreditsJSON, genApiKey,
   probeRound, probeOnce, setupProbe,
 };

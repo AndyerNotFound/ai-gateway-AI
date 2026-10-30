@@ -251,44 +251,23 @@
       </md-filled-card>
 
       <md-filled-card style="margin-top:16px">
-        <div class="card-head"><div><div class="card-title">注册与卡密</div><div class="card-sub">开放注册(用户端自助注册自动发卡) + 卡密生成长度 · 目标实例=顶栏当前选择</div></div></div>
+        <div class="card-head"><div><div class="card-title">卡密</div><div class="card-sub">新卡密钥长度 · 目标实例=顶栏当前选择</div></div></div>
         <div class="grid-form">
           <md-outlined-text-field id="rg-keyLength" label="卡密长度(8-128)" type="number" helper="默认24, 不含 sk- 前缀"></md-outlined-text-field>
-          <md-outlined-text-field id="rg-defaultQuota" label="注册默认额度(万tokens)" type="number" helper="0=不限"></md-outlined-text-field>
         </div>
-        <div style="display:flex;align-items:center;gap:10px;margin:10px 0">
-          <md-switch id="rg-enable" aria-label="开放注册"></md-switch>
-          <span>开放注册(公网中转站才开)</span>
-        </div>
-        <div class="grid-form" id="rg-more" style="display:none">
-          <md-outlined-text-field id="rg-minPw" label="密码最小长度" type="number" value="8"></md-outlined-text-field>
-          <md-outlined-select id="rg-captcha" label="人机验证">
-            <md-select-option value="none">无</md-select-option>
-            <md-select-option value="turnstile">Cloudflare Turnstile(免费)</md-select-option>
-          </md-outlined-select>
-          <md-outlined-text-field id="rg-captchaSiteKey" label="Turnstile Site Key (公开)" helper="cloudflare.com → Turnstile → Add site, 免费"></md-outlined-text-field>
-          <md-outlined-text-field id="rg-captchaSecret" label="Turnstile Secret Key (保密)" type="password"></md-outlined-text-field>
-        </div>
-        <md-filled-button id="rg-save" style="margin-top:8px">保存注册设置</md-filled-button>
+        <md-filled-button id="rg-save" style="margin-top:8px">保存卡密设置</md-filled-button>
       </md-filled-card>
     </section>
 
     <section id="page-cards" class="page hidden" hidden>
       <md-filled-card>
         <div class="card-head">
-          <div style="display:flex;gap:8px;align-items:center">
-            <md-text-button id="cd-tab-keys" style="font-weight:600">卡密</md-text-button>
-            <md-text-button id="cd-tab-users">用户</md-text-button>
-          </div>
+          <div class="card-title">卡密</div>
           <md-filled-button id="cd-new"><md-icon slot="icon">add</md-icon><span id="cd-new-label">发卡</span></md-filled-button>
         </div>
         <div id="cd-pane-keys">
-          <div class="card-sub" style="margin-bottom:10px">多用户 Key: 发卡给朋友用, 限额/禁用/过期/模型白名单 · 目标实例=顶栏当前选择</div>
+          <div class="card-sub" style="margin-bottom:10px">API Key: 限额/禁用/过期/模型白名单 · 目标实例=顶栏当前选择</div>
           <div id="cd-list" class="list-gap"><md-linear-progress indeterminate></md-linear-progress></div>
-        </div>
-        <div id="cd-pane-users" style="display:none">
-          <div class="card-sub" style="margin-bottom:10px">账密登录体系: 用户可用 UID+密码登录用户端, 自动拿到名下卡密</div>
-          <div id="cu-list" class="list-gap"></div>
         </div>
       </md-filled-card>
     </section>

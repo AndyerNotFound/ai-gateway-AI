@@ -110,10 +110,6 @@ class MockAdapter extends BaseAdapter{
   async createKey(inst,body){ const k={key:'sk-mock'+Math.random().toString(36).slice(2,20),name:body.name||'',enable:true,quotaTokens:body.quotaTokens||0,usedTokens:0,models:body.models||[],channels:[],expiresAt:body.expiresAt||'',note:body.note||'',createdAt:new Date().toISOString()}; (this._keys=this._keys||[]).push(k); return {ok:true,key:k}; }
   async updateKey(inst,body){ const k=(this._keys||[]).find(x=>x.key===body.key); if(k){ if(body.enable!==undefined)k.enable=body.enable; if(body.resetUsage)k.usedTokens=0; if(body.addQuota)k.quotaTokens+=body.addQuota; } return {ok:true}; }
   async deleteKey(inst,key){ this._keys=(this._keys||[]).filter(x=>x.key!==key); return {ok:true}; }
-  async getUsers(inst){ return {users:this._users||(this._users=[{uid:'u-demo01',name:'演示用户',keyCount:1,hasPassword:true,createdAt:'2026-09-01T00:00:00Z',note:''}])}; }
-  async createUser(inst,body){ const u={uid:'u'+Math.random().toString(16).slice(2,10),name:body.name,keyCount:0,hasPassword:true,createdAt:new Date().toISOString()}; (this._users=this._users||[]).push(u); return {ok:true,uid:u.uid}; }
-  async updateUser(inst,body){ return {ok:true}; }
-  async deleteUser(inst,uid){ this._users=(this._users||[]).filter(x=>x.uid!==uid); return {ok:true}; }
   async getAdminAuth(inst){ return {hasAdminKey:true,secondKeySet:false,totpEnabled:false}; }
   async setAdminAuth(inst,body){ return {ok:true,secondKeySet:!!body.secondKey,totpEnabled:body.totpAction==='enable',totpSecret:body.totpAction==='enable'?'JBSWY3DPEHPK3PXP':null,otpauthUrl:'otpauth://totp/ai-gateway-demo?secret=JBSWY3DPEHPK3PXP&issuer=ai-gateway'}; }
   async getTunnel(){ return this._tunnel||{running:false,url:'',log:[]}; }
@@ -174,10 +170,6 @@ await new Promise(r=>setTimeout(r,3500)); // let the old process exit and the ne
   async createKey(inst,body,signal){ return this._fetch(`${this.base}/admin/api/keys/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(body)},signal); }
   async updateKey(inst,body,signal){ return this._fetch(`${this.base}/admin/api/keys-update/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(body)},signal); }
   async deleteKey(inst,key,signal){ return this._fetch(`${this.base}/admin/api/keys/${encodeURIComponent(inst)}/${encodeURIComponent(key)}`,{method:'DELETE',headers:this._hdr()},signal); }
-  async getUsers(inst,signal){ return this._fetch(`${this.base}/admin/api/users/${encodeURIComponent(inst)}`,{headers:this._hdr()},signal); }
-  async createUser(inst,body,signal){ return this._fetch(`${this.base}/admin/api/users/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(body)},signal); }
-  async updateUser(inst,body,signal){ return this._fetch(`${this.base}/admin/api/users-update/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(body)},signal); }
-  async deleteUser(inst,uid,signal){ return this._fetch(`${this.base}/admin/api/users/${encodeURIComponent(inst)}/${encodeURIComponent(uid)}`,{method:'DELETE',headers:this._hdr()},signal); }
   async getAdminAuth(inst,signal){ return this._fetch(`${this.base}/admin/api/admin-auth/${encodeURIComponent(inst)}`,{headers:this._hdr()},signal); }
   async setAdminAuth(inst,body,signal){ return this._fetch(`${this.base}/admin/api/admin-auth/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(body)},signal); }
   async getTunnel(signal){ return this._fetch(`${this.base}/admin/api/tunnel`,{headers:this._hdr()},signal); }
@@ -519,16 +511,7 @@ async function renderKeys(){
     $('#ky-channels').innerHTML=(cfg.channels||[]).map(ch=>
       `<md-outlined-text-field data-keyfor="${escAttr(ch.name)}" label="${esc(ch.name)} (${esc(ch.type)})" type="password" value="${esc(ch.apiKey||'')}" placeholder="${ch.hasKey?'(已设)':'API Key'}"></md-outlined-text-field>`
     ).join('');
-    // registration settings backfill
-    const reg=cfg.registration||{};
     $('#rg-keyLength').value=cfg.keyLength||24;
-    $('#rg-enable').selected=!!reg.enable;
-    $('#rg-defaultQuota').value=Math.round((reg.defaultQuota||0)/10000);
-    $('#rg-minPw').value=reg.minPasswordLen||8;
-    $('#rg-captcha').value=reg.captchaProvider||'none';
-    $('#rg-captchaSiteKey').value=reg.captchaSiteKey||'';
-    $('#rg-captchaSecret').value=reg.captchaSecret||'';
-    $('#rg-more').style.display=reg.enable?'':'none';
   }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
   loadAdminAuth(cur);
 }
@@ -552,13 +535,11 @@ async function loadAdminAuth(inst){
   }catch(e){ $('#ka-status').textContent='加载失败: '+e.message; }
 }
 
-// ---- Registration settings save ----
-async function saveRegistration(){
+// ---- Card settings save ----
+async function saveCardSettings(){
   try{
-    await adapter.saveConfig(Store.inst,{ keyLength:Number($('#rg-keyLength').value)||24,
-      registration:{ enable:!!$('#rg-enable').selected, defaultQuota:Math.round((Number($('#rg-defaultQuota').value)||0)*10000),
-        minPasswordLen:Number($('#rg-minPw').value)||8, captchaProvider:$('#rg-captcha').value, captchaSecret:$('#rg-captchaSecret').value.trim(), captchaSiteKey:$('#rg-captchaSiteKey').value.trim() } });
-    snack('注册设置已保存');
+    await adapter.saveConfig(Store.inst,{ keyLength:Number($('#rg-keyLength').value)||24 });
+    snack('卡密设置已保存');
   }catch(e){ snack(e.message,true); }
 }
 
@@ -642,100 +623,14 @@ async function renderCards(){
     }).join('')+'</md-list>';
   }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
 }
-// ---- Key-card page tab switch (cards|users) ----
-let cdTab='keys';
-function cdSwitchTab(t){
-  cdTab=t;
-  $('#cd-pane-keys').style.display = t==='keys'?'':'none';
-  $('#cd-pane-users').style.display = t==='users'?'':'none';
-  $('#cd-new-label').textContent = t==='keys'?'发卡':'新建用户';
-  $('#cd-tab-keys').style.fontWeight = t==='keys'?'600':'400';
-  $('#cd-tab-users').style.fontWeight = t==='users'?'600':'400';
-  if(t==='users') renderUsers(); else renderCards();
-}
-// ---- User management ----
-async function renderUsers(){
-  const signal=Store.abort('users');
-  $('#cu-list').innerHTML='<md-linear-progress indeterminate></md-linear-progress>';
-  try{
-    const data=await adapter.getUsers(Store.inst,signal);
-    const users=data.users||[];
-    if(!users.length){ $('#cu-list').innerHTML='<div class="empty" style="padding:32px;text-align:center;color:var(--md-sys-color-on-surface-variant)">暂无用户 · 点右上角「新建用户」创建账密登录账号</div>'; return; }
-    $('#cu-list').innerHTML='<md-list>'+users.map(u=>listItem({
-      icon:'<span class="msym">person</span>',
-      headline:esc(u.name||u.uid)+` <span class="tag">${esc(u.uid)}</span>`,
-      sub:`卡密 ${u.keyCount} 张${u.note?' · '+esc(u.note):''}${u.createdAt?' · '+String(u.createdAt).slice(0,10):''}`,
-      endHtml:`<div class="row-acts">
-        <button type="button" class="icon-act" data-action="editUser" data-uid="${escAttr(u.uid)}" title="编辑"><span class="msym">edit</span></button>
-        <button type="button" class="icon-act" data-action="userResetPw" data-uid="${escAttr(u.uid)}" title="重置密码"><span class="msym">lock_reset</span></button>
-        <button type="button" class="icon-act err" data-action="delUser" data-uid="${escAttr(u.uid)}" data-name="${escAttr(u.name||u.uid)}" title="删除用户"><span class="msym">delete</span></button>
-      </div>`,
-    })).join('')+'</md-list>';
-  }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
-}
-function openUserDialog(){
-  openDialog('新建用户 (实例 '+Store.inst+')', `
-    <div style="display:flex;flex-direction:column;gap:14px;padding-top:8px">
-      <md-outlined-text-field data-f="uid" label="UID(留空自动生成)" helper="3-32位 字母/数字/下划线"></md-outlined-text-field>
-      <md-outlined-text-field data-f="name" label="昵称"></md-outlined-text-field>
-      <md-outlined-text-field data-f="password" label="密码" type="password" required></md-outlined-text-field>
-      <md-outlined-text-field data-f="note" label="备注(可选)"></md-outlined-text-field>
-    </div>`, {onOk:async ()=>{
-      const v=dlgValue();
-      if(!String(v.password||'')){ snack('密码必填',true); return false; }
-      try{
-        const r=await adapter.createUser(Store.inst,{uid:String(v.uid||'').trim(),name:String(v.name||'').trim(),password:String(v.password),note:String(v.note||'').trim()});
-        snack('用户已创建: '+r.uid); renderUsers();
-      }catch(e){ snack(e.message,true); return false; }
-      return true;
-    }});
-}
-async function userAction(action,uid,name){
-  try{
-    if(action==='delUser'){
-      if(!confirm('删除用户「'+name+'」? 其名下卡密不受影响(仍可单独删)。')) return;
-      await adapter.deleteUser(Store.inst,uid); snack('已删除'); renderUsers(); return;
-    }
-    if(action==='editUser'){
-      const u=(await adapter.getUsers(Store.inst)).users.find(x=>x.uid===uid)||{};
-      openDialog('编辑用户 「'+esc(uid)+'」', `
-        <div style="display:flex;flex-direction:column;gap:14px;padding-top:8px">
-          <md-outlined-text-field data-f="name" label="昵称" value="${escAttr(u.name||'')}"></md-outlined-text-field>
-          <md-outlined-text-field data-f="note" label="备注" value="${escAttr(u.note||'')}"></md-outlined-text-field>
-        </div>`, {onOk:async ()=>{
-          const v=dlgValue();
-          try{ await adapter.updateUser(Store.inst,{uid,name:String(v.name||'').trim(),note:String(v.note||'').trim()}); snack('已保存'); renderUsers(); }catch(e){ snack(e.message,true); return false; }
-          return true;
-        }});
-      return;
-    }
-    if(action==='userResetPw'){
-      openDialog('重置密码 「'+esc(name)+'」', `
-        <md-outlined-text-field data-f="password" label="新密码" type="password" required style="width:100%"></md-outlined-text-field>`, {onOk:async ()=>{
-          const v=dlgValue();
-          if(!String(v.password||'')){ snack('密码必填',true); return false; }
-          try{ await adapter.updateUser(Store.inst,{uid,password:String(v.password)}); snack('密码已重置'); }catch(e){ snack(e.message,true); return false; }
-          return true;
-        }});
-      return;
-    }
-  }catch(e){ snack(e.message,true); }
-}
-
 // ---- Key-issuing dialog ----
 async function openCardDialog(){
-// Fetch the user list first (fills the "bind user" dropdown)
-  let users=[];
-  try{ users=(await adapter.getUsers(Store.inst)).users||[]; }catch(_){}
   openDialog('发新卡 (实例 '+Store.inst+')', `
     <div style="display:flex;flex-direction:column;gap:14px;padding-top:8px">
       <md-outlined-text-field data-f="name" label="名称(给谁用的)" required></md-outlined-text-field>
       <md-outlined-text-field data-f="quotaWan" label="额度(万 tokens)" type="number" value="100" helper="0 或留空=不限量; 100 = 100万tokens"></md-outlined-text-field>
       <md-outlined-text-field data-f="models" label="限定模型(逗号分隔, 留空=全部可用)" helper="例如 deepseek-chat, gpt-4o-mini"></md-outlined-text-field>
       <md-outlined-text-field data-f="expiresAt" label="有效期(留空=永久)" placeholder="2026-12-31" helper="到期自动拒绝; 支持 YYYY-MM-DD"></md-outlined-text-field>
-      <md-outlined-select data-f="uid" label="绑定用户(可选, 绑定后该用户账密登录可见此卡)">
-        <md-select-option value="">不绑定</md-select-option>
-      </md-outlined-select>
       <md-outlined-text-field data-f="note" label="备注(可选)"></md-outlined-text-field>
     </div>`, {onOk:async ()=>{
       const v=dlgValue();
@@ -743,7 +638,7 @@ async function openCardDialog(){
       const quotaWan=Number(v.quotaWan)||0;
       const body={ name:String(v.name).trim(), quotaTokens:Math.round(quotaWan*10000),
         models:String(v.models||'').split(',').map(s=>s.trim()).filter(Boolean),
-        expiresAt:String(v.expiresAt||'').trim(), note:String(v.note||'').trim(), uid:String(v.uid||'').trim() };
+        expiresAt:String(v.expiresAt||'').trim(), note:String(v.note||'').trim() };
       try{
         const r=await adapter.createKey(Store.inst,body);
         const k=r.key||{};
@@ -758,7 +653,6 @@ async function openCardDialog(){
       }catch(e){ snack(e.message,true); return false; }
       return true;
     }});
-  setTimeout(()=>{ const sel=$('#dlgBody [data-f=uid]'); if(sel&&users.length) users.forEach(u=>{ const o=document.createElement('md-select-option'); o.value=u.uid; o.textContent=(u.name||u.uid)+' ('+u.uid+')'; sel.appendChild(o); }); },80);
 }
 // ---- Key card operations ----
 async function cardAction(action,key,name,on){
@@ -1658,7 +1552,6 @@ document.body.addEventListener('click', e=>{
     else if(a==='openPortDialog') openPortDialog(n);
     else if(a==='delInstance') delInstance(n);
     else if(a==='copyKey'||a==='toggleKey'||a==='delKey'||a==='rechargeKey') cardAction(a,act.dataset.key,act.dataset.name,act.dataset.on==='1');
-    else if(a==='userResetPw'||a==='delUser'||a==='editUser') userAction(a,act.dataset.uid,act.dataset.name);
     else if(a==='chBalance') chBalanceAction(act.dataset.name);
     else if(a==='editProxy') openProxyDialog(n);
     else if(a==='delProxy') delProxy(n);
@@ -1700,16 +1593,12 @@ const rpTestOut=$('#rp-test-out-btn'), rpTestInc=$('#rp-test-inc-btn');
 if(rpTestOut) rpTestOut.addEventListener('click',()=>{ const rules=rpCompileCli(rpLists.out); const r=rpApplyCli($('#rp-test-in')?$('#rp-test-in').value:'',rules); $('#rp-test-result').textContent = r===''?'(空)':r; });
 if(rpTestInc) rpTestInc.addEventListener('click',()=>{ const rules=rpCompileCli(rpLists.inc); const r=rpApplyCli($('#rp-test-in')?$('#rp-test-in').value:'',rules); $('#rp-test-result').textContent = r===''?'(空)':r; });
   $('#pt-new').addEventListener('click',()=>openPortDialog());
-  $('#cd-new').addEventListener('click',()=>{ if(cdTab==='users')openUserDialog(); else openCardDialog(); });
-  $('#cd-tab-keys').addEventListener('click',()=>cdSwitchTab('keys'));
-  $('#cd-tab-users').addEventListener('click',()=>cdSwitchTab('users'));
+  $('#cd-new').addEventListener('click',()=>openCardDialog());
   // second factor
   $('#ka-save-second').addEventListener('click',async()=>{ try{ await adapter.setAdminAuth(Store.inst,{secondKey:$('#ka-secondKey').value}); snack('第二密码已保存'); loadAdminAuth(Store.inst); }catch(e){ snack(e.message,true); } });
   $('#ka-totp-enable').addEventListener('click',async()=>{ try{ const r=await adapter.setAdminAuth(Store.inst,{totpAction:'enable'}); if(r.totpSecret){ $('#ka-totp-info').style.display=''; $('#ka-totp-secret').textContent=r.totpSecret; $('#ka-totp-url').textContent=r.otpauthUrl||''; } snack('TOTP 已启用, 请立即扫码保存密钥!'); loadAdminAuth(Store.inst); }catch(e){ snack(e.message,true); } });
   $('#ka-totp-disable').addEventListener('click',async()=>{ try{ await adapter.setAdminAuth(Store.inst,{totpAction:'disable'}); snack('TOTP 已停用'); loadAdminAuth(Store.inst); }catch(e){ snack(e.message,true); } });
-    // registration settings
-  $('#rg-save').addEventListener('click',saveRegistration);
-  $('#rg-enable').addEventListener('change',()=>{ $('#rg-more').style.display=$('#rg-enable').selected?'':'none'; });
+  $('#rg-save').addEventListener('click',saveCardSettings);
 // Tunnel
   $('#tn-toggle').addEventListener('click',async()=>{ try{ const d=await adapter.getTunnel(); await adapter.tunnelAction(d.running?'stop':'start'); snack(d.running?'隧道已停止':'隧道启动中…'); setTimeout(loadTunnel,1500); }catch(e){ snack(e.message,true); } });
   $('#tn-copy').addEventListener('click',()=>{ const t=$('#tn-url').textContent; if(t){ navigator.clipboard&&navigator.clipboard.writeText(t); snack('已复制'); } });

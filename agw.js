@@ -115,6 +115,9 @@ function saveCfg(name, cfg) { // preserve the file's original encryption state (
   const raw = fs.readFileSync(f, 'utf8');
   const bak = f + '.agwbak';
   if (!fs.existsSync(bak)) fs.copyFileSync(f, bak);
+  // Legacy multi-user data must never be written back (removed 2026-10).
+  delete cfg.users;
+  delete cfg.registration;
   let out = JSON.stringify(cfg, null, 2) + '\n';
   if (crypt.isEncText(raw)) {
     const pass = crypt.loadPass();
@@ -529,7 +532,6 @@ function cmdCard(argv) {
   agw card --generate --name <名> [--balance <tokens>] [--expires <ISO日期>] [--inst <实例>]
   agw card --delete <card-id>        [--inst]
   agw card --charge <card-id> --balance <num>  [--inst]
-  agw card --register <on/off>       [--inst]   公网自助注册开关
   agw card --length <8~128>          [--inst]   新卡密钥长度
   agw card ban <card-id>             [--inst]   停用卡
   agw card list                      [--inst]   卡列表
@@ -559,12 +561,6 @@ function cmdCard(argv) {
     const c = load(); const k = findKey(c, id);
     if (!k) die(`卡不存在: ${id}`);
     return api('POST', `/admin/api/keys-update/${encodeURIComponent(inst)}`, { key: k.key, addQuota: add }).then(() => ok(`Card ${trunc(k.key, 10)}… charged ${fmtTok(add)} tokens`)).catch(e => die(e.message));
-  }
-  if (has('--register')) {
-    const v = (get('--register') || '').toLowerCase();
-    if (!['on', 'off'].includes(v)) die('--register needs on/off');
-    const c = load(); c.registration = Object.assign({}, c.registration || {}, { enable: v === 'on' }); saveCfg(inst, c);
-    ok(`Self-registration ${v === 'on' ? C.grn('on') : C.dim('off')}`); return hotRestart(inst);
   }
   if (has('--length')) {
     const n = Number(get('--length'));
@@ -1100,7 +1096,7 @@ async function cmdWeb(argv) {
   console.log(opened ? C.dim(`已尝试用 ${opened} 打开浏览器`) : C.dim('No browser-open command available; copy the link manually'));
 }
 
-/* ==================== per-domain loop -- agw inst/chan/router/stat/register/admin ==================== */
+/* ==================== per-domain loop -- agw inst/chan/router/stat/admin ==================== */
 const LOOP_HINT = 'blank = refresh | help = commands | exit = quit';
 function canLoop() { return !process.env.AGW_NO_LOOP && !!(process.stdin.isTTY && process.stdout.isTTY); } // cmdXxx called inside a loop does not nest another loop
 function tailLog(name, n) {
@@ -1595,88 +1591,6 @@ if (!(Number(ch.lockAt) > now)) next.lockAt = now; // lock immediately if unlock
   });
 }
 
-/* ---------- User registration ---------- */
-const HELP_REGISTER = t(`用户注册 loop:
-  name=<UID>         3-32 位字母/数字/下划线
-  password=<密码>    不小于实例要求的最小长度
-  recomfirm=<密码>   再输一次确认
-  email=<邮箱>       实例要求邮箱时必填
-  other=<备注>       额外信息(写入用户 note)
-  空行               信息齐全则提交注册, 否则显示已填内容
-  exit               退出`);
-function plainPost(inst, p, body) { // hit the instance port directly (not via the admin API)
-  return new Promise((resolve, reject) => {
-    const c = loadCfg(inst);
-    const port = (c.listen || {}).port || 16384, useTls = !!(c.tls && c.tls.enable);
-    const payload = JSON.stringify(body || {});
-    const rq = (useTls ? https : http).request({ host: '127.0.0.1', port, path: p, method: 'POST', timeout: 15000,
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-      ...(useTls ? { rejectUnauthorized: false } : {}) }, r => {
-      const u8r = utf8();
-      let buf = ''; r.on('data', d => buf += u8r(d));
-      r.on('end', () => {
-        let j = null; try { j = JSON.parse(buf); } catch (_) {}
-        if (r.statusCode >= 400) return reject(new Error((j && (j.error && (j.error.message || j.error))) || trunc(buf, 200)));
-        resolve(j || buf);
-      });
-    });
-    rq.on('error', reject); rq.on('timeout', () => rq.destroy(new Error('请求超时')));
-    rq.end(payload);
-  });
-}
-function loopRegister(startName) {
-  let cur = startName || 'default';
-  const form = { name: '', password: '', confirm: '', email: '', other: '' };
-  const view = () => {
-    const c = loadCfg(cur), reg = c.registration || {};
-    console.log(C.bold('■ 用户注册 (' + cur + ')') + '  ' + (reg.enable ? C.grn('已开放') : C.yel('未开放')));
-    console.log(`  name=${form.name || C.dim('(empty)')}  password=${form.password ? '●'.repeat(Math.min(12, form.password.length)) : C.dim('(empty)')}  recomfirm=${form.confirm ? '●'.repeat(Math.min(12, form.confirm.length)) : C.dim('(empty)')}`);
-    console.log(`  email=${form.email || C.dim('(empty)')}  other=${form.other || C.dim('(empty)')}` + (reg.captchaProvider === 'turnstile' ? C.yel('  人机验证已开启(CLI 无法完成)') : ''));
-    console.log(C.dim('  逐项 key=value; 空行提交; exit 退出'));
-  };
-  const submit = () => {
-    const c = loadCfg(cur), reg = c.registration || {};
-    if (!reg.enable) return console.log(C.yel('该实例未开放注册'));
-    if (reg.captchaProvider === 'turnstile') return console.log(C.yel('该实例开启 turnstile 人机验证, 请用网页注册'));
-    if (!/^[A-Za-z0-9_-]{3,32}$/.test(form.name)) return console.log(C.yel('name 需 3-32 位字母/数字/下划线'));
-    if (form.password.length < (reg.minPasswordLen || 8)) return console.log(C.yel('password 至少 ' + (reg.minPasswordLen || 8) + ' 位'));
-    if (form.password !== form.confirm) return console.log(C.yel('两次密码不一致'));
-    if (reg.emailVerify && reg.emailVerify.enable && !form.email) return console.log(C.yel('该实例要求填写 email'));
-    const body = { uid: form.name, password: form.password };
-    if (form.email) body.email = form.email;
-    if (form.other) body.note = form.other;
-    return plainPost(cur, '/auth/register', body).then(d => {
-      ok('Registered: ' + d.uid);
-      if (d.key) console.log('  Card key: ' + C.grn(d.key) + C.dim(' (仅显示一次, 请妥善保存)'));
-      if (d.quotaTokens) console.log('  Quota: ' + fmtTok(d.quotaTokens) + ' tokens');
-    }).catch(e => console.log(C.red('注册失败: ' + e.message)));
-  };
-  const before = raw => {
-    const line = raw.trim();
-if (/^(exit|quit|q|:q)$/i.test(line) || /^(help|\?)$/i.test(line)) return; // left to the REPL: exit/help
-    if (!line) { submit(); return true; }
-    const eq = line.indexOf('=');
-    if (eq < 0) { view(); return true; }
-    const k = line.slice(0, eq).trim().toLowerCase(), v = line.slice(eq + 1).trim();
-    if (k === 'name') form.name = v;
-    else if (k === 'password') form.password = v;
-    else if (k === 'reconfirm' || k === 'confirm') form.confirm = v;
-    else if (k === 'email') form.email = v;
-    else if (k === 'other') form.other = v;
-    else console.log(C.yel('未知字段: ' + k));
-    view(); return true;
-  };
-  return startRepl({
-    title: 'agw 用户注册 loop (' + cur + ')',
-    prompt: () => 'agw·register ' + cur + '> ',
-    help: HELP_REGISTER,
-    refresh: view,
-    commands: {},
-    before: before,
-  });
-}
-
-
 /* ---------- Admin system ---------- */
 const HELP_ADMIN = t(`管理体系 loop 命令:
   login                         生成新的一次性面板登录链接
@@ -1741,15 +1655,6 @@ function loopAdmin(startName) {
 
 
 /* ---------- Command entry (prints a one-shot summary when not a TTY; interactive terminals enter the loop) ---------- */
-function cmdRegister(argv) {
-  if (argv.includes('help') || argv.includes('--help')) { console.log(HELP_REGISTER); return; }
-  const inst = (argv[0] && !argv[0].startsWith('-')) ? argv[0] : 'default';
-  if (!listInsts().includes(inst)) die(`Instance not found: ${inst} (have: ${listInsts().join(', ') || 'none'})`);
-  if (canLoop()) return loopRegister(inst);
-  const c = loadCfg(inst); const r = c.registration || {};
-  console.log(`  ${inst}: register ${onoff(r.enable)}  captcha ${r.captchaProvider || 'none'}  pass≥${r.minPasswordLen || 8}  users ${(c.users || []).length}`);
-  console.log(C.dim('  交互终端执行 agw register 进入注册 loop'));
-}
 function cmdAdmin(argv) {
   if (argv.includes('help') || argv.includes('--help')) { console.log(HELP_ADMIN); return; }
   const inst = (argv[0] && !argv[0].startsWith('-')) ? argv[0] : 'default';
@@ -1848,9 +1753,8 @@ function cmdConfig(argv) {
       c.listen = c.listen || {};
       if (!c.listen.port) c.listen.port = 16384;
       c.channels = c.channels || [];
-      c.users = c.users || [];
       c.apiKeys = c.apiKeys || [];
-      console.log(C.dim('已修补缺失字段(listen/channels/users/apiKeys)'));
+      console.log(C.dim('已修补缺失字段(listen/channels/apiKeys)'));
     }
     const base = path.basename(abs).replace(/^config\./, '').replace(/\.json$/i, '');
     const name = listInsts().includes(base) ? base + '-' + Date.now().toString(36) : (base || 'imported');
@@ -1908,12 +1812,11 @@ function help(sub) {
   agw card list [--inst <实例>]
   agw card --generate --name <名> [--balance <n>] [--expires <ISO>] [--inst <实例>]
   agw card --charge <卡> --balance <n> | --delete <卡> | ban <卡>
-  agw card --register <on|off> | --length <8~128>
+  agw card --length <8~128>
 
 交互 loop (空行刷新, help 看命令, exit 退出; 非 TTY 时打印一次性摘要)
   agw inst <inst>                       实例管理 loop(status/grep/dist/edit)
   agw chan <inst>                       渠道管理 loop(fetch/edit/default/lock/unlock/delete/models/scope)
-  agw register [<inst>]                 用户注册 loop(name/password/reconfirm/email/other)
   agw admin [<inst>]                    管理体系 loop(login/expire/profile/logout)
   agw cloudflared                       隧道管理 loop(log/grep/kill/start/stop)
 
@@ -1946,7 +1849,7 @@ const CMDS = {
   web: cmdWeb,
   inst: cmdInst, router: cmdRouter, chan: cmdChan, fetch: cmdFetch,
   card: cmdCard, refresh: cmdRefresh, record: cmdRecord, cloudflared: cmdCloudflared,
-  lang: cmdLang, notice: cmdNotice, stat: cmdStat, register: cmdRegister, admin: cmdAdmin,
+  lang: cmdLang, notice: cmdNotice, stat: cmdStat, admin: cmdAdmin,
   encrypt: cmdEncrypt, decrypr: cmdDecrypt, recrypt: cmdRecrypt,
   export: cmdExport, inport: cmdInport, config: cmdConfig, crypt: cmdCrypt,
 };

@@ -9,7 +9,7 @@ const crypto = require('crypto');
 const os = require('os');
 const zlib = require('zlib');
 const { poolRoute, BILLING_PATHS, GENERIC_BALANCE_PATHS, createInstancePool, poolLoadAll, setupModelSync, statsFlushFile, setupStatsFlush } = require('./pool');
-const { sendError, corsHeaders, jsonErr, checkAuth, keyCreditsJSON, verifyPassword, hashPassword, genApiKey, persistRuntimeCfg, availableBranches, collectJson, modelsResponse, sendJson, loadKeyUsage, makeGatewayApi } = require('./router');
+const { sendError, corsHeaders, jsonErr, checkAuth, keyCreditsJSON, genApiKey, persistRuntimeCfg, availableBranches, collectJson, modelsResponse, sendJson, loadKeyUsage, makeGatewayApi } = require('./router');
 const { VERSION, utf8, log, logErr } = require('./util');
 const { balanceAggregate, pickBalanceChannel, fetchBalanceCached, fetchChannelBalance, setupProbe } = require('./upstream');
 const { fetchUpstreamModels, syncModels } = require('./sync');
@@ -66,9 +66,15 @@ async function handleHttp(cfg, req, res) {
     || p === '/admin' || p.startsWith('/admin/');
   if (!allowed) return sendError('openai', res, 404, 'not found: ' + req.method + ' ' + p);
 
+// ===== Removed user-side endpoints (2026-10): keep them 404 instead of falling through as panel assets =====
+  if (p === '/auth/login' || p === '/auth/register' || p === '/auth/me' || p === '/auth/profile'
+      || p === '/auth/mykeys' || p.startsWith('/auth/mykeys-')) {
+    return sendError('openai', res, 404, 'not found: ' + req.method + ' ' + p);
+  }
+
 // ===== Web admin panel (/admin + /admin/api/*) =====
-// /auth/* login/register are user-side endpoints and must be left to the branches below; everything else belongs to the panel (HTML/CSS/JS/vendor static)
-  const isAuthFile = p.startsWith('/auth/') && p !== '/auth/login' && p !== '/auth/register';
+// /auth/* is the panel itself: the one-time login link plus the static assets under m3/
+  const isAuthFile = p.startsWith('/auth/');
   if (p === '/admin' || p === '/admin/' || p.startsWith('/admin/api/')
       || p === '/auth' || p === '/auth/' || isAuthFile
       || /^\/auth\/[A-Za-z0-9_-]{16,128}\/[A-Za-z0-9_-]{8,256}\/?$/.test(p)) {
@@ -85,235 +91,12 @@ const u8 = utf8();   /* *chunk-safe decoding (2026-09-18) */
     }
     return;
   }
-// ===== Credential login (user side): POST /auth/login {uid, password} -> that user's key cards + balances =====
-  if (req.method === 'POST' && p === '/auth/login') {
-    let body = '';
-const u8 = utf8();   /* *chunk-safe decoding (2026-09-18) */
-    req.on('data', c => { body += u8(c); if (body.length > 65536) req.destroy(); });
-    req.on('end', () => {
-      try {
-        const j = JSON.parse(body || '{}');
-        const uid = String(j.uid || '').trim();
-        const user = (cfg.users || []).find(x => x.uid === uid);
-        if (!user || !verifyPassword(j.password || '', user.passwordHash))
-          return sendError('openai', res, 401, 'UID 或密码错误');
-        const myKeys = (cfg.apiKeys || []).filter(k => k.uid === uid);
-        res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders() });
-        res.end(JSON.stringify({
-          ok: true, uid: user.uid, name: user.name || '',
-          keys: myKeys.map(k => ({ key: k.key, ...keyCreditsJSON(k) })),
-        }));
-      } catch (e) { sendError('openai', res, 400, 'bad json'); }
-    });
-    req.on('error', () => {});
-    return;
-  }
-
-// ===== Registration (user side; admin-gated): POST /auth/register {uid, password, captchaToken?, email?} =====
-  if (req.method === 'POST' && p === '/auth/register') {
-    let body = '';
-const u8 = utf8();   /* *chunk-safe decoding (2026-09-18) */
-    req.on('data', c => { body += u8(c); if (body.length > 65536) req.destroy(); });
-    req.on('end', async () => {
-      try {
-        const reg = cfg.registration || {};
-        if (!reg.enable) return sendError('openai', res, 403, '该服务器未开放注册');
-        const j = JSON.parse(body || '{}');
-        const uid = String(j.uid || '').trim();
-        const pw = String(j.password || '');
-        if (!/^[A-Za-z0-9_-]{3,32}$/.test(uid)) return sendError('openai', res, 400, 'UID 需 3-32 位字母/数字/下划线');
-        if (pw.length < (reg.minPasswordLen || 8)) return sendError('openai', res, 400, '密码至少 ' + (reg.minPasswordLen || 8) + ' 位');
-        if ((cfg.users || []).some(x => x.uid === uid)) return sendError('openai', res, 409, 'UID 已被注册');
-// CAPTCHA (turnstile)
-        if (reg.captchaProvider === 'turnstile') {
-          if (!reg.captchaSecret) return sendError('openai', res, 500, '管理端未配置 captchaSecret');
-          const token = String(j.captchaToken || '');
-          if (!token) return sendError('openai', res, 400, '缺少人机验证');
-          const okT = await new Promise(resolve => {
-            const postData = 'secret=' + encodeURIComponent(reg.captchaSecret) + '&response=' + encodeURIComponent(token);
-            const rq = https.request({
-              hostname: 'challenges.cloudflare.com', path: '/turnstile/v0/siteverify', method: 'POST',
-              headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(postData) },
-              timeout: 10000,
-            }, (r2) => {
-              const u8t = utf8();
-              let d = ''; r2.on('data', c => d += u8t(c)); r2.on('end', () => {
-                try { resolve(!!JSON.parse(d).success); } catch (_) { resolve(false); }
-              });
-            });
-            rq.on('error', () => resolve(false));
-            rq.on('timeout', () => { rq.destroy(); resolve(false); });
-            rq.write(postData); rq.end();
-          });
-          if (!okT) return sendError('openai', res, 403, '人机验证失败');
-        }
-// Email field (validation: stored as unverified when emailVerify is on; the simplified version only records it)
-        const email = String(j.email || '').trim();
-        if (reg.emailVerify && reg.emailVerify.enable && !email) return sendError('openai', res, 400, '需要邮箱');
-// Create a user
-        cfg.users = cfg.users || [];
-        cfg.users.push({
-          uid, name: uid, passwordHash: hashPassword(pw),
-          note: email ? ('email:' + email) : '', createdAt: new Date().toISOString(),
-        });
-// Auto-issue a default card
-        cfg.apiKeys = cfg.apiKeys || [];
-        const nk = {
-          key: genApiKey(cfg.keyLength), name: uid, enable: true,
-          quotaTokens: reg.defaultQuota || 0, usedTokens: 0,
-          models: [], channels: [], uid, note: '注册自动发卡', createdAt: new Date().toISOString(),
-        };
-        cfg.apiKeys.push(nk);
-        persistRuntimeCfg(cfg);
-        res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders() });
-        res.end(JSON.stringify({ ok: true, uid, key: nk.key, quotaTokens: nk.quotaTokens }));
-        log('[auth] 新用户注册:', uid);
-      } catch (e) { sendError('openai', res, 400, 'bad json'); }
-    });
-    req.on('error', () => {});
-    return;
-  }
-
-// ===== User self-service (primary card auth): /auth/me /auth/profile /auth/mykeys =====
-  if (p === '/auth/me' && req.method === 'GET') {
-    const authR = checkAuth(cfg, req, u.searchParams);
-    if (!authR.ok) return sendError('openai', res, authR.status || 401, authR.error);
-    if (!authR.userKey) return sendError('openai', res, 403, '需要用户卡密(非管理员key)');
-    const uk = authR.userKey;
-    const user = uk.uid ? (cfg.users || []).find(x => x.uid === uk.uid) : null;
-    const myKeys = uk.uid ? (cfg.apiKeys || []).filter(k => k.uid === uk.uid) : [uk];
-    res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders() });
-    return res.end(JSON.stringify({
-      ok: true, uid: uk.uid || '', name: (user && user.name) || uk.name || '',
-      nickname: (user && user.nickname) || '', avatar: (user && user.avatar) || '',
-      mainKey: uk.key,
-      keys: myKeys.map(k => ({ key: k.key, name: k.name, ...keyCreditsJSON(k), branches: k.branches || [], isMain: k.key === uk.key })),
-      branches: availableBranches(cfg, uk),
-    }));
-  }
-  if (p === '/auth/profile' && req.method === 'POST') {
-    collectJson(req, res, (j) => {
-      const authR = checkAuth(cfg, req, u.searchParams);
-      if (!authR.ok) return sendError('openai', res, authR.status || 401, authR.error);
-      if (!authR.userKey) return sendError('openai', res, 403, '需要用户卡密');
-      const uk = authR.userKey;
-      if (uk.uid) {
-        const user = (cfg.users || []).find(x => x.uid === uk.uid);
-        if (user) {
-          if (j.nickname !== undefined) user.nickname = String(j.nickname).slice(0, 64);
-          if (j.name !== undefined) user.name = String(j.name).slice(0, 64);
-          if (j.avatar !== undefined) user.avatar = String(j.avatar).slice(0, 300);
-          persistRuntimeCfg(cfg);
-        }
-      }
-// A card's display name is editable too
-      if (j.cardName !== undefined) { uk.name = String(j.cardName).slice(0, 64); persistRuntimeCfg(cfg); }
-      res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders() });
-      res.end(JSON.stringify({ ok: true }));
-    });
-    return;
-  }
-  // my cards: GET list / POST create sub-card / DELETE sub-card / POST update sub-card
-  if (p === '/auth/mykeys') {
-    const authR = checkAuth(cfg, req, u.searchParams);
-    if (!authR.ok) return sendError('openai', res, authR.status || 401, authR.error);
-    if (!authR.userKey) return sendError('openai', res, 403, '需要用户卡密');
-    const uk = authR.userKey;
-    if (req.method === 'GET') {
-      const myKeys = uk.uid ? (cfg.apiKeys || []).filter(k => k.uid === uk.uid) : [uk];
-      res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders() });
-      return res.end(JSON.stringify({ keys: myKeys.map(k => ({ key: k.key, name: k.name, ...keyCreditsJSON(k), branches: k.branches || [], redact: k.redact == null ? null : !!k.redact, isMain: k.key === uk.key })) }));
-    }
-    if (req.method === 'POST') {
-      collectJson(req, res, (j) => {
-// Sub-card: a subset of its parent (model/branch whitelists cannot exceed the parent; quota cannot exceed the parent's remainder)
-        const parentModels = uk.models || [], parentBranches = uk.branches || [];
-        const models = Array.isArray(j.models) ? j.models.map(String).filter(m => !parentModels.length || parentModels.includes(m)) : [];
-        const branches = Array.isArray(j.branches) ? j.branches.map(String).filter(b => !parentBranches.length || parentBranches.includes(b)) : [];
-        let quota = Math.max(0, Number(j.quotaTokens) || 0);
-        if (uk.quotaTokens > 0) {
-          const remaining = uk.quotaTokens - (uk.usedTokens || 0);
-if (quota <= 0 || quota > remaining) quota = remaining; // never exceed the parent's remainder
-        }
-        const nk = {
-          key: genApiKey(cfg.keyLength), name: String(j.name || uk.name || '子卡').slice(0, 64),
-          enable: true, quotaTokens: quota, usedTokens: 0, uid: uk.uid || '',
-          models, branches, channels: [], note: String(j.note || '用户自助').slice(0, 200),
-          createdAt: new Date().toISOString(),
-        };
-        cfg.apiKeys = cfg.apiKeys || [];
-        cfg.apiKeys.push(nk);
-        persistRuntimeCfg(cfg);
-        res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders() });
-        res.end(JSON.stringify({ ok: true, key: nk }));
-      });
-      return;
-    }
-  }
-  if (p === '/auth/mykeys-update' && req.method === 'POST') {
-    collectJson(req, res, (j) => {
-      const authR = checkAuth(cfg, req, u.searchParams);
-      if (!authR.ok) return sendError('openai', res, authR.status || 401, authR.error);
-      if (!authR.userKey) return sendError('openai', res, 403, '需要用户卡密');
-      const uk = authR.userKey;
-      const target = (cfg.apiKeys || []).find(k => k.key === j.key && (k.uid ? k.uid === uk.uid : k.key === uk.key));
-      if (!target) return sendError('openai', res, 404, '卡密不存在或不属于你');
-      if (j.name !== undefined) target.name = String(j.name).slice(0, 64);
-      if (j.models !== undefined) {
-        const pm = uk.models || [];
-        target.models = Array.isArray(j.models) ? j.models.map(String).filter(m => !pm.length || pm.includes(m)) : [];
-      }
-      if (j.branches !== undefined) {
-        const pb = uk.branches || [];
-        target.branches = Array.isArray(j.branches) ? j.branches.map(String).filter(b => !pb.length || pb.includes(b)) : [];
-      }
-      if (j.redact !== undefined) target.redact = (j.redact == null) ? null : !!j.redact;
-      if (j.quotaTokens !== undefined && target.key !== uk.key) {
-        let q = Math.max(0, Number(j.quotaTokens) || 0);
-        if (uk.quotaTokens > 0) q = Math.min(q, uk.quotaTokens - (uk.usedTokens || 0));
-        target.quotaTokens = q;
-      }
-      persistRuntimeCfg(cfg);
-      res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders() });
-      res.end(JSON.stringify({ ok: true }));
-    });
-    return;
-  }
-  if (p === '/auth/mykeys-delete' && req.method === 'POST') {
-    collectJson(req, res, (j) => {
-      const authR = checkAuth(cfg, req, u.searchParams);
-      if (!authR.ok) return sendError('openai', res, authR.status || 401, authR.error);
-      if (!authR.userKey) return sendError('openai', res, 403, '需要用户卡密');
-      const uk = authR.userKey;
-      if (j.key === uk.key) return sendError('openai', res, 400, '不能删除主卡');
-      const before = (cfg.apiKeys || []).length;
-      cfg.apiKeys = (cfg.apiKeys || []).filter(k => !(k.key === j.key && k.uid === uk.uid));
-      if (cfg.apiKeys.length < before) persistRuntimeCfg(cfg);
-      res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders() });
-      res.end(JSON.stringify({ ok: true, deleted: before - cfg.apiKeys.length }));
-    });
-    return;
-  }
-
 // ===== Accessible branch list (card auth, filtered by branches) =====
   if (p === '/v1/branches' && req.method === 'GET') {
     const authR = checkAuth(cfg, req, u.searchParams);
     if (!authR.ok) return sendError('openai', res, authR.status || 401, authR.error);
     res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders() });
     return res.end(JSON.stringify({ branches: availableBranches(cfg, authR.userKey) }));
-  }
-
-// ===== Registration switch state (user-side query; decides whether to show the sign-up entry) =====
-  if (req.method === 'GET' && p === '/auth/register') {
-    const reg = cfg.registration || {};
-    res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders() });
-    return res.end(JSON.stringify({
-      enable: !!reg.enable,
-      captchaProvider: reg.captchaProvider || 'none',
-      captchaSiteKey: reg.captchaSiteKey || '',
-      minPasswordLen: reg.minPasswordLen || 8,
-      emailRequired: !!(reg.emailVerify && reg.emailVerify.enable),
-    }));
   }
 
   if (req.method === 'GET' && (p === '/v1/models' || p === '/v1beta/models')) {

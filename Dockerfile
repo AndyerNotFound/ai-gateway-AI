@@ -14,7 +14,7 @@ COPY ui ./ui
 COPY plugins ./plugins
 COPY tls ./tls
 COPY ops ./ops
-COPY agw.sh agw-tls gen-cert.sh user.html watchdog.sh ./
+COPY agw.sh agw-tls gen-cert.sh watchdog.sh ./
 COPY docker-entrypoint.sh /usr/local/bin/
 # Pre-create the data volume dirs (config/log/one-time login state .run); running as root is for first-time volume init and writing /app/tls certs;
 # Add "USER node" and chown -R node:node /app yourself when non-root is needed

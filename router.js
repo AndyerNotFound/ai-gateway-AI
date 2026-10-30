@@ -198,21 +198,7 @@ function persistRuntimeCfg(cfg) {
   } catch (e) { logErr('[persist] 配置落盘失败:', e.message); }
 }
 
-/* ---- User passwords (scrypt) ---- */
-function hashPassword(pw) {
-  const salt = crypto.randomBytes(16).toString('base64url');
-  const h = crypto.scryptSync(String(pw), salt, 32);
-  return 'scrypt:' + salt + ':' + h.toString('base64url');
-}
-function verifyPassword(pw, stored) {
-  try {
-    if (!stored || !stored.startsWith('scrypt:')) return false;
-    const [, salt, h] = stored.split(':');
-    const calc = crypto.scryptSync(String(pw), salt, 32);
-    return crypto.timingSafeEqual(calc, Buffer.from(h, 'base64url'));
-  } catch (_) { return false; }
-}
-// Key card balance JSON (/credits response, reused by login)
+// Key card balance JSON (/credits response)
 function keyCreditsJSON(uk) {
   const quota = Number(uk.quotaTokens) || 0;
   const used = Number(uk.usedTokens) || 0;
@@ -340,4 +326,4 @@ function modelsResponse(cfg, format) {
   return { object: 'list', data: ms.map(m => ({ id: m, object: 'model', type: 'model', created: 1700000000, owned_by: 'ai-gateway', display_name: m })) };
 }
 
-module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, state, admin, pickChannels, channelLocked, forcedChannelName, globMatch, CJK_RE, countCjk, tokOf, analyzePrompt, estimatePromptTokens, estimatePromptDist, EST_RATIO_MIN, calibRatio, calibUpdate, scaleDist, pickChannel, collectJson, availableBranches, genApiKey, persistRuntimeCfg, hashPassword, verifyPassword, keyCreditsJSON, checkAuth, cfgDirOf, keyUsageFile, loadKeyUsage, saveKeyUsage, makeGatewayApi, corsHeaders, jsonErr, sendJson, sendError, collectModels, modelsResponse };
+module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, state, admin, pickChannels, channelLocked, forcedChannelName, globMatch, CJK_RE, countCjk, tokOf, analyzePrompt, estimatePromptTokens, estimatePromptDist, EST_RATIO_MIN, calibRatio, calibUpdate, scaleDist, pickChannel, collectJson, availableBranches, genApiKey, persistRuntimeCfg, keyCreditsJSON, checkAuth, cfgDirOf, keyUsageFile, loadKeyUsage, saveKeyUsage, makeGatewayApi, corsHeaders, jsonErr, sendJson, sendError, collectModels, modelsResponse };
