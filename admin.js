@@ -1947,12 +1947,54 @@ function dashOf(c) {
     if (POOL) {
       const tc = POOL.instances.get(inst);
       if (!tc) return jsonRes(res, 404, { error: '实例未在运行: ' + inst });
-      return jsonRes(res, 200, Object.assign(dashOf(tc), { requests: tc._stats.requests, inflight: inflightOf(tc), errors: tc._stats.errors, retries: tc._stats.retries || 0, onceChannel: tc._onceChannel || null, byChannel: tc._stats.byChannel, byKey: tc._stats.byKey || {}, startedAt: tc._stats.startedAt, uptime: Math.round(process.uptime()) }));
+      return jsonRes(res, 200, Object.assign(dashOf(tc), { requests: tc._stats.requests, inflight: inflightOf(tc), errors: tc._stats.errors, retries: tc._stats.retries || 0, onceChannel: tc._onceChannel || null, byChannel: tc._stats.byChannel, byKey: tc._stats.byKey || {}, byModel: tc._stats.byModel || {}, daily: tc._stats.daily || {}, startedAt: tc._stats.startedAt, uptime: Math.round(process.uptime()) }));
     }
     const j = await proxyInstance(inst, 'stats');
     if (!j) return jsonRes(res, 404, { error: '无法获取实例 ' + inst + ' 的统计(可能未运行或无可用管理令牌)' });
     const st = j.stats ? j.stats : j;
-    return jsonRes(res, 200, Object.assign({ requests: st.requests || 0, errors: st.errors || 0, byChannel: st.byChannel || {}, startedAt: j.startedAt, uptime: j.uptime || 0 }, { version: j.version, listen: j.listen, channels: j.channels, probe: j.probe }));
+    return jsonRes(res, 200, Object.assign({ requests: st.requests || 0, errors: st.errors || 0, byChannel: st.byChannel || {}, byModel: st.byModel || {}, daily: st.daily || {}, startedAt: j.startedAt, uptime: j.uptime || 0 }, { version: j.version, listen: j.listen, channels: j.channels, probe: j.probe }));
+  }
+
+// GET /admin/api/stats-all -- every instance in one shot (the app's stats tab)
+  if (req.method === 'GET' && api === 'stats-all') {
+    const instances = [];
+    const collect = (name, tc) => {
+      const st = tc._stats || {};
+      const byChannel = st.byChannel || {};
+      let inputTokens = 0, outputTokens = 0;
+      for (const v of Object.values(byChannel)) {
+        inputTokens += Number(v && v.inputTokens) || 0;
+        outputTokens += Number(v && v.outputTokens) || 0;
+      }
+      return {
+        name,
+        requests: st.requests || 0,
+        errors: st.errors || 0,
+        inputTokens, outputTokens,
+        byChannel,
+        byModel: st.byModel || {},
+        startedAt: st.startedAt || '',
+        disabled: !!tc._disabled,
+      };
+    };
+    if (POOL) {
+      for (const [name, tc] of POOL.instances) instances.push(collect(name, tc));
+    } else {
+      instances.push(collect(currentName(cfg), cfg));
+    }
+    const totals = { instances: instances.length, requests: 0, errors: 0, inputTokens: 0, outputTokens: 0 };
+    const byModel = {};
+    for (const it of instances) {
+      totals.requests += it.requests; totals.errors += it.errors;
+      totals.inputTokens += it.inputTokens; totals.outputTokens += it.outputTokens;
+      for (const [m, v] of Object.entries(it.byModel)) {
+        const bm = byModel[m] = byModel[m] || { requests: 0, inputTokens: 0, outputTokens: 0 };
+        bm.requests += Number(v.requests) || 0;
+        bm.inputTokens += Number(v.inputTokens) || 0;
+        bm.outputTokens += Number(v.outputTokens) || 0;
+      }
+    }
+    return jsonRes(res, 200, { ok: true, uptime: Math.round(process.uptime()), totals, byModel, instances });
   }
 
 // GET /admin/api/requests/:name -- request log (ring buffer, cross-instance proxy supported)
