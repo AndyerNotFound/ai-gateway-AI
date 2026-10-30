@@ -80,7 +80,12 @@ function request(port, p, headers = {}, method = 'GET', body = null) {
   let newToken = '';
   try { newToken = JSON.parse(rot.body).webToken || ''; } catch (_) {}
   ok(newToken.length >= 32 && newToken !== 'legacy-api-token', '轮换返回新的 32+ 位 token');
-  ok((await request(port, '/admin/api/config/default', { 'x-agw-token': 'legacy-api-token' })).status === 200, '旧 token 在 5 分钟宽限期内仍可用');
+  ok((await request(port, '/admin/api/config/default', { 'x-agw-token': 'legacy-api-token' })).status === 401, '旧 token 立即失效（宽限期已移除）');
+  const rotOld = await request(port, '/admin/api/web-token/rotate', { 'x-agw-token': 'legacy-api-token' }, 'POST', '{}');
+  ok(rotOld.status === 401, '旧 token 不能再轮换出永久新 token');
+  const sessTok = ((first.headers['set-cookie'] || []).join('').match(/agwSID_18899=([^;]+)/) || [])[1] || '';
+  const rotSess = await request(port, '/admin/api/web-token/rotate', { cookie: 'agwSID=' + sessTok }, 'POST', '{}');
+  ok(rotSess.status === 401, '面板会话不能轮换 webToken');
   ok((await request(port, '/admin/api/config/default', { 'x-agw-token': newToken })).status === 200, '新 token 可访问管理 API');
   try {
     const saved = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
@@ -89,9 +94,7 @@ function request(port, p, headers = {}, method = 'GET', body = null) {
     ok(false, '轮换后的 config.json 可解析: ' + e.message);
   }
   ok((await request(port, '/admin/api/config/default', { 'x-agw-token': 'wrong-token' })).status === 401, '错误 token 仍返回 401');
-  cfg.webTokenPrevUntil = Date.now() - 1;
-  ok((await request(port, '/admin/api/config/default', { 'x-agw-token': 'legacy-api-token' })).status === 401, '宽限期结束后旧 token 失效');
-  cfg.webToken = ''; cfg.webTokenPrev = ''; cfg.webTokenPrevUntil = 0;
+  cfg.webToken = '';
   const remote = { headers: {}, socket: { remoteAddress: '203.0.113.9' } };
   ok(!adminMod.checkAdminAuth(cfg, remote, new URLSearchParams()), '远程无令牌不能访问管理 API');
   ok(adminMod.checkAdminAuth(cfg, { headers: { 'x-agw-token': adminToken }, socket: remote.socket }, new URLSearchParams()), '远程可用 adminToken 访问管理 API');
