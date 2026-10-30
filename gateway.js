@@ -77,6 +77,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  main,   // embedded bootstrap (android/nodejs-mobile) calls this directly
   VERSION, loadConfig, normalizeProxy, joinUrl, pickChannel, pickChannels, collectModels, RETRYABLE,
   globMatch, estimatePromptTokens, estimatePromptDist, analyzePrompt,
   calibRatio, calibUpdate, scaleDist,
