@@ -130,7 +130,10 @@ function maskRedactCfg(c) {
 }
 function saveCfg(name, cfg) {
   const f = cfgFile(name);
-  const plain = JSON.stringify(cfg, null, 2) + '\n';
+  // Internal runtime fields (_configFile/_name) must never be persisted into config.json.
+  const clean = { ...cfg };
+  for (const k of Object.keys(clean)) if (k.startsWith('_')) delete clean[k];
+  const plain = JSON.stringify(clean, null, 2) + '\n';
   let text = plain;
 if (crypt) { const pass = crypt.loadPass(); if (pass) text = crypt.encryptText(plain, pass); } // with a passphrase, everything is encrypted on write (fresh salt each time)
   fs.writeFileSync(f, text, { mode: 0o600 });

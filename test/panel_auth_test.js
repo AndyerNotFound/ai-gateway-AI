@@ -82,6 +82,12 @@ function request(port, p, headers = {}, method = 'GET', body = null) {
   ok(newToken.length >= 32 && newToken !== 'legacy-api-token', '轮换返回新的 32+ 位 token');
   ok((await request(port, '/admin/api/config/default', { 'x-agw-token': 'legacy-api-token' })).status === 200, '旧 token 在 5 分钟宽限期内仍可用');
   ok((await request(port, '/admin/api/config/default', { 'x-agw-token': newToken })).status === 200, '新 token 可访问管理 API');
+  try {
+    const saved = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+    ok(!Object.keys(saved).some(k => k.startsWith('_')), '轮换保存不写入 _configFile/_name 内部字段');
+  } catch (e) {
+    ok(false, '轮换后的 config.json 可解析: ' + e.message);
+  }
   ok((await request(port, '/admin/api/config/default', { 'x-agw-token': 'wrong-token' })).status === 401, '错误 token 仍返回 401');
   cfg.webTokenPrevUntil = Date.now() - 1;
   ok((await request(port, '/admin/api/config/default', { 'x-agw-token': 'legacy-api-token' })).status === 401, '宽限期结束后旧 token 失效');
