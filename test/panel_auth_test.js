@@ -15,14 +15,15 @@ function ok(cond, msg) {
   else { fail++; console.error('  ✗ ' + msg); }
 }
 
-function request(port, p, headers = {}) {
+function request(port, p, headers = {}, method = 'GET', body = null) {
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, path: p, headers }, res => {
-      let body = '';
-      res.on('data', c => body += u8p(c));
-      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
+    const req = http.request({ host: '127.0.0.1', port, path: p, headers, method }, res => {
+      let out = '';
+      res.on('data', c => out += u8p(c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: out }));
     });
     req.on('error', reject);
+    if (body != null) req.write(body);
     req.end();
   });
 }
@@ -71,7 +72,20 @@ function request(port, p, headers = {}) {
   cfg.listen.port = 0;
   ok((await request(port, '/auth?key=legacy-api-token')).status === 401, 'webToken 不能绕过面板一次性链接');
   ok((await request(port, '/admin/api/config/default', { 'x-agw-token': 'legacy-api-token' })).status === 200, 'webToken 仍可用于管理 API');
-  cfg.webToken = '';
+
+  const rot = await request(port, '/admin/api/web-token/rotate', {
+    'x-agw-token': 'legacy-api-token', 'content-type': 'application/json',
+  }, 'POST', '{}');
+  ok(rot.status === 200, 'webToken 可一键轮换');
+  let newToken = '';
+  try { newToken = JSON.parse(rot.body).webToken || ''; } catch (_) {}
+  ok(newToken.length >= 32 && newToken !== 'legacy-api-token', '轮换返回新的 32+ 位 token');
+  ok((await request(port, '/admin/api/config/default', { 'x-agw-token': 'legacy-api-token' })).status === 200, '旧 token 在 5 分钟宽限期内仍可用');
+  ok((await request(port, '/admin/api/config/default', { 'x-agw-token': newToken })).status === 200, '新 token 可访问管理 API');
+  ok((await request(port, '/admin/api/config/default', { 'x-agw-token': 'wrong-token' })).status === 401, '错误 token 仍返回 401');
+  cfg.webTokenPrevUntil = Date.now() - 1;
+  ok((await request(port, '/admin/api/config/default', { 'x-agw-token': 'legacy-api-token' })).status === 401, '宽限期结束后旧 token 失效');
+  cfg.webToken = ''; cfg.webTokenPrev = ''; cfg.webTokenPrevUntil = 0;
   const remote = { headers: {}, socket: { remoteAddress: '203.0.113.9' } };
   ok(!adminMod.checkAdminAuth(cfg, remote, new URLSearchParams()), '远程无令牌不能访问管理 API');
   ok(adminMod.checkAdminAuth(cfg, { headers: { 'x-agw-token': adminToken }, socket: remote.socket }, new URLSearchParams()), '远程可用 adminToken 访问管理 API');

@@ -229,6 +229,7 @@ function totpVerify(secretB32, code) {
 }
 
 //// admin auth: panel session cookie / runtime admin token / optional webToken
+const WEB_TOKEN_GRACE_MS = 5 * 60 * 1000;
 // Session cookie name is port-scoped: cookies are not isolated per port, and several gateways may run
 // side by side on 127.0.0.1 -- a fixed name would let one login overwrite another instance's session.
 function sessCookieName(cfg) {
@@ -256,7 +257,10 @@ function checkAdminAuth(cfg, req, query, opts = {}) {
 
 // Optional long-lived API token (kept for scripts; the panel itself only accepts a login session)
   if (!opts.panel) {
-    if (cfg.webToken && supplied.includes(cfg.webToken)) mainOk = true;
+    const validTokens = [];
+    if (cfg.webToken) validTokens.push(cfg.webToken);
+    if (cfg.webTokenPrev && Number(cfg.webTokenPrevUntil) > Date.now()) validTokens.push(cfg.webTokenPrev);
+    if (validTokens.some(t => supplied.includes(t))) mainOk = true;
     if (!mainOk && cfg.webToken && (h.cookie || '').includes(`agwWeb=${cfg.webToken}`)) mainOk = true;
     if (!mainOk && panelState && panelState.adminToken && supplied.includes(panelState.adminToken)) mainOk = true;
   }
@@ -841,10 +845,34 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
   if (!p.startsWith('/admin/api/')) return null; // 不是管理路由, 交给后续
 
   if (!checkAdminAuth(cfg, req, u.searchParams)) {
-    return jsonRes(res, 401, { error: '需要登录: 请执行 agw web login 获取一次性链接' });
+    return jsonRes(res, 401, { error: '认证失败：App 请使用 default 实例的 config.webToken（不是 agw web login 的一次性链接）' });
   }
 
   const api = p.slice('/admin/api/'.length);
+
+// POST /admin/api/web-token/rotate -- rotate the long-lived API token; old token stays valid for 5 min
+  if (api === 'web-token/rotate') {
+    if (req.method !== 'POST') return jsonRes(res, 405, { error: '只支持 POST' });
+    const nm = cfg._name || currentName(cfg);
+    const oldToken = String(cfg.webToken || '');
+    if (!oldToken) return jsonRes(res, 409, { error: '当前 webToken 为空，无法轮换；请先在配置中设置一个 token' });
+    const newToken = require('crypto').randomBytes(24).toString('base64url');
+    const prevUntil = Date.now() + WEB_TOKEN_GRACE_MS;
+    try {
+      const disk = loadCfg(nm);
+      if (!disk) return jsonRes(res, 404, { error: '实例不存在' });
+      disk.webTokenPrev = oldToken;
+      disk.webTokenPrevUntil = prevUntil;
+      disk.webToken = newToken;
+      saveCfg(nm, disk);
+    } catch (e) {
+      return jsonRes(res, 500, { error: '轮换失败: ' + e.message });
+    }
+    cfg.webTokenPrev = oldToken;
+    cfg.webTokenPrevUntil = prevUntil;
+    cfg.webToken = newToken;
+    return jsonRes(res, 200, { ok: true, webToken: newToken, prevUntil });
+  }
 
 // POST /admin/api/web-expired -- log out every panel session (agw admin expire)
   if (api === 'web-expired') {
@@ -1220,7 +1248,20 @@ async function handleAdmin(cfg, req, res, u, p, bodyStr) {
     if (data.port != null) { c.listen = c.listen || {}; c.listen.port = Number(data.port); }
     if (data.host != null) { c.listen = c.listen || {}; c.listen.host = data.host; }
     if (data.gatewayKey !== undefined) c.gatewayKey = data.gatewayKey;
-    if (data.webToken !== undefined) c.webToken = data.webToken;
+    if (data.webToken !== undefined) {
+      const nextToken = String(data.webToken || '');
+      const oldToken = String(c.webToken || '');
+      if (nextToken !== oldToken) {
+        if (nextToken && oldToken) {
+          c.webTokenPrev = oldToken;
+          c.webTokenPrevUntil = Date.now() + WEB_TOKEN_GRACE_MS;
+        } else {
+          delete c.webTokenPrev;
+          delete c.webTokenPrevUntil;
+        }
+        c.webToken = nextToken;
+      }
+    }
     if (data.panel !== undefined && data.panel && typeof data.panel === 'object') {
       c.panel = { ...(c.panel || {}), openBrowser: data.panel.openBrowser !== false };
     }
