@@ -34,7 +34,19 @@ function normalizeProxy(p) {
   return o;
 }
 
+/* Channel-level path lock: exact upstream path appended to baseUrl.
+ * Empty/absent = automatic (dialect-specific endpoint or client-path passthrough).
+ * A path must start with '/', and is not allowed to be a full URL. */
+function normalizeChannelPath(v) {
+  let s = String(v == null ? '' : v).trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s)) { logErr('[config] 渠道 path 不能是完整 URL, 已忽略: ' + s); return null; }
+  if (s.charAt(0) !== '/') s = '/' + s;
+  return s;
+}
+
 function applyDefaults(cfg) {
+  delete cfg.openaiExtras;   // parameter removed: extended endpoints / Responses are fixed on
   cfg.listen = cfg.listen || {};
   cfg.listen.port = Number(cfg.listen.port || 16384);
   cfg.listen.host = String(cfg.listen.host || '0.0.0.0');
@@ -71,10 +83,11 @@ function applyDefaults(cfg) {
 cfg.modelSync.enable = cfg.modelSync.enable !== false; // on by default
   cfg.modelSync.intervalHours = Math.max(1, Number(cfg.modelSync.intervalHours) || 24);
 cfg.modelSync.intervalMin = Number(cfg.modelSync.intervalMin) > 0 ? Number(cfg.modelSync.intervalMin) : null; // loop: fetch=<minutes>
-  // admin profile (agw admin profile) and the global ctxp enforcement mode (agw inst edit ctxp=)
+  // admin profile (agw admin profile)
   const __ap = (cfg.adminProfile && typeof cfg.adminProfile === "object") ? cfg.adminProfile : {};
   cfg.adminProfile = { name: String(__ap.name || ""), avatar: String(__ap.avatar || ""), profile: String(__ap.profile || ""), other: String(__ap.other || "") };
-  cfg.ctxpMode = ["force", "warn", "none"].includes(String(cfg.ctxpMode || "")) ? String(cfg.ctxpMode) : "force";
+  const __panel = (cfg.panel && typeof cfg.panel === 'object') ? cfg.panel : {};
+  cfg.panel = { openBrowser: __panel.openBrowser !== false };
 cfg.adminExpireAt = Number(cfg.adminExpireAt) > 0 ? Number(cfg.adminExpireAt) : 0; // panel session expiry (agw admin expire)
   cfg.maxBodyBytes = Number(cfg.maxBodyBytes || 64 * 1024 * 1024);
   cfg.connectTimeout = Number(cfg.connectTimeout || 15000);
@@ -82,23 +95,16 @@ cfg.adminExpireAt = Number(cfg.adminExpireAt) > 0 ? Number(cfg.adminExpireAt) : 
 // Same-channel retry count for connection-level errors (socket hang up etc.), default 2; 0 = off
   if (cfg.connRetry === undefined) cfg.connRetry = 2;
   cfg.cors = cfg.cors !== false;
-// Built-in DSML tool-call markup scrubbing (on by default; dsmlClean:false disables; dsmlClean.reasoning:false scrubs content only, not thinking)
+// Built-in DSML tool-call markup scrubbing for non-streaming JSON (on by default; dsmlClean:false disables; dsmlClean.reasoning:false scrubs content only, not thinking)
   const __dc = (cfg.dsmlClean && typeof cfg.dsmlClean === 'object') ? cfg.dsmlClean : {};
   cfg.dsmlClean = { enable: cfg.dsmlClean === false ? false : __dc.enable !== false, reasoning: __dc.reasoning !== false, backfill: __dc.backfill !== false };
-// Soft/hard context limits (percent of the window): soft only tints the indicator; hard>0 rejects with 400; charsPerToken feeds the hard-limit pre-estimate
-  const __cl = (cfg.contextLimit && typeof cfg.contextLimit === 'object') ? cfg.contextLimit : {};
-  const clSoft = Number(__cl.soft), clHard = Number(__cl.hard);
-  cfg.contextLimit = {
-    soft: clSoft > 0 ? Math.min(100, clSoft) : 80,
-    hard: clHard > 0 ? Math.min(100, clHard) : 0,
-    charsPerToken: Math.max(1, Number(__cl.charsPerToken) || 4),
-  };
 // TLS config parsing
   cfg.tls = cfg.tls || (cfg.listen && cfg.listen.tls) || {};
   if (cfg.tls.enable) {
     cfg.tls.cert = String(cfg.tls.cert || 'cert.pem');
     cfg.tls.key = String(cfg.tls.key || 'key.pem');
-cfg.tls.port = cfg.tls.port != null ? Number(cfg.tls.port) : null; // null = same port as HTTP (pure HTTPS)
+cfg.tls.port = null; // legacy field, ignored: one entry per instance -- HTTPS on listen.port, never a plaintext twin
+    delete cfg.tls.port;
   }
 // Migration: adminKey is deprecated and merges into webToken (the single admin credential)
   if (cfg.adminKey && !cfg.webToken) { cfg.webToken = String(cfg.adminKey); }
@@ -113,23 +119,6 @@ cfg.tls.port = cfg.tls.port != null ? Number(cfg.tls.port) : null; // null = sam
     cfg.proxies = norm;
   } else cfg.proxies = {};
   cfg.channels = cfg.channels || [];
-  // thinking-chain condensing: when enabled, intercept reasoning models' reasoning and send the condensed version (full chains are never shown)
-// mode: truncate = keep segment heads (zero latency, real-time) / summarize = per-segment summarization by a cheap model (adds latency)
-  cfg.thinkingSummary = cfg.thinkingSummary && typeof cfg.thinkingSummary === 'object' ? cfg.thinkingSummary : { enable: false };
-  cfg.thinkingSummary.enable = !!cfg.thinkingSummary.enable;
-  cfg.thinkingSummary.mode = cfg.thinkingSummary.mode === 'summarize' ? 'summarize' : 'truncate';
-  cfg.thinkingSummary.maxCharsPerSegment = Math.max(10, Number(cfg.thinkingSummary.maxCharsPerSegment) || 80);
-  cfg.thinkingSummary.summarizeBaseUrl = String(cfg.thinkingSummary.summarizeBaseUrl || '').trim(); // OpenAI 兼容端点, 如 https://api.deepseek.com 或 http://127.0.0.1:16392
-  cfg.thinkingSummary.summarizeApiKey = String(cfg.thinkingSummary.summarizeApiKey || '').trim();   // 对应 apiKey(指向另一 gateway 实例时填该实例 gatewayKey)
-  cfg.thinkingSummary.summarizeModel = String(cfg.thinkingSummary.summarizeModel || '').trim();     // 模型名
-  cfg.thinkingSummary.summarizePrompt = String(cfg.thinkingSummary.summarizePrompt || '').trim() || '用一句话中文概括以下思考片段:';
-  cfg.thinkingSummary.maxSegments = Math.max(1, Number(cfg.thinkingSummary.maxSegments) || 12);
-// OpenAI extended endpoints: enable exposes /v1/responses plus /v1/* fallback passthrough (images/embeddings/audio/files/batches/vector_stores etc.),
-// and lets OpenAI channels use the Responses API upstream; upstreamResponses = the global default of /v1/responses upstreams (channel-level useResponses overrides)
-// 2026-10-16: on by default (no manual switch needed); set enable:false to turn off entirely
-  cfg.openaiExtras = cfg.openaiExtras && typeof cfg.openaiExtras === 'object' ? cfg.openaiExtras : {};
-  cfg.openaiExtras.enable = cfg.openaiExtras.enable === undefined ? true : !!cfg.openaiExtras.enable;
-  cfg.openaiExtras.upstreamResponses = !!cfg.openaiExtras.upstreamResponses;
 // Balance aggregation FX convention: cfg.balanceFx = { base:'CNY', rates:{ CNY:1, USD:7.2 } }  (1 <currency> = X <base>)
 // no built-in FX rates (hardcoding them goes stale); currencies without rates[unit] are excluded from totals and tagged no_rate
   cfg.balanceFx = (cfg.balanceFx && typeof cfg.balanceFx === 'object') ? cfg.balanceFx : {};
@@ -171,6 +160,7 @@ redactCache.reset(); // the config may have changed extra regexes; the privacy-f
       name: String(ch.name || ('channel-' + i)),
       type: String(ch.type).toLowerCase(),
       baseUrl: String(ch.baseUrl).replace(/\/+$/, ''),
+      path: normalizeChannelPath(ch.path),
       apiKey: ch.apiKey != null ? String(ch.apiKey) : '',
       proxy: ch.proxy != null && ch.proxy !== '' ? String(ch.proxy) : null,
       insecure: !!ch.insecure,
@@ -182,11 +172,6 @@ redactCache.reset(); // the config may have changed extra regexes; the privacy-f
 lockAt: Number(ch.lockAt) > 0 ? Number(ch.lockAt) : null,   // when the lock starts (ms epoch)
 lockUntil: Number(ch.lockUntil) > 0 ? Number(ch.lockUntil) : null, // when it auto-unlocks (ms epoch; empty = manual unlock)
       transcreet: ['on', 'off', 'res-only'].includes(String(ch.transcreet || '').toLowerCase()) ? String(ch.transcreet).toLowerCase() : null,
-      // channel-level context policy (loop: chan ctxp): models = model globs in effect, mode = force/warn/none
-      ctxp: (ch.ctxp && typeof ch.ctxp === 'object') ? {
-        models: Array.isArray(ch.ctxp.models) ? ch.ctxp.models.map(String) : [],
-        mode: ['force', 'warn', 'none'].includes(String(ch.ctxp.mode || '').toLowerCase()) ? String(ch.ctxp.mode).toLowerCase() : 'force',
-      } : null,
       useResponses: ch.useResponses === undefined ? undefined : !!ch.useResponses,
       probe: !!ch.probe,
       addUsage: ch.addUsage !== false,

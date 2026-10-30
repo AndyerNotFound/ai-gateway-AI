@@ -12,7 +12,6 @@ const { logErr } = require('./util');
 
 // ================= Redaction (redact) =================
 const redactCache = require('./redact-cache.js'); // CDC 增量分块缓存: 干净内容只算 hash, 命中跳过正则
-const ctxp = require('./ctxp'); // 全局上下文上限(warn/max), 规则由 admin 热推 + 文件变更自检
 
 /* ---- Privacy filter: replace secrets/tokens in the request body with *** ---- */
 const REDACT_PATTERNS = [
@@ -57,17 +56,19 @@ function wrapRedactWriter(baseWriter, extra) {
   const textF = redactCache.createStreamFilter(extra);
   const reasF = redactCache.createStreamFilter(extra);
   const toolFs = new Map();
+  let done = false;
   const send = (ev) => { try { baseWriter.onEvent(ev); } catch (e) { logErr('redact writer error:', e.message); } };
   const flushText = () => { const o = textF.flush(); if (o) send({ type: 'text', t: o }); };
   const flushReas = () => { const o = reasF.flush(); if (o) send({ type: 'reasoning', t: o }); };
-  const flushAll = () => {
-    flushText(); flushReas();
-    for (const [i, f] of toolFs) { const o = f.flush(); if (o) send({ type: 'tool_delta', i, s: o }); }
+  const flushTools = () => {
+    const keys = [...toolFs.keys()].sort((a, b) => a - b);
+    for (const i of keys) { const o = toolFs.get(i).flush(); if (o) send({ type: 'tool_delta', i, s: o }); }
     toolFs.clear();
   };
+  const flushAll = () => { flushText(); flushReas(); flushTools(); };
   return {
     onEvent(ev) {
-      if (!ev || !ev.type) return;
+      if (!ev || !ev.type || done) return;
       if (ev.type === 'text') { const o = textF.push(ev.t); if (o) send({ type: 'text', t: o }); return; }
       if (ev.type === 'reasoning') { const o = reasF.push(ev.t); if (o) send({ type: 'reasoning', t: o }); return; }
       if (ev.type === 'tool_delta') {
@@ -76,9 +77,9 @@ function wrapRedactWriter(baseWriter, extra) {
         const o = f.push(ev.s); if (o) send({ type: 'tool_delta', i: ev.i, s: o });
         return;
       }
-      if (ev.type === 'end') { flushAll(); send(ev); return; }
-flushText(); flushReas(); send(ev);   // start/tool_start/usage: flush buffers first to preserve event order
+      if (ev.type === 'end') { done = true; flushAll(); send(ev); return; }
+      flushText(); flushReas(); send(ev);   // start/tool_start/usage: flush buffers first to preserve event order
     },
   };
 }
-module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, redactCache, ctxp, REDACT_PATTERNS, REDACT_FIELD_RE, redactText, respRedactOn, redactDeep, wrapRedactWriter };
+module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, redactCache, REDACT_PATTERNS, REDACT_FIELD_RE, redactText, respRedactOn, redactDeep, wrapRedactWriter };

@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
-# agw-tls —— ai-gateway 加密访问的唯一入口。记不住细节就用这个。
-#   agw-tls            看现在能不能用
-#   agw-tls use        给你直接能跑的代码
-#   agw-tls trust      把证书准备到 Download，告诉你手机上点哪里
-#   agw-tls check      自检，坏了会告诉你修法
-#   agw-tls setup      一键开启（装证书 + 开端口 + 重启 + 验证）
-#   agw-tls newkey     换一把新钥匙
-#   agw-tls off        关掉加密，回到 http
+# agw-tls — the single entry for ai-gateway encrypted access. Forget the details? Use this.
+#   agw-tls            see whether it works
+#   agw-tls use        print ready-to-run client code
+#   agw-tls trust      prepare certs to Download and show where to tap on the phone
+#   agw-tls check      self-check; tells you how to fix it
+#   agw-tls setup      one-click enable (cert + port + restart + verify)
+#   agw-tls newkey     rotate the gateway key
+#   agw-tls off        disable encryption, back to http
 set -uo pipefail
-# 允许软链调用（$PREFIX/bin/agw-tls）
+# Allow symlink invocation ($PREFIX/bin/agw-tls)
 SELF="$0"
 case "$SELF" in */*) ;; *) SELF="$(command -v "$SELF" 2>/dev/null || echo "$SELF")" ;; esac
 SELF="$(readlink -f "$SELF" 2>/dev/null || echo "$SELF")"
 DIR="$(cd "$(dirname "$SELF")" && pwd)"
 export PATH="$PATH:/data/data/com.termux/files/usr/bin"
 CA="$DIR/tls/ca.pem"
-CRT="/sdcard/Download/ai-gateway-ca.crt"
+SRVCERT="$DIR/data/cert.pem"
+EXPORTDIR="/sdcard/Download/ai-gateway"
+CRT="$EXPORTDIR/ai-gateway-ca.crt"
+CRT_SRV="$EXPORTDIR/ai-gateway-cert.crt"
 KEYFILE="$DIR/data/.current-key-default"
 
 ip4() {
@@ -33,8 +36,7 @@ cfg() {
       const j=JSON.parse(r), t=j.tls||(j.listen&&j.listen.tls)||{};
       const hp=(j.listen||{}).port||16384;
       const o={httpport:hp, enabled:!!t.enable,
-               httpsport:t.enable?(t.port!=null?Number(t.port):hp):null,
-               pure:!!(t.enable&&t.port==null),
+               httpsport:t.enable?hp:null,
                gwkey:j.gatewayKey||""};
       const v=o[w];
       process.stdout.write(v===undefined||v===null?"":String(v));
@@ -42,20 +44,20 @@ cfg() {
   ' "$DIR" "$1"
 }
 curkey() { if [ -f "$KEYFILE" ]; then cat "$KEYFILE"; else cfg gwkey; fi; }
-mask() { local k="$1"; if [ ${#k} -gt 10 ]; then echo "${k:0:6}…${k: -4}"; else echo "${k:-（未设置）}"; fi; }
+mask() { local k="$1"; if [ ${#k} -gt 10 ]; then echo "${k:0:6}…${k: -4}"; else echo "${k:-(unset)}"; fi; }
 stat_inst() {
   node -e '
     const fs=require("fs"),path=require("path");
     const D=process.argv[1]; const c=require(path.join(D,"crypt.js"));
     const files=fs.readdirSync(D).filter(f=>/^config(\..+)?\.json$/.test(f));
-    let on=0,pure=0,tot=0;
+    let on=0,tot=0,mainOn=false;
     for(const f of files){
       let r=fs.readFileSync(path.join(D,f),"utf8");
       if(c.isEncText(r))r=c.decryptText(r,c.loadPass());
       const j=JSON.parse(r), t=j.tls||(j.listen&&j.listen.tls)||{};
-      tot++; if(t.enable){on++; if(t.port==null)pure++;}
+      tot++; if(t.enable){on++; if(f==="config.json")mainOn=true;}
     }
-    process.stdout.write(on+" / "+tot+" 个开着加密"+(on&&on===pure?"（全部单端口）":""));
+    process.stdout.write(on+" / "+tot+" with TLS on"+(on&&mainOn?" (main port https; other instances via /<instance>/ prefix)":(on?" (⚠ main instance has TLS off, TLS instances unreachable)":"")));
   ' "$DIR"
 }
 
@@ -70,41 +72,40 @@ line() { printf '%s\n' "──────────────────�
 
 status() {
   local ip hp sp en; ip="$(ip4)"; hp="$(cfg httpport)"; sp="$(cfg httpsport)"; en="$(cfg enabled)"
-  line; echo " ai-gateway 加密访问"; line
+  line; echo " ai-gateway encrypted access"; line
   if [ "$en" = "true" ] && [ -n "$sp" ]; then
-    echo " 状态    ✅ 加密已开启$([ "$(cfg pure)" = "true" ] && echo "（单端口：只有 https）")"
-    echo " 用这个  https://${ip}:${sp}/v1"
-    echo " 同一网络里的设备都填这个地址"
+    echo "  Status   ✅ TLS on (single port: https only, no plaintext entry)"
+    echo "  Use      https://${ip}:${sp}/v1"
+    echo "          devices on the same network use this address"
   else
-    echo " 状态    ⛔ 加密没开（现在只有明文 http）"
-    echo " 用这个  http://${ip}:${hp}/v1"
-    echo "        想加密就执行：  agw-tls setup"
+    echo "  Status   ⛔ TLS off (currently plaintext http only)"
+    echo "  Use      http://${ip}:${hp}/v1"
+    echo "          want TLS: agw-tls setup"
   fi
-  echo " 钥匙    $(mask "$(curkey)")    看全的：cat $KEYFILE"
-  echo " 证书    还剩 $(days_left) 天（到期自动续，不用管）"
-  echo " 实例     $(stat_inst)，全部开启：agw-tls all --pure"
-  echo " 设备认证书  $CRT"
+  echo "  Key      $(mask "$(curkey)")    view: cat $KEYFILE"
+  echo "  Cert     $(days_left) days left (auto-renewed, nothing to do)"
+  echo "  Instances $(stat_inst), enable all: agw-tls all"
+  echo "  Export   $EXPORTDIR  (agw-tls export)"
   if [ -f "$CRT" ]; then
-    echo "         （已在 Download，$(bash "$DIR/tls/cleanup.sh" list 2>/dev/null | grep -c '后删除') 个删除任务排队）"
+    echo "          (exported; $(bash "$DIR/tls/cleanup.sh" list 2>/dev/null | grep -c 'deleted after') delete jobs queued)"
   else
-    echo "         （当前不存在；要给新设备装证书时执行：agw-tls trust）"
+    echo "          (not exported; install certs: agw-tls export)"
   fi
   line
-  echo " 下一步：  agw-tls use    给你能直接跑的代码"
-  echo "           agw-tls check  自己测一遍"
+  echo "  Next     agw-tls use    print client code | agw-tls check  self-check"
   line
 }
 
 use_() {
   local ip sp key; ip="$(ip4)"; sp="$(cfg httpsport)"; key="$(curkey)"
-  [ -z "$sp" ] && { echo "加密还没开，先跑：agw-tls setup"; exit 1; }
+  [ -z "$sp" ] && { echo "TLS is off: run agw-tls setup first"; exit 1; }
   local url="https://${ip}:${sp}/v1"
-  line; echo " 复制下面任意一段就能用（地址 ${url}）"; line
+  line; echo " Copy any snippet below and it works (address ${url})"; line
   cat <<TXT
-【电脑上的 Python】
-1. 把手机里的 $CRT 拷到电脑，例如 /Users/你/certs/ai-gateway-ca.crt
-2. 装库：  pip install openai
-3. 跑这段：
+【Python on computer】
+1. Copy $CRT from the phone to the computer, e.g. /Users/you/certs/ai-gateway-ca.crt
+2. Install: pip install openai
+3. Run this:
 
     import httpx
     from openai import OpenAI
@@ -112,31 +113,102 @@ use_() {
     client = OpenAI(
         base_url="${url}",
         api_key="${key}",
-        http_client=httpx.Client(verify="/Users/你/certs/ai-gateway-ca.crt"),
+        http_client=httpx.Client(verify="/Users/you/certs/ai-gateway-ca.crt"),
     )
     print(client.models.list())
 
-【电脑上的 Node.js】
-1. 拷同一个证书文件
-2. 启动时带上证书路径：
+【Node.js on computer】
+1. Copy the same cert file
+2. Start with the cert path:
 
-    NODE_EXTRA_CA_CERTS=/Users/你/certs/ai-gateway-ca.crt node 你的程序.js
+    NODE_EXTRA_CA_CERTS=/Users/you/certs/ai-gateway-ca.crt node your-app.js
 
-   代码里写：
+   In code:
     const client = new OpenAI({ baseURL: "${url}", apiKey: "${key}" });
 
-【手机 App（Chatbox / LobeChat 之类）】
-   Base URL 填：${url}
-   API Key  填：${key}
-   连不上就执行 agw-tls trust，按提示装一次证书
+【Mobile app (Chatbox / LobeChat etc.)】
+   Base URL: ${url}
+   API Key: ${key}
+   Can't connect? Run agw-tls trust to install the cert
 
-【命令行试一下】
+【Try it in the terminal】
    curl --cacert $CA "${url}/models" -H "Authorization: Bearer ${key}"
 TXT
   line
-  echo " 小抄：钥匙会每 90 天换一次，旧的还能用 14 天。"
-  echo "       换新钥匙后执行 agw-tls use 重新抄一遍。"
+  echo "  Keys rotate every 90 days; old keys have a 14-day grace period."
+  echo "        After rotating, re-run agw-tls use."
   line
+}
+
+# Parse --keep <minutes> into KEEPARG (no `local` here: these run at top level inside the case block)
+keeparg_() {
+  local def="$1"; shift
+  KEEPARG="$def"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --keep)   KEEPARG="${2:-$def}"; shift 2 ;;
+      --keep=*) KEEPARG="${1#--keep=}"; shift ;;
+      *)        shift ;;
+    esac
+  done
+  case "$KEEPARG" in ''|*[!0-9.]*) KEEPARG="$def" ;; esac
+}
+
+clean_() {
+  local f n=0
+  # also sweep the legacy .pem names from older versions
+  for f in "$CRT" "$CRT_SRV" "$EXPORTDIR/ai-gateway-cert.pem" "$EXPORTDIR/README.txt"; do
+    if [ -e "$f" ]; then rm -f "$f" && n=$((n+1)); fi
+    bash "$DIR/tls/cleanup.sh" cancel "$f" >/dev/null 2>&1
+  done
+  rmdir "$EXPORTDIR" 2>/dev/null
+  echo "✅ Deleted $n exported files (dir $EXPORTDIR)"
+  bash "$DIR/tls/cleanup.sh" sweep >/dev/null 2>&1
+  bash "$DIR/tls/cleanup.sh" list
+}
+
+# Export the certificates to shared storage. The private key (data/key.pem) is deliberately NOT exported.
+export_() {
+  local KEEP="${1:-30}"
+  case "$KEEP" in ''|*[!0-9.]*) KEEP=30 ;; esac
+  [ -f "$CA" ] || { echo "✗ CA cert not found: $CA (run agw-tls setup first)"; return 1; }
+  mkdir -p "$EXPORTDIR" 2>/dev/null
+  if ! cp -f "$CA" "$CRT" 2>/dev/null; then
+    echo "✗ Cannot write to $EXPORTDIR (run termux-setup-storage and reopen Termux)"; return 1
+  fi
+  local got="$CRT"
+  if [ -f "$SRVCERT" ]; then
+    cp -f "$SRVCERT" "$CRT_SRV" 2>/dev/null && got="$got
+             $CRT_SRV"
+  fi
+  cat > "$EXPORTDIR/README.txt" 2>/dev/null <<'TXT'
+ai-gateway certificates
+
+ai-gateway-ca.crt    private CA cert — install this on devices/computers once (no reinstall on IP change/renewal)
+ai-gateway-cert.crt  server cert (for viewing only; clients usually don't need it)
+Private key.pem is NOT exported: it stays in the gateway dir; copying it to a public dir would hand over your identity
+
+Android: Settings → Security & privacy → More security settings → Encryption & credentials → Install a certificate → CA certificate → pick ai-gateway-ca.crt
+iPhone/iPad: Settings → General → VPN & Device Management → Install, then About → Certificate Trust Settings → enable full trust
+Windows: double-click → Install Certificate → Local Machine → Trusted Root Certification Authorities
+macOS: double-click → Keychain Access → the cert → Trust → Always Trust
+
+After installing, open the gateway address in a mobile browser; no red warning in the address bar = success
+TXT
+  local f
+  if [ "$KEEP" != "0" ]; then
+    for f in "$CRT" "$CRT_SRV" "$EXPORTDIR/README.txt"; do
+      [ -f "$f" ] && bash "$DIR/tls/cleanup.sh" add "$f" "$KEEP" >/dev/null 2>&1
+    done
+  fi
+  line; echo "  Certificates exported to: $EXPORTDIR"; line
+  printf '  %s\n' $got
+  [ -f "$EXPORTDIR/README.txt" ] && echo "  $EXPORTDIR/README.txt  (install steps)"
+  line
+  if [ "$KEEP" != "0" ]; then
+    echo " ⏳ auto-deleted after ${KEEP} minutes (avoids lingering in a public dir)"
+    echo "    keep longer: agw-tls export --keep 120   forever: --keep 0   delete now: agw-tls clean"
+  fi
 }
 
 trust_() {
@@ -149,80 +221,68 @@ trust_() {
     esac
   done
   case "$KEEP" in ''|*[!0-9.]*) KEEP=5 ;; esac
-  mkdir -p /sdcard/Download 2>/dev/null
-  if ! cp -f "$CA" "$CRT" 2>/dev/null; then
-    echo "✗ 拷不进 /sdcard/Download。先执行：termux-setup-storage"; exit 1
-  fi
-  line; echo " 证书已放到：$CRT"; line
+  export_ "$KEEP" || exit 1
   cat <<'TXT'
-装一次就好（以后换 IP、证书到期都不用再装）：
+Install once (no reinstall after IP changes or cert renewal):
 
-手机（安卓）
-  设置 → 安全与隐私 → 更多安全设置 → 加密与凭据 → 安装证书 → CA 证书
-  → 仍要安装 → 选 ai-gateway-ca.crt → 提示"你的数据可能被监控"选确定
+Phone (Android)
+  Settings → Security & privacy → More security settings → Encryption & credentials → Install a certificate → CA certificate
+  → Install anyway → pick ai-gateway-ca.crt → on "your data may be monitored", confirm
 
 iPhone / iPad
-  把文件传到手机 → 设置 → 通用 → VPN与设备管理 → 安装
-  → 再进 设置 → 通用 → 关于本机 → 证书信任设置 → 打开完全信任
+  Transfer the file to the phone → Settings → General → VPN & Device Management → Install
+  → then Settings → General → About → Certificate Trust Settings → enable full trust
 
 Windows
-  双击文件 → 安装证书 → 本地计算机 → 下一步 → 把证书放入"受信任的根证书颁发机构"
+  Double-click the file → Install Certificate → Local Machine → Next → place the cert in "Trusted Root Certification Authorities"
 
 macOS
-  双击文件 → 钥匙串访问 里找到它 → 双击 → 信任 → "使用此证书时"选"始终信任"
+  Double-click the file → find it in Keychain Access → double-click → Trust → set "When using this certificate" to "Always Trust"
 
-装完验证：手机 Chrome 打开 https://<上面的地址去掉 /v1>/health
-         地址栏没有红色警告 = 成功
+Verify: open https://<address above without /v1>/health in mobile Chrome
+         no red warning in the address bar = success
 TXT
-  if [ "$KEEP" != "0" ]; then
-    bash "$DIR/tls/cleanup.sh" add "$CRT" "$KEEP" >/dev/null 2>&1
-    line
-    echo " ⏳ ${KEEP} 分钟后自动删除这个证书文件（避免留在公共目录）"
-    echo "    想多留一会：agw-tls trust --keep 30      不想删：agw-tls trust --keep 0"
-    echo "    现在就想删：agw-tls clean"
-    line
-  fi
 }
 
 check_() {
   local ip sp hp ok=0
   ip="$(ip4)"; sp="$(cfg httpsport)"; hp="$(cfg httpport)"
-  line; echo " 自检"; line
-  echo -n " 1. 网关在跑吗      "
+  line; echo " Self-check"; line
+  echo -n " 1. Is the gateway running?  "
   if { [ -n "$sp" ] && curl -sf -m 5 --cacert "$CA" "https://127.0.0.1:${sp}/health" >/dev/null 2>&1; } \
      || curl -sf -m 5 "http://127.0.0.1:${hp}/health" >/dev/null 2>&1; then
-    echo "✅ 正常"
+    echo "✅ yes"
   else
-    echo "❌ 挂了 → 执行：~/ai-gateway/agw.sh start"; ok=1
+    echo "❌ not running → agw.sh start"; ok=1
   fi
-  echo -n " 2. 加密开着吗      "
-  if [ -n "$sp" ]; then echo "✅ 是，端口 $sp"; else echo "❌ 没开 → 执行：agw-tls setup"; ok=1; fi
-  echo -n " 3. 证书能通过吗    "
+  echo -n " 2. Is TLS on?          "
+  if [ -n "$sp" ]; then echo "✅ yes, port $sp"; else echo "❌ off → agw-tls setup"; ok=1; fi
+  echo -n " 3. Does the cert verify? "
   if [ -n "$sp" ] && curl -sf -m 8 --cacert "$CA" "https://127.0.0.1:${sp}/health" >/dev/null 2>&1; then
-    echo "✅ 能（证书有效 $(days_left) 天）"
+    echo "✅ yes (cert valid for $(days_left) days)"
   else
-    echo "❌ 不行 → 执行：agw-tls setup"; ok=1
+    echo "❌ verify failed → agw-tls setup"; ok=1
   fi
-  echo -n " 4. 本机 IP 在证书里吗 "
-  if openssl x509 -in "$DIR/cert.pem" -noout -ext subjectAltName 2>/dev/null | grep -q "IP Address:${ip}"; then
-    echo "✅ 在（$ip）"
+  echo -n " 4. Is this IP in the cert? "
+  if openssl x509 -in "$SRVCERT" -noout -ext subjectAltName 2>/dev/null | grep -q "IP Address:${ip}"; then
+    echo "✅ yes ($ip)"
   else
-    echo "❌ 不在 → 执行：agw-tls setup"; ok=1
+    echo "❌ not in cert → agw-tls setup"; ok=1
   fi
-  echo -n " 5. 钥匙能用吗      "
+  echo -n " 5. Does the key work?  "
   local k; k="$(curkey)"
   if [ -n "$k" ] && [ -n "$sp" ] && \
      [ "$(curl -s -o /dev/null -w '%{http_code}' -m 8 --cacert "$CA" -H "Authorization: Bearer $k" "https://127.0.0.1:${sp}/v1/models")" = "200" ]; then
-    echo "✅ 能用"
+    echo "✅ yes"
   else
-    echo "❌ 不能用 → 执行：agw-tls newkey"
+    echo "❌ no → agw-tls newkey"
     ok=1
   fi
   line
   if [ "$ok" = "0" ]; then
-    echo " 全部正常。别的设备填 https://${ip}:${sp}/v1 就行。"
+    echo "  All good: other devices use https://${ip}:${sp}/v1"
   else
-    echo " 有红叉：先跑 agw-tls setup，还不行再跑 agw-tls check 一次。"
+    echo "  Failures: run agw-tls setup, then agw-tls check"
   fi
   line
 }
@@ -230,44 +290,29 @@ check_() {
 setup_() {
   local ip sp
   ip="$(ip4)"
-  echo "① 准备证书…"
+  echo "① Preparing certificates…"
   bash "$DIR/tls/gen-ca.sh" >/dev/null 2>&1
-  bash "$DIR/tls/gen-server.sh" >/dev/null 2>&1 || { echo "✗ 证书生成失败"; exit 1; }
-  echo "② 选端口…"
-  sp="$(cfg httpsport)"
-  if [ -z "$sp" ]; then
-    for p in 16443 16444 16445 18443; do
-      if python3 -c "import socket;s=socket.socket();s.bind(('0.0.0.0',$p));s.close()" 2>/dev/null; then sp=$p; break; fi
-    done
-  fi
-  case "$sp" in ''|*[!0-9]*) sp="";; esac
-  if [ -z "$sp" ]; then
-    for p in 16443 16444 16445 18443; do
-      if python3 -c "import socket;s=socket.socket();s.bind(('0.0.0.0',$p));s.close()" 2>/dev/null; then sp=$p; break; fi
-    done
-  fi
-  [ -z "$sp" ] && { echo "✗ 找不到空闲端口"; exit 1; }
-  echo "   用 $sp"
-  echo "③ 打开加密…"
-  node "$DIR/tls/apply-tls.js" default "$sp" >/dev/null 2>&1 || { echo "✗ 写配置失败"; exit 1; }
-  echo "④ 重启网关…"
+  bash "$DIR/tls/gen-server.sh" >/dev/null 2>&1 || { echo "✗ Certificate generation failed"; exit 1; }
+  sp="$(cfg httpport)"
+  echo "   Port $sp (https only once enabled; no plaintext entry)"
+  echo "③ Enabling TLS…"
+  node "$DIR/tls/apply-tls.js" default >/dev/null 2>&1 || { echo "✗ Config write failed"; exit 1; }
+  echo "④ Restarting gateway…"
   bash "$DIR/agw.sh" restart >/dev/null 2>&1
   sleep 3
-  echo "⑤ 验证…"
+  echo "⑤ Verifying…"
   if curl -sf -m 8 --cacert "$CA" "https://127.0.0.1:${sp}/health" >/dev/null 2>&1; then
-    echo "✅ 成功"
+    echo "✅ Success"
   else
-    echo "✗ 验证失败，执行 agw-tls check 看哪一步坏了"; exit 1
+    echo "✗ Verification failed; run agw-tls check to see which step broke"; exit 1
   fi
-  echo "⑥ 把证书放到 Download…"
-  cp -f "$CA" "$CRT" 2>/dev/null && echo "   $CRT" || echo "   拷不进去，先跑 termux-setup-storage"
+  echo "⑥ Copying certs to Download…"
+  cp -f "$CA" "$CRT" 2>/dev/null && echo "   $CRT" || echo "   Cannot copy: run termux-setup-storage first"
   line
-  echo " 电脑/手机填这个地址：  https://${ip}:${sp}/v1"
-  echo " 钥匙：$(mask "$(curkey)")   （看全的：cat $KEYFILE）"
+  echo "  Computers/phones use: https://${ip}:${sp}/v1"
+  echo "  Key: $(mask "$(curkey)")   view: cat $KEYFILE"
   line
-  echo " 下一步："
-  echo "   别的设备第一次用 → agw-tls trust   按提示装一次证书"
-  echo "   要现成代码       → agw-tls use"
+  echo "  Next: agw-tls trust (install on devices) | agw-tls use (ready code)"
   line
 }
 
@@ -275,14 +320,28 @@ case "${1:-}" in
   ""|status) status ;;
   use|code)  use_ ;;
   trust|ca)  shift; trust_ "$@" ;;
+  export|out)
+             shift
+             keeparg_ 30 "$@"
+             export_ "$KEEPARG" ;;
   check|test) check_ ;;
   setup|on)  setup_ ;;
   newkey)    bash "$DIR/ops/guard.sh" >/dev/null 2>&1; node "$DIR/ops/rotate-keys.js" --now --yes ;;
   all)       shift; node "$DIR/tls/batch-tls.js" "$@" ;;
   all-off)   node "$DIR/tls/batch-tls.js" --off ;;
-  clean)     rm -f "$CRT" && echo "✅ 已删除 $CRT"; bash "$DIR/tls/cleanup.sh" sweep >/dev/null 2>&1; bash "$DIR/tls/cleanup.sh" list ;;
+  clean)     clean_ ;;
   pending)   bash "$DIR/tls/cleanup.sh" list ;;
-  off)       node "$DIR/tls/apply-tls.js" default --off >/dev/null 2>&1 && bash "$DIR/agw.sh" restart >/dev/null 2>&1 && echo "✅ 已关掉加密，回到 http://$(ip4):$(cfg httpport)/v1" ;;
+  off)       node "$DIR/tls/apply-tls.js" default --off >/dev/null 2>&1 && bash "$DIR/agw.sh" restart >/dev/null 2>&1 && echo "✅ TLS disabled, back to http://$(ip4):$(cfg httpport)/v1" ;;
   fix)       bash "$DIR/ops/guard.sh"; bash "$DIR/agw.sh" restart >/dev/null 2>&1; sleep 3; check_ ;;
-  *)         echo "用法: agw-tls [无参数|use|trust [--keep 分钟]|check|setup|newkey|off|fix|clean|all [--dry-run]]"; echo "  无参数  看现在能不能用"; echo "  use     给你能直接跑的代码"; echo "  trust   准备证书 + 装证书的步骤"; echo "  check   自检"; echo "  setup   一键开启"; echo "  newkey  换新钥匙"; echo "  off     关掉加密" ;;
+  *)         echo "Usage: agw-tls <command>   [no args = status]"
+             echo "  status   show status"
+             echo "  use      print ready-to-run client code"
+             echo "  export   export certs to /sdcard/Download/ai-gateway [--keep minutes, default 30]"
+             echo "  trust    export certs + print install steps [--keep minutes, default 5]"
+             echo "  check    self-check"
+             echo "  setup    one-click enable TLS"
+             echo "  newkey   rotate the gateway key"
+             echo "  off      disable TLS"
+             echo "  clean    delete exported certs"
+             echo "  all      enable/disable for all instances: all [--off|--dry-run|--only <instance>]" ;;
 esac

@@ -13,18 +13,18 @@ agw router <instance-name>
      --cold <num:s>
      --filter <on/off>
      --models-fetch <num:h> [<0=off>]
-     --transcreet <on/off/res-only>
+     --transcreet <on/off/res-only>   # 仅非流式响应
 agw chan <instance-name>
      --sdk <openai/gemini/claude>
      --provider <channel-name> <"url=BaseURL, key=APIKey">
      [--scope <"model-name=real-name">]
      [--value <BaseURL> <JSON-Key> <Currency>]
      [--proxy <password:name@serve>]
+     [--path <上游固定路径>]
      [--warn <num:balance>]
 agw fetch chan <channel-name>
 agw fetch inst <instance-name> -y
 
-agw ctxp <model-name>
      --max <num>
      --warn <num>
      --kill <on/off>
@@ -63,7 +63,6 @@ agw inst <inst-name>
        apikey=<apikey/0=random/none>
        fetch=<num:min/0=off>
        fliter <on/off>
-       ctxp=<force/warn/none>
 agw chan <inst-name>
     fetch <all/channel-name>
     edit <channel-name> (loop)
@@ -92,10 +91,8 @@ agw chan <inst-name>
        models=<real-name*>
        name=<override-name>
        override=<true/false>
-    ctxp <channel-name>
        models=<real-name/override-name/*>
        <force/warn/none>
-agw ctxp (loop)
     stat <real-name/override-name/*>
     edit
        models=<real-name/override-name/*>

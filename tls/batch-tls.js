@@ -1,17 +1,19 @@
 #!/usr/bin/env node
 'use strict';
 /*
- * Toggle TLS for all instances in bulk. Two shapes:
- *   dual (default)  tls.port = http + 10000, keeping the original HTTP port
- *   single-port tls.port empty -> the instance serves HTTPS on its original port only (the HTTP entry disappears)
+ * Turn TLS on/off for all instances in bulk.
+ *
+ * Policy (2026-10-30): one entry per instance, never a plaintext twin.
+ *   default  -> serves HTTPS on its listen.port (single port, no HTTP twin)
+ *   others   -> with TLS on they stop listening on their own port and are reachable only through
+ *               the main port's HTTPS + /<name>/; without TLS they keep their own plaintext port
+ *   a broken certificate fails closed (the instance is not exposed in plaintext)
  *
  * Usage:
  *   node tls/batch-tls.js --dry-run          preview the plan only
- *   node tls/batch-tls.js                    dual-stack (all instances)
- *   node tls/batch-tls.js --pure             single-port pure HTTPS (all instances)
+ *   node tls/batch-tls.js                    enable TLS everywhere (the old --pure shape)
  *   node tls/batch-tls.js --off              turn off everywhere
  *   node tls/batch-tls.js --only A,B         process only the given instances
- *   node tls/batch-tls.js --offset 20000     change the port offset in dual-stack mode
  *   node tls/batch-tls.js --no-restart       write config only, no restart
  */
 const fs = require('fs');
@@ -25,7 +27,6 @@ const CA = path.join(ROOT, 'tls', 'ca.pem');
 const argv = process.argv.slice(2);
 const flag = (n) => argv.includes('--' + n);
 const opt = (n, d) => { const i = argv.indexOf('--' + n); return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : d; };
-const OFFSET = Number(opt('offset', 10000));
 const OFF = flag('off');
 const PURE = flag('pure');
 const DRY = flag('dry-run');
@@ -39,7 +40,7 @@ function readCfg(name) {
   const raw = fs.readFileSync(f, 'utf8');
   const enc = crypt.isEncText(raw);
   const pass = enc ? crypt.loadPass() : null;
-  if (enc && !pass) throw new Error('配置已加密但取不到口令');
+  if (enc && !pass) throw new Error('Config is encrypted but no passphrase found');
   return { cfg: JSON.parse(enc ? crypt.decryptText(raw, pass) : raw), enc, pass, file: f };
 }
 
@@ -49,7 +50,7 @@ function writeCfg(cfg, enc, pass, file) {
   const tmp = file + '.tmp';
   fs.writeFileSync(tmp, payload, { mode: 0o600 });
   const back = fs.readFileSync(tmp, 'utf8');
-  if ((enc ? crypt.decryptText(back, pass) : back) !== text) { fs.unlinkSync(tmp); throw new Error('回读校验失败'); }
+  if ((enc ? crypt.decryptText(back, pass) : back) !== text) { fs.unlinkSync(tmp); throw new Error('Read-back verification failed'); }
   fs.renameSync(tmp, file);
   fs.chmodSync(file, 0o600);
 }
@@ -63,9 +64,9 @@ function portFree(port) {
   });
 }
 
-function httpsHealth(port) {
+function httpsHealth(port, path = '/health') {
   return new Promise((resolve) => {
-    const req = https.request({ host: '127.0.0.1', port, path: '/health', method: 'GET', timeout: 6000, ca: fs.readFileSync(CA), servername: 'localhost' },
+    const req = https.request({ host: '127.0.0.1', port, path, method: 'GET', timeout: 6000, ca: fs.readFileSync(CA), servername: 'localhost' },
       (res) => { res.resume(); resolve(res.statusCode); });
     req.on('timeout', () => { req.destroy(); resolve(0); });
     req.on('error', () => resolve(0));
@@ -73,7 +74,7 @@ function httpsHealth(port) {
   });
 }
 
-const isPure = (t, hp) => !!(t && t.enable && (t.port == null || Number(t.port) === Number(hp)));
+const isPure = (t) => !!(t && t.enable);
 const isDual = (t) => !!(t && t.enable && t.port != null);
 
 (async () => {
@@ -85,8 +86,6 @@ const isDual = (t) => !!(t && t.enable && t.port != null);
     const { cfg } = readCfg(n);
     const hp = Number((cfg.listen || {}).port || 0);
     if (hp) used.add(hp);
-    const t = cfg.tls || (cfg.listen && cfg.listen.tls) || {};
-    if (t.enable && t.port) used.add(Number(t.port));
   }
 
   const rows = [];
@@ -95,45 +94,32 @@ const isDual = (t) => !!(t && t.enable && t.port != null);
     const hp = Number((cfg.listen || {}).port || 0);
     const t = cfg.tls || {};
 
-    if (OFF) { rows.push({ n, hp, tp: '-', state: isPure(t, hp) || isDual(t) ? '关闭' : '本来就关' }); continue; }
+    if (OFF) { rows.push({ n, hp, tp: '-', state: isPure(t) || isDual(t) ? 'off' : 'already off' }); continue; }
 
-    if (PURE) {
-      if (isPure(t, hp)) { rows.push({ n, hp, tp: hp, state: '已是单端口(跳过)' }); continue; }
-      rows.push({ n, hp, tp: hp, state: isDual(t) ? '双开→单端口' : '新开(单端口)' });
-      continue;
-    }
-
-    if (isDual(t)) { rows.push({ n, hp, tp: Number(t.port), state: '已双开(跳过)' }); continue; }
-
-    const ok = async (p) => p >= 1024 && p <= 65535 && !used.has(p) && await portFree(p);
-    let cand = hp + OFFSET;
-    if (!(await ok(cand))) { cand = 20000; while (cand < 65535 && !(await ok(cand))) cand++; }
-    if (cand >= 65535) { rows.push({ n, hp, error: '没端口了' }); continue; }
-    used.add(cand);
-    rows.push({ n, hp, tp: cand, state: isPure(t, hp) ? '单端口→双开' : '新开(双开)' });
+    if (isPure(t)) { rows.push({ n, hp, tp: n === 'default' ? hp : '-', state: 'already on (skipped)' }); continue; }
+    rows.push({ n, hp, tp: n === 'default' ? hp : '-', state: isDual(t) ? 'dual→single-port' : 'newly on' });
   }
 
   const W = Math.max(...rows.map(r => r.n.length), 8);
-  console.log(`${OFF ? '关闭' : PURE ? '单端口纯 HTTPS' : '双开(HTTP+HTTPS)'} 方案${DRY ? '（dry-run，不写入）' : ''}`);
-  console.log('实例'.padEnd(W) + '  端口      https    状态');
+  console.log(`${OFF ? 'Disable' : 'Enable single-port HTTPS'} plan${DRY ? ' (dry-run, nothing written)' : ''}`);
+  console.log('Instance'.padEnd(W) + '  own port   HTTPS entry  state');
   for (const r of rows) {
-    console.log(r.n.padEnd(W) + '  ' + String(r.hp).padEnd(9) + ' ' + String(r.tp || '-').padEnd(9) + ' ' + (r.error || r.state));
+    const entry = OFF ? '-' : (r.n === 'default' ? 'https:' + r.hp : (r.state.includes('跳过') ? '-' : '/主端口/' + r.n + '/'));
+    console.log(r.n.padEnd(W) + '  ' + String(r.hp).padEnd(9) + ' ' + String(entry).padEnd(10) + ' ' + (r.error || r.state));
   }
-  if (rows.some(r => r.error)) { console.error('✗ 有实例无法分配端口，未做任何修改'); process.exit(1); }
+  if (rows.some(r => r.error)) { console.error('✗ Some instances could not get a port; nothing was changed'); process.exit(1); }
   if (DRY) return;
 
   let changed = 0;
   for (const r of rows) {
     if (r.state.includes('跳过')) continue;
     const { cfg, enc, pass, file } = readCfg(r.n);
-    cfg.tls = OFF ? { enable: false }
-      : PURE ? { enable: true, cert: 'cert.pem', key: 'key.pem' }
-        : { enable: true, cert: 'cert.pem', key: 'key.pem', port: r.tp };
+    cfg.tls = OFF ? { enable: false } : { enable: true, cert: 'cert.pem', key: 'key.pem' };
     writeCfg(cfg, enc, pass, file);
     changed++;
   }
   console.log(`✓ 已更新 ${changed} 个实例配置（加密配置仍保持加密）`);
-  if (PURE) console.log('  ⚠ 这些实例的 HTTP 入口已消失：客户端必须改用 https://同一端口');
+  if (!OFF) console.log('  ⚠ default 之外开 TLS 的实例不再监听自身端口, 只能经主端口 HTTPS + /实例名/ 访问');
 
   if (flag('no-restart')) { console.log('  未重启，执行：agw.sh restart'); return; }
 
@@ -143,11 +129,16 @@ const isDual = (t) => !!(t && t.enable && t.port != null);
   await new Promise(r => setTimeout(r, 5000));
 
   if (OFF) { console.log('✓ 已全部关闭'); return; }
+  const defRow = rows.find(r => r.n === 'default');
+  const mainPort = defRow ? defRow.hp : 0;
   let ok = 0; const fail = [];
   for (const r of rows) {
-    const code = await httpsHealth(r.tp);
-    if (code === 200) ok++; else fail.push(`${r.n}:${r.tp}(${code})`);
+    const hp = r.hp;
+    const path = r.n === 'default' ? '/health' : '/' + r.n + '/v1/models';
+    const port = mainPort || hp;
+    const code = await httpsHealth(port, path);
+    if (code === 200 || code === 401) ok++; else fail.push(`${r.n}:${port}${path}(${code})`);
   }
-  console.log(`✓ HTTPS 自检: ${ok}/${rows.length} 通过`);
+  console.log(`✓ HTTPS 自检: ${ok}/${rows.length} 通过 (经主端口 ${mainPort})`);
   if (fail.length) { console.log('✗ 失败: ' + fail.join(', ')); process.exitCode = 1; }
 })();

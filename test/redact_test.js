@@ -77,6 +77,16 @@ for (const step of [1, 3, 7, 53]) {
 /* Empty input / undefined must not crash */
 eq(R.redactSmart(''), '', '空串');
 eq(R.redactSmart(undefined), undefined, 'undefined');
+/* (6b) streaming cut must not split a UTF-16 surrogate pair (clients encoding each delta separately would see U+FFFD) */
+{
+  const sf = R.createStreamFilter();
+  const a = sf.push('aaaaa🚀bbbbbbbbbbbbbbb');
+  const b = sf.flush();
+  ok(!/[\uD800-\uDBFF]$/.test(a), '流式切分: 不把代理对劈在前一段末尾');
+  ok(!/^[\uDC00-\uDFFF]/.test(b), '流式切分: 后一段不以孤低代理开头');
+  eq(a + b, 'aaaaa🚀bbbbbbbbbbbbbbb', '流式切分: 代理对拼接后完整');
+}
+
 const emptyF = R.createStreamFilter();
 eq(emptyF.push(''), '', '流式空分片');
 eq(emptyF.flush(), '', '流式空收尾');

@@ -121,8 +121,6 @@ class MockAdapter extends BaseAdapter{
   async getBalance(inst,ch){ return {ok:true,channel:ch,balance:'42.00',unit:'CNY'}; }
   async probeNow(inst){ return {ok:true,probe:{}}; }
   async shutdownAll(){ return {ok:true}; }
-  async getCtxWindows(inst){ return {ok:true, windows:this._cw||(this._cw=[{match:'claude-*',window:200000},{match:'gpt-4*',window:128000}]), limit:{soft:80,hard:0,charsPerToken:4}}; }
-  async saveCtxWindows(inst,body){ this._cw=body.windows||[]; return {ok:true, applied:'live', windows:this._cw}; }
   async getWebSessions(){ const now=Date.now(); return {ok:true, now, sessions:[{sid:'demoSIDaaaaaaaaaaaaaaaa1',exp:now+6*864e5},{sid:'demoSIDbbbbbbbbbbbbbbbb2',exp:now+2*864e5}], pending:[{sid:'pendSIDcccccccccccccccc3',exp:now+9e5}], adminExpireAt:0}; }
   async revokeWebSession(sid){ return {ok:true, sid:sid||null}; }
   async setAdminExpire(at){ return {ok:true, at:Number(at)||0}; }
@@ -130,7 +128,12 @@ class MockAdapter extends BaseAdapter{
   async chat(body){ return { json:()=>Promise.resolve({choices:[{message:{content:'(Mock 回复) 收到: '+body.messages.at(-1).content}}]}) }; }
 }
 class HttpAdapter extends BaseAdapter{
-  constructor(base){ super(); this.base=(base||localStorage.getItem('agw-base')||location.origin).replace(/\/$/,''); }
+  constructor(base){
+    super();
+    const pm=location.pathname.match(/^\/([A-Za-z0-9_-]{1,32})\/auth(?:\/|$)/);
+    const prefix=pm?'/'+pm[1]:'';
+    this.base=(base||(location.origin+prefix)).replace(/\/$/,'');
+  }
   _hdr(){ const h={'Content-Type':'application/json'}; const k=localStorage.getItem('agw-admin-key'); if(k)h['x-agw-token']=k; return h; }
   async getInstances(signal){ return this._fetch(`${this.base}/admin/api/instances`,{headers:this._hdr()},signal); }
   async getConfig(name,signal){ return this._fetch(`${this.base}/admin/api/config/${encodeURIComponent(name)}?reveal=1`,{headers:this._hdr()},signal); }
@@ -159,10 +162,6 @@ await new Promise(r=>setTimeout(r,3500)); // let the old process exit and the ne
   async renameInstance(name,newName,signal){ return this._fetch(`${this.base}/admin/api/instance-rename/${encodeURIComponent(name)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify({newName})},signal); }
   async fetchModels(inst,body,signal){ return this._fetch(`${this.base}/admin/api/channel-models/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(body)},signal); }
   async syncModels(inst,signal){ return this._fetch(`${this.base}/admin/api/sync-models`,{method:'POST',headers:this._hdr()},signal); }
-  async getCtxp(signal){ return this._fetch(`${this.base}/admin/api/ctxp`,{headers:this._hdr()},signal); }
-  async postCtxp(body,signal){ return this._fetch(`${this.base}/admin/api/ctxp`,{method:'POST',headers:this._hdr(),body:JSON.stringify(body)},signal); }
-  async getCtxWindows(inst,signal){ return this._fetch(`${this.base}/admin/api/context-windows/${encodeURIComponent(inst)}`,{headers:this._hdr()},signal); }
-  async saveCtxWindows(inst,body,signal){ return this._fetch(`${this.base}/admin/api/context-windows/${encodeURIComponent(inst)}`,{method:'POST',headers:this._hdr(),body:JSON.stringify(body)},signal); }
   async getWebSessions(signal){ return this._fetch(`${this.base}/admin/api/web-sessions`,{headers:this._hdr()},signal); }
   async revokeWebSession(sid,signal){ return this._fetch(`${this.base}/admin/api/web-expired`,{method:'POST',headers:this._hdr(),body:JSON.stringify(sid?{sid}:{})},signal); }
   async setAdminExpire(at,signal){ return this._fetch(`${this.base}/admin/api/admin-expire`,{method:'POST',headers:this._hdr(),body:JSON.stringify({at:Number(at)||0})},signal); }
@@ -196,8 +195,6 @@ const VIEWS = [
   {id:'overview', label:'总览',   icon:'home'},
   {id:'providers',label:'提供商', icon:'business'},
   {id:'routing',  label:'路由',   icon:'sync'},
-  {id:'ctxp',     label:'上下文', icon:'straighten'},
-  {id:'ctxwin',   label:'窗口表', icon:'rule'},
   {id:'keys',     label:'密钥',   icon:'key'},
   {id:'cards',    label:'卡密',   icon:'confirmation_number'},
   {id:'ports',    label:'端口',   icon:'power'},
@@ -208,20 +205,23 @@ const VIEWS = [
   {id:'logs',     label:'日志',   icon:'description'},
   {id:'chat',     label:'聊天',   icon:'chat'},
 ];
-const TITLES = {overview:'总览',providers:'AI 提供商',routing:'路由与重试',ctxp:'上下文上限',ctxwin:'上下文窗口',keys:'API 密钥',cards:'卡密管理',ports:'服务端口',session:'面板会话',replace:'文本替换',stats:'统计信息',requests:'请求记录',logs:'日志',chat:'聊天测试'};
+const TITLES = {overview:'总览',providers:'AI 提供商',routing:'路由与重试',keys:'API 密钥',cards:'卡密管理',ports:'服务端口',session:'面板会话',replace:'文本替换',stats:'统计信息',requests:'请求记录',logs:'日志',chat:'聊天测试'};
 
 const Store = {
   page:'overview', instances:[], configs:new Map(), aborts:new Map(), timer:null,
-  online:navigator.onLine, currentName:'', adapter:'mock',
+  online:navigator.onLine, currentName:'', adapter:'http',
   inst:'default',
   chat:{ messages:[], inst:'', streaming:false },
   charts:null,
   abort(key){ const c=this.aborts.get(key); if(c){ try{c.abort();}catch(e){} }
     const n=new AbortController(); this.aborts.set(key,n); return n.signal; },
+  armTimeout(key,ms,onFire){ const c=this.aborts.get(key); if(!c) return ()=>{};
+    const t=setTimeout(()=>{ try{ if(onFire) onFire(); c.abort(); }catch(_){} },ms);
+    return ()=>clearTimeout(t); },
   clearRefresh(){ if(this.timer){ clearInterval(this.timer); this.timer=null; } },
   startRefresh(fn,ms){ this.clearRefresh(); this.timer=setInterval(fn,ms); },
 };
-let adapter = new MockAdapter();
+let adapter = new HttpAdapter();
 
 // ============ Navigation ============
 function buildNav(){
@@ -239,12 +239,13 @@ function buildNav(){
      </md-navigation-tab>`).join('');
 }
 function syncNav(){
-  $('#railList .rail-item').forEach(el=>el.toggleAttribute('active', el.dataset.page===Store.page));
-  const tabs=$('#navbar md-navigation-tab');
-  const idx=tabs.findIndex(t=>t.dataset.page===NAV_ACTIVE_PAGE);
+  $$('#railList .rail-item').forEach(el=>el.toggleAttribute('active', el.dataset.page===Store.page));
+  const tabs=$$('#navbar md-navigation-tab');
+  const activePage=NAV_ACTIVE_PAGE();
+  const idx=tabs.findIndex(t=>t.dataset.page===activePage);
   const bar=$('#navbar');
   if(idx>=0 && bar.activeIndex!==idx) bar.activeIndex=idx;
-  tabs.forEach(t=>t.toggleAttribute('active', t.dataset.page===NAV_ACTIVE_PAGE));
+  tabs.forEach(t=>t.toggleAttribute('active', t.dataset.page===activePage));
 }
 //// The bottom bar holds 5 common pages; the rest fold into "More": all 12 pages remain reachable on phones
 const NAV_TABS = ['overview','providers','routing','keys','stats']
@@ -271,8 +272,9 @@ async function go(page){
   $('#pageTitle').textContent = TITLES[page]||page;
   syncNav();
   Store.clearRefresh();
-  if(page==='overview'||page==='stats') Store.startRefresh(()=>{ if(Store.page==='overview')renderOverview(); if(Store.page==='stats')renderStats(); },5000);
-  const R={overview:renderOverview,providers:renderProviders,routing:renderRouting,ctxp:renderCtxp,ctxwin:renderCtxWin,
+  if(page==='overview') Store.startRefresh(()=>{ if(Store.page==='overview' && !Store._ovBusy) renderOverview(); },5000);
+  else if(page==='stats') Store.startRefresh(()=>{ if(Store.page==='stats' && !Store._stBusy) renderStats(); },5000);
+  const R={overview:renderOverview,providers:renderProviders,routing:renderRouting,
     keys:renderKeys,cards:renderCards,ports:renderPorts,session:renderSession,replace:renderReplace,
     stats:renderStats,requests:renderRequests,logs:renderLogs,chat:renderChat};
   await R[page]?.();
@@ -332,44 +334,6 @@ function rpBindSwipe(dir){
     chip=null; idx=-1; dx=0;
   });
 }
-// ============ Render: context limit (ctxp) ============
-function fmtTokLim(n){ if(!n) return '关'; if(n>=1000000&&n%1000000===0) return (n/1000000)+'m'; if(n>=1000&&n%1000===0) return (n/1000)+'k'; return String(n); }
-async function renderCtxp(){
-  const signal=Store.abort('ctxp');
-  try{
-    const r=await adapter.getCtxp(signal);
-    const rules=r.rules||{};
-    const keys=Object.keys(rules);
-    $('#cx-list').innerHTML = keys.length ? '<md-list>'+keys.map(k=>
-      '<md-list-item type="button">'+
-      '<span class="mono">'+esc(k)+'</span>'+
-      '<span slot="end" class="muted small mono">warn '+fmtTokLim(rules[k].warn||0)+' / max '+fmtTokLim(rules[k].max||0)+'</span>'+
-      '</md-list-item>').join('')+'</md-list>'
-      : '<div class="empty">无规则 — 上方填写后保存即可创建</div>';
-  }catch(e){ if(e.name!=='AbortError') $('#cx-list').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; }
-}
-$('#cx-save').addEventListener('click', async ()=>{
-  const model=$('#cx-model').value.trim();
-  if(!model){ snack('先填模型名通配',true); return; }
-  const maxv=$('#cx-max').value.trim(), warnv=$('#cx-warn').value.trim();
-  try{
-    const r=await adapter.postCtxp({model, max:maxv||0, warn:warnv||0});
-    snack('已保存 — 对 '+r.applied+' 个实例热生效');
-    $('#cx-model').value=''; $('#cx-warn').value=''; $('#cx-max').value='';
-    await renderCtxp();
-  }catch(e){ snack(e.message, true); }
-});
-$('#cx-del').addEventListener('click', async ()=>{
-  const model=$('#cx-model').value.trim();
-  if(!model){ snack('先填要删除的模型通配',true); return; }
-  try{
-    const r=await adapter.postCtxp({model, max:0, warn:0});
-    snack('已删除 — 对 '+r.applied+' 个实例热生效');
-    $('#cx-model').value=''; $('#cx-warn').value=''; $('#cx-max').value='';
-    await renderCtxp();
-  }catch(e){ snack(e.message, true); }
-});
-
 async function renderReplace(){
   const signal=Store.abort('replace');
   const cur = await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
@@ -429,18 +393,25 @@ function listItem({icon='', headline='', sub='', over='', endHtml='', active=fal
 
 // ============ Render: overview ============
 async function renderOverview(){
-  const signal=Store.abort('overview');
+  if(Store._ovBusy) return;
+  Store._ovBusy=true;
+  let ovDisarm=()=>{};
+  let ovTimedOut=false;
   try{
+    const signal=Store.abort('overview');
+    ovDisarm=Store.armTimeout('overview',20000,()=>{ ovTimedOut=true; });
     const {instances,current}=await adapter.getInstances(signal);
     Store.instances=instances; if(current) Store.currentName=current;
     $('#ov-instances').textContent=instances.length;
     $('#ov-running').textContent=instances.filter(i=>i.running).length;
     $('#ov-channels').textContent=instances.reduce((a,i)=>a+(i.chCount||0),0);
+// Fetch per-instance stats/config in parallel: with dozens of instances the old sequential
+// loop took longer than the 5s refresh interval, so every tick aborted the previous render
+// and the overview stayed on "加载中…" forever.
+    const stats=await Promise.all(instances.map(i=>adapter.getStats(i.name,signal).catch(e=>{ if(e.name==='AbortError') ovTimedOut=true; return {}; })));
+    if(ovTimedOut){ $('#ov-inst-list').innerHTML='<div class="empty">实例数据读取超时，正在重试…</div>'; $('#ov-ch-list').innerHTML='<div class="empty">读取超时，正在重试…</div>'; return; }
     let totalReq=0,maxUp=0;
-    for(const inst of instances){
-      const s=await adapter.getStats(inst.name,signal).catch(()=>({}));
-      totalReq+=s.requests||0; if(s.uptime>maxUp)maxUp=s.uptime;
-    }
+    for(const s of stats){ totalReq+=s.requests||0; if(s.uptime>maxUp)maxUp=s.uptime; }
     $('#ov-requests').textContent=fmtNum(totalReq);
     $('#ov-uptime').textContent=fmtDur(maxUp);
     $('#ov-inst-list').innerHTML='<md-list>'+instances.map(i=>listItem({
@@ -450,17 +421,19 @@ async function renderOverview(){
       endHtml:'<span class="muted">›</span>',
       data:`data-goto="ports"`,
     })).join('')+'</md-list>';
+    const cfgs=await Promise.all(instances.map(i=>adapter.getConfig(i.name,signal).catch(e=>{ if(e.name==='AbortError') ovTimedOut=true; return null; })));
+    if(ovTimedOut){ $('#ov-ch-list').innerHTML='<div class="empty">读取超时，正在重试…</div>'; return; }
     const chRows=[];
-    for(const inst of instances){
-      try{ const cfg=await adapter.getConfig(inst.name,signal);
-        for(const ch of (cfg.channels||[]).slice(0,3))
-          chRows.push(`<tr><td class="mono truncate" title="${escAttr(ch.name)}">${esc(ch.name)}</td><td><span class="tag ${esc(ch.type)}">${esc(ch.type)}</span></td><td class="mono truncate" title="${escAttr(ch.baseUrl)}">${esc(fmtHost(ch.baseUrl))}</td><td class="truncate" title="${escAttr(inst.name)}">${esc(inst.name)}</td></tr>`);
-      }catch(_){}
-    }
+    instances.forEach((inst,idx)=>{
+      const cfg=cfgs[idx]; if(!cfg) return;
+      for(const ch of (cfg.channels||[]).slice(0,3))
+        chRows.push(`<tr><td class="mono truncate" title="${escAttr(ch.name)}">${esc(ch.name)}</td><td><span class="tag ${esc(ch.type)}">${esc(ch.type)}</span></td><td class="mono truncate" title="${escAttr(ch.baseUrl)}">${esc(fmtHost(ch.baseUrl))}</td><td class="truncate" title="${escAttr(inst.name)}">${esc(inst.name)}</td></tr>`);
+    });
     $('#ov-ch-list').innerHTML = chRows.length
       ? `<div class="tbl-wrap"><table class="tbl" id="ov-ch-table" aria-label="渠道概览"><thead><tr><th style="width:24%">名称</th><th style="width:14%">类型</th><th style="width:46%">地址</th><th style="width:16%">实例</th></tr></thead><tbody>${chRows.join('')}</tbody></table></div>`
       : '<div class="empty">无渠道</div>';
   }catch(e){ if(e.name!=='AbortError'){ console.error(e); snack(e.message,true); } }
+  finally{ ovDisarm(); Store._ovBusy=false; }
 }
 
 // ============ Render: providers ============
@@ -524,8 +497,6 @@ async function renderRouting(){
     $('#rt-redactExtra').value=((cfg.redact||{}).extra||[]).join('\n');
     $('#rt-modelSync').selected=!((cfg.modelSync||{}).enable===false);
     $('#rt-syncInterval').value=String((cfg.modelSync||{}).intervalHours??24);
-    $('#rt-oeEnable').selected=!!((cfg.openaiExtras||{}).enable);
-    $('#rt-oeUpstream').selected=!!((cfg.openaiExtras||{}).upstreamResponses);
     $('#rt-channels').innerHTML='<md-list>'+(cfg.channels||[]).map(ch=>listItem({
       icon:`<span class="msym">${ch.type==='openai'?'bolt':'diamond'}</span>`,
       headline:esc(ch.name)+(ch.default?' <span class="tag default">default</span>':'')+(ch.useResponses?' <span class="tag default" title="该 OpenAI 渠道上游走 Responses API">⚡Responses</span>':''),
@@ -544,7 +515,7 @@ async function renderKeys(){
     $('#ky-gatewayKey').value = cfg.gatewayKey && cfg.gatewayKey!=='(已设)' ? cfg.gatewayKey : '';
     $('#ky-gatewayKey').placeholder = cfg.gatewayKey==='(已设)' ? '(已设, 留空不改)' : '留空=不校验';
     $('#ky-webToken').value = cfg.webToken && cfg.webToken!=='(已设)' ? cfg.webToken : '';
-    $('#ky-webToken').placeholder = cfg.webToken==='(已设)' ? '(已设, 留空不改)' : '留空=免密管理';
+    $('#ky-webToken').placeholder = cfg.webToken==='(已设)' ? '(已设, 留空不改)' : '留空=不启用 API 令牌';
     $('#ky-channels').innerHTML=(cfg.channels||[]).map(ch=>
       `<md-outlined-text-field data-keyfor="${escAttr(ch.name)}" label="${esc(ch.name)} (${esc(ch.type)})" type="password" value="${esc(ch.apiKey||'')}" placeholder="${ch.hasKey?'(已设)':'API Key'}"></md-outlined-text-field>`
     ).join('');
@@ -569,8 +540,8 @@ async function loadAdminAuth(inst){
     $('#ka-status').innerHTML = '管理密码: '+(d.hasAdminKey?'<b style="color:var(--md-sys-color-primary)">已设</b>':'<b style="color:var(--md-sys-color-error)">未设(危险)</b>')
       +' · 第二密码: '+(d.secondKeySet?'<b style="color:var(--md-sys-color-primary)">已启用</b>':'未启用')
       +' · TOTP: '+(d.totpEnabled?'<b style="color:var(--md-sys-color-primary)">已启用</b>':'未启用');
-    if(d.totpEnabled && d.totpSecret){ $('#ka-totp-info').style.display=''; $('#ka-totp-secret').textContent=d.totpSecret; $('#ka-totp-url').textContent=''; }
-    else $('#ka-totp-info').style.display='none';
+    $('#ka-totp-info').style.display = d.totpEnabled ? '' : 'none';
+    // the secret itself is only returned once, right after enable (POST /admin-api/admin-auth)
     const pf=d.profile||{};
     $('#ka-profile-name').textContent = pf.name || '(未设置名称)';
     $('#ka-profile-text').textContent = pf.profile || '';
@@ -684,7 +655,7 @@ function cdSwitchTab(t){
 }
 // ---- User management ----
 async function renderUsers(){
-  const signal=Store.abort('cards');
+  const signal=Store.abort('users');
   $('#cu-list').innerHTML='<md-linear-progress indeterminate></md-linear-progress>';
   try{
     const data=await adapter.getUsers(Store.inst,signal);
@@ -830,9 +801,14 @@ async function chBalanceAction(chName){
 
 // ============ Render: statistics ============
 async function renderStats(){
-  const signal=Store.abort('stats');
-  const cur = await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
+  if(Store._stBusy) return;
+  Store._stBusy=true;
+  let stDisarm=()=>{};
+  let stTimedOut=false;
   try{
+    const signal=Store.abort('stats');
+    stDisarm=Store.armTimeout('stats',20000,()=>{ stTimedOut=true; });
+    const cur = await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
     const s=await adapter.getStats(cur,signal);
     const chs=Object.entries(s.byChannel||{});
     const sumIn=chs.reduce((t,[,d])=>t+(d.inputTokens||0),0);
@@ -871,7 +847,11 @@ async function renderStats(){
       .map(([d,v])=>({label:String(d).slice(5),in:v.inputTokens||0,out:v.outputTokens||0}));
     Store.charts={daily, models:mRows.map(r=>({name:r.m,sum:r.sum}))};
     drawDailyChart(daily); drawModelChart(Store.charts.models);
-  }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
+  }catch(e){
+    if(e.name==='AbortError'){ if(stTimedOut) $('#st-table tbody').innerHTML='<tr><td colspan="4" class="empty">读取超时，正在重试…</td></tr>'; }
+    else snack(e.message,true);
+  }
+  finally{ stDisarm(); Store._stBusy=false; }
 }
 
 // ============ Render: request log ============
@@ -1156,14 +1136,14 @@ function rgbToHsl(r,g,b){
   return {h,s:s*100,l:l*100};
 }
 
-// ---- Access token (webToken) input: top-bar key button, auto-opens on API 401 ----
+// ---- Optional admin API token input: top-bar key button, auto-opens on API 401 ----
 function keyDlgVisible(){ return !$('#dlgOverlay').hidden && $('#dlgTitle').textContent==='管理令牌'; }
 function openKeyDialog(){
   if(keyDlgVisible()) return;
   openDialog('管理令牌', `
     <div style="display:flex;flex-direction:column;gap:14px;padding-top:8px">
-      <md-outlined-text-field data-f="key" label="访问令牌(webToken)" type="password" value="${escAttr(localStorage.getItem('agw-admin-key')||'')}"
-        helper="填实例的 webToken(agw web --key 设定); 没设则免密无需填; 清空保存=清除记住的令牌"></md-outlined-text-field>
+      <md-outlined-text-field data-f="key" label="管理 API 令牌(可选)" type="password" value="${escAttr(localStorage.getItem('agw-admin-key')||'')}"
+        helper="面板登录请用 agw web login 的一次性链接; 这里只用于脚本/API 的 webToken"></md-outlined-text-field>
     </div>`, {okText:'保存', onOk:saveKey});
 }
 async function saveKey(){
@@ -1272,6 +1252,7 @@ function openProviderDialog(ch){
         ${['openai','claude','gemini'].map(t=>`<md-select-option value="${t}" ${t===c.type?'selected':''}>${t}</md-select-option>`).join('')}
       </md-outlined-select>
       <md-outlined-text-field data-f="baseUrl" label="Base URL" value="${escAttr(c.baseUrl)}" placeholder="https://…/v1"></md-outlined-text-field>
+      <md-outlined-text-field data-f="path" label="固定路径 (可选)" value="${escAttr(c.path||'')}" placeholder="/v1/chat/completions" helper="填了则所有请求都发往 baseUrl+path, 忽略客户端路径与查询; 留空=自动"></md-outlined-text-field>
       <md-outlined-select data-f="proxy" label="代理(-为直连)" style="width:100%">
         ${pOpts.map(o=>`<md-select-option value="${escAttr(o)}" ${o===curP?'selected':''}>${o==='-'?'- 直连':esc(o)}</md-select-option>`).join('')}
       </md-outlined-select>
@@ -1333,8 +1314,7 @@ function openPortDialog(name){
   openDialog(name?'编辑实例 '+name:'新建实例', `
     <div style="display:flex;flex-direction:column;gap:14px;padding-top:8px">
       <md-outlined-text-field data-f="name" label="实例名" value="${escAttr(i.name||'')}" ${(name==='default')?'disabled':''} required helper="${name?(name==='default'?'主实例不能改名':'改名会同步改配置文件名, 热生效'):'只能含字母/数字/中划线/下划线'}"></md-outlined-text-field>
-      <md-outlined-text-field data-f="port" label="HTTP 端口" type="number" value="${i.port||16390}"></md-outlined-text-field>
-      <md-outlined-text-field data-f="tlsPort" label="HTTPS 端口" type="number" value="${(i.port||16390)+10}"></md-outlined-text-field>
+      <md-outlined-text-field data-f="port" label="端口" type="number" value="${i.port||16390}" helper="${(i.tlsOn||(name&&name!=='default'))?'开 HTTPS 的实例只经主端口访问, 此端口仅作标识':'监听端口(开 HTTPS 后只提供 https)'}"></md-outlined-text-field>
       <md-outlined-text-field data-f="webToken" label="访问令牌" type="password" value="" helper="留空保存=清除访问令牌"></md-outlined-text-field>
       <label style="display:flex;align-items:center;gap:8px;font-size:14px"><md-switch data-f="tls" ${i.tlsOn?'selected':''}></md-switch>启用 HTTPS</label>
       ${(name&&name!=='default'&&name!==Store.currentName)?`<md-text-button data-action="delInstance" data-name="${escAttr(name)}" style="color:var(--md-sys-color-error);align-self:flex-start;margin-top:2px">删除实例</md-text-button>`:''}
@@ -1344,7 +1324,6 @@ if(name){ // edit mode: fetch the real config to backfill port/TLS/admin passwor
     adapter.getConfig(name).then(c=>{
       const q=f=>$('#dlgBody [data-f='+f+']');
       if(q('port')) q('port').value=(c.port!=null?c.port:16384);
-      if(q('tlsPort')) q('tlsPort').value=(c.tls&&c.tls.port)?c.tls.port:(Number(c.port||16384)+10);
       const sw=q('tls'); if(sw) sw.selected=!!(c.tls&&c.tls.enable);
       portDlgOrigKey=c.webToken||'';
       if(q('webToken')) q('webToken').value=portDlgOrigKey;
@@ -1357,12 +1336,11 @@ if(name){ // edit mode: fetch the real config to backfill port/TLS/admin passwor
 async function savePortSettings(editName){
   const v=dlgValue();
   const name=String(editName||v.name||'').trim();
-  const port=Number(v.port), tlsPort=Number(v.tlsPort);
+  const port=Number(v.port);
   const adminKey=String(v.webToken||'').trim();
   const tlsOn=!!($('#dlgBody [data-f=tls]')&&$('#dlgBody [data-f=tls]').selected);
   if(!/^[A-Za-z0-9_-]{1,32}$/.test(name)){ snack('实例名只能含字母/数字/中划线/下划线(最长32字符)',true); return false; }
   if(!port||port<1024||port>65535){ snack('HTTP 端口范围 1024-65535',true); return false; }
-  if(tlsOn&&(!tlsPort||tlsPort<1024||tlsPort>65535)){ snack('HTTPS 端口范围 1024-65535',true); return false; }
   try{
 if(editName){ // ---- edit an existing instance ----
       let effName=editName;
@@ -1373,7 +1351,8 @@ if(name!==editName){ // ---- rename: call the rename API first (hot), later save
       }
       const cur=await adapter.getConfig(effName);
       const patch={ port, host:(cur&&cur.host)||'0.0.0.0',
-        tls:Object.assign({},(cur&&cur.tls)||{},{ enable:tlsOn, port:tlsPort||port+10 }) };
+        tls:Object.assign({},(cur&&cur.tls)||{},{ enable:tlsOn }) };
+      delete patch.tls.port;
       // admin password: submit only when different from the backfilled value (empty = remove it); untouched when backfill failed (unknown)
       if(portDlgOrigKey!==undefined && adminKey!==portDlgOrigKey) patch.webToken=adminKey;
       await adapter.saveConfig(effName,patch);
@@ -1384,7 +1363,7 @@ if(name!==editName){ // ---- rename: call the rename API first (hot), later save
       try{ const d=await adapter.getInstances(); running=!!(d.instances||[]).find(x=>x.name===effName&&x.running); }catch(_){}
       if(running) doInstanceAction(effName,'restart'); else renderPorts();
 }else{ // ---- create a new instance ----
-      const tls={ enable:tlsOn, port:tlsPort||port+10 };
+      const tls={ enable:tlsOn };
 if(tlsOn){ // reuse an existing instance's certificate (certs can be shared across instances); none available -> fall back to pure HTTP
         try{
           const d=await adapter.getInstances();
@@ -1472,7 +1451,7 @@ async function saveProvider(){
   // the model rename map comes from the tag editor (mmList); public -> real name; identical = served under the original name
   const modelMap={};
   for(const [k,r] of mmList) modelMap[k]=r;
-  const ch={ name:v.name, type:v.type||'openai', baseUrl:v.baseUrl, proxy:v.proxy||'-',
+  const ch={ name:v.name, type:v.type||'openai', baseUrl:v.baseUrl, path:String(v.path||'').trim(), proxy:v.proxy||'-',
     models:String(v.models||'').split(',').map(s=>s.trim()).filter(Boolean),
     apiKey:v.apiKey||'', default:!!v.default,
 // Upstream balance passthrough: always send (empty string = clear); the backend inherits only on omission -- otherwise one channel edit wipes the balance config
@@ -1507,8 +1486,7 @@ async function saveRouting(){
       maxRetry:+$('#rt-maxRetry').value||0, timeoutSec:+$('#rt-timeout').value||0, cooldownSec:+$('#rt-cooldown').value||0 },
       redact:{enable:!!$('#rt-redact').selected, response:!!$('#rt-redactRes').selected,
         extra:$('#rt-redactExtra').value.split('\n').map(x=>x.trim()).filter(Boolean)},
-      modelSync:{enable:!!$('#rt-modelSync').selected, intervalHours:+$('#rt-syncInterval').value||24},
-      openaiExtras:{enable:!!$('#rt-oeEnable').selected, upstreamResponses:!!$('#rt-oeUpstream').selected}});
+      modelSync:{enable:!!$('#rt-modelSync').selected, intervalHours:+$('#rt-syncInterval').value||24}});
     snack('已保存 (热重载生效)'); await renderRouting();
   }catch(e){ snack(e.message,true); }
 }
@@ -1535,49 +1513,6 @@ async function delInstance(name){
   }catch(e){ snack(e.message,true); }
 }
 
-// ============ Render: context windows ============
-let cwList=[], cwLimit={soft:80,hard:0,charsPerToken:4};
-function cwRender(){
-  const tb=$('#cw-table tbody'); if(!tb) return;
-  tb.innerHTML=cwList.length?cwList.map((r,i)=>
-    `<tr><td class="mono truncate" title="${escAttr(r.match)}">${esc(r.match)}</td>
-      <td class="mono">${fmtNum(r.window)}</td>
-      <td><div class="row-acts"><button type="button" class="icon-act err" data-action="cwDel" data-i="${i}" title="删除"><span class="msym">delete</span></button></div></td></tr>`).join('')
-    :'<tr><td colspan="3" class="empty">还没有规则 — 模型走实例默认窗口</td></tr>';
-  $('#cw-soft').value=String(cwLimit.soft ?? 80);
-  $('#cw-hard').value=String(cwLimit.hard ?? 0);
-  $('#cw-cpt').value=String(cwLimit.charsPerToken ?? 4);
-}
-async function renderCtxWin(){
-  const signal=Store.abort('ctxwin');
-  const cur=await fillInstSelect($('#topInst'), Store.inst, signal); Store.inst=cur;
-  try{
-    const d=await adapter.getCtxWindows(cur, signal);
-    cwList=Array.isArray(d.windows)?d.windows.map(x=>({match:String(x.match||''),window:Number(x.window)||0})).filter(x=>x.match):[];
-    cwLimit=Object.assign({soft:80,hard:0,charsPerToken:4}, d.limit||{});
-    cwRender();
-  }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
-}
-async function cwSave(){
-  const soft=Number($('#cw-soft').value)||0, hard=Number($('#cw-hard').value)||0, cpt=Number($('#cw-cpt').value)||4;
-  try{
-    const r=await adapter.saveCtxWindows(Store.inst, {windows:cwList, soft, hard, charsPerToken:cpt});
-    cwLimit=Object.assign({}, cwLimit, {soft,hard,charsPerToken:cpt});
-    snack('已保存'+(r&&r.applied==='live'?' — 已热生效':' — 重启实例后生效'));
-    cwRender();
-  }catch(e){ snack(e.message,true); }
-}
-function cwAdd(){
-  const m=String($('#cw-match').value||'').trim(), w=Number($('#cw-window').value)||0;
-  if(!m){ snack('先填匹配模式',true); return; }
-  if(!(w>0)){ snack('窗口大小要大于 0',true); return; }
-  const i=cwList.findIndex(x=>x.match===m);
-  if(i>=0) cwList[i].window=w; else cwList.push({match:m,window:w});
-  $('#cw-match').value=''; $('#cw-window').value='';
-  cwRender(); cwSave();
-}
-function cwDel(i){ cwList.splice(i,1); cwRender(); cwSave(); }
-
 // ============ Render: panel sessions ============
 function fmtDateTime(ms){ try{ return new Date(ms).toLocaleString('zh-CN',{hour12:false}); }catch(_){ return String(ms); } }
 function fmtLeft(ms){
@@ -1588,7 +1523,7 @@ function fmtLeft(ms){
   return Math.ceil(d/86400)+' 天后';
 }
 function ssRows(list, kind){
-  if(!list.length) return '<tr><td colspan="3" class="empty">'+(kind==='pend'?'没有待用链接':'没有有效会话')+'</td></tr>';
+  if(!list.length) return '<tr><td colspan="3" class="empty">'+(kind==='pend'?'登录链接不保存在面板中':'没有有效会话')+'</td></tr>';
   return list.map(s=>`<tr>
     <td class="mono truncate" title="${escAttr(s.sid)}">${esc(String(s.sid).slice(0,10))}…</td>
     <td class="small">${esc(fmtDateTime(s.exp))}<span class="muted"> · ${esc(fmtLeft(s.exp))}</span></td>
@@ -1607,7 +1542,7 @@ async function renderSession(){
   }catch(e){ if(e.name!=='AbortError') snack(e.message,true); }
 }
 async function revokeSession(sid){
-  const msg=sid?'确定注销这个会话? 对应浏览器需要重新用登录链接进入。':'确定注销全部会话? 包括当前这个浏览器, 之后要重新 agw admin login。';
+  const msg=sid?'确定注销这个会话? 对应浏览器需要重新用登录链接进入。':'确定注销全部会话? 包括当前这个浏览器, 之后要重新 agw web login。';
   if(!confirm(msg)) return;
   try{
     await adapter.revokeWebSession(sid);
@@ -1789,10 +1724,6 @@ $('#rt-syncNow').addEventListener('click', async ()=>{
   btn.disabled=false; btn.textContent=old;
 });
 $('#ky-save').addEventListener('click',saveKeys);
-$('#cw-add').addEventListener('click',cwAdd);
-$('#cw-save').addEventListener('click',cwSave);
-$('#cw-match').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); cwAdd(); } });
-$('#cw-window').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); cwAdd(); } });
 $('#ss-revoke-all').addEventListener('click',()=>revokeSession(''));
 $('#ss-expire-set').addEventListener('click',setAdminExpire);
 $('#ss-expire-clear').addEventListener('click',clearAdminExpire);
@@ -1873,10 +1804,15 @@ loadBrand();
 $('#railBrand').addEventListener('click', openBrandDialog);
 loadTheme();
 buildNav();
-if(localStorage.getItem('agw-mode')==='http'){
-  Store.adapter='http'; adapter=new HttpAdapter(); $('#modeChip').label='HTTP'; $('#modeChipIc').textContent='public';
+if(localStorage.getItem('agw-mode')==='mock'){
+  Store.adapter='mock'; adapter=new MockAdapter(); $('#modeChip').label='Mock'; $('#modeChipIc').textContent='inventory_2';
 }
-await fillInstSelect($('#topInst'), Store.inst).catch(()=>{});
+// Never let a slow/hung first /admin/api/instances call block the whole boot:
+// render the default page after at most 6s; the per-page render has its own 20s abort guard.
+await Promise.race([
+  fillInstSelect($('#topInst'), Store.inst).catch(()=>{}),
+  new Promise(r=>setTimeout(r,6000)),
+]);
 go(Store.page);
 let chartResizeT=0;
 window.addEventListener('resize',()=>{

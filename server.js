@@ -12,7 +12,7 @@ const { poolRoute, BILLING_PATHS, GENERIC_BALANCE_PATHS, createInstancePool, poo
 const { sendError, corsHeaders, jsonErr, checkAuth, keyCreditsJSON, verifyPassword, hashPassword, genApiKey, persistRuntimeCfg, availableBranches, collectJson, modelsResponse, sendJson, loadKeyUsage, makeGatewayApi } = require('./router');
 const { VERSION, utf8, log, logErr } = require('./util');
 const { balanceAggregate, pickBalanceChannel, fetchBalanceCached, fetchChannelBalance, setupProbe } = require('./upstream');
-const { openaiExtrasOn, fetchUpstreamModels, syncModels } = require('./sync');
+const { fetchUpstreamModels, syncModels } = require('./sync');
 const { handleExtraEndpoint } = require('./passthrough');
 const { handleChat } = require('./record');
 const { applyDefaults } = require('./config');
@@ -20,28 +20,26 @@ const rt = require('./runtime');
 const admin = require('./admin');
 const { handleAdmin } = admin;
 const state = require('./state');
+const panelAuth = require('./panel-auth');
+const hot = require('./hot');
 
 // ================= HTTP service =================
-/* ================= HTTP service ================= */
 const GEMINI_RE = /^\/v1(?:beta|alpha)?\/models\/([^:]+):(generateContent|streamGenerateContent|countTokens)$/;
-//// Note: the old EXTRA_OPENAI_ENDPOINTS fixed whitelist (9 endpoints) is deprecated.
-//     since 2026-10-16 replaced by "/v1/* fallback passthrough": any /v1/* path not handled by a conversion entry forwards verbatim to the openai channel
-//     (covers files/batches/vector_stores/fine_tuning/images/embeddings/audio/completions/moderations etc.),
-//     decided by isPassthru in handleHttp + executed by handleExtraEndpoint.
+// Any /v1/* path not handled by a conversion entry forwards verbatim to the openai channel (isPassthru → handleExtraEndpoint); always on.
 
 async function handleHttp(cfg, req, res) {
+  hot.track(req, res);
   const u = new URL(req.url, 'http://localhost');
   let p = u.pathname;
 
-// ===== Multi-instance routing (single-process mode): compat-port direct / main-port /<inst>/ prefix / default =====
+// ===== Multi-instance routing: compat port → /<inst>/ prefix → default =====
   if (state.CUR_POOL) {
     const r = poolRoute(state.CUR_POOL, req, p);
     if (r.error) { sendError('openai', res, r.status || 404, r.error); return; }
     cfg = r.cfg;
     p = r.path;
     if (r.name) req._branchName = r.name;
-// Global branch whitelist: if a card is registered on any instance with non-empty branches, it may only reach those instances
-// (intercepts before the target instance authenticates, so keyless target instances cannot be bypassed)
+// Branch whitelist: a card with non-empty branches may only reach the instances in that list
     if (req._branchName) {
       const h = req.headers;
       const auth = h.authorization || '';
@@ -59,7 +57,7 @@ async function handleHttp(cfg, req, res) {
 
   if (cfg.cors && req.method === 'OPTIONS') { res.writeHead(204, corsHeaders()); return res.end(); }
 
-// ===== Public route whitelist (2026-10-27): only /v1 /v1beta /auth /profile /admin pass (panel uses webToken auth) =====
+// ===== Public route whitelist (2026-10-27): only /v1 /v1beta /auth /profile /admin pass (panel uses a one-time login link / session cookie) =====
 // Everything else 404s: /health /status* /user /plugins /credits are all closed; re-add when needed
   const allowed = p === '/v1' || p.startsWith('/v1/')
     || p === '/v1beta' || p.startsWith('/v1beta/')
@@ -71,7 +69,7 @@ async function handleHttp(cfg, req, res) {
 // ===== Web admin panel (/admin + /admin/api/*) =====
 // /auth/* login/register are user-side endpoints and must be left to the branches below; everything else belongs to the panel (HTML/CSS/JS/vendor static)
   const isAuthFile = p.startsWith('/auth/') && p !== '/auth/login' && p !== '/auth/register';
-  if (p === '/admin' || p === '/admin/' || p === '/admin/ball' || p.startsWith('/admin/api/')
+  if (p === '/admin' || p === '/admin/' || p.startsWith('/admin/api/')
       || p === '/auth' || p === '/auth/' || isAuthFile
       || /^\/auth\/[A-Za-z0-9_-]{16,128}\/[A-Za-z0-9_-]{8,256}\/?$/.test(p)) {
     // admin pages need no upfront body collection; handleAdmin handles it internally
@@ -138,7 +136,8 @@ const u8 = utf8();   /* *chunk-safe decoding (2026-09-18) */
               headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(postData) },
               timeout: 10000,
             }, (r2) => {
-              let d = ''; r2.on('data', c => d += c); r2.on('end', () => {
+              const u8t = utf8();
+              let d = ''; r2.on('data', c => d += u8t(c)); r2.on('end', () => {
                 try { resolve(!!JSON.parse(d).success); } catch (_) { resolve(false); }
               });
             });
@@ -388,13 +387,13 @@ if (quota <= 0 || quota > remaining) quota = remaining; // never exceed the pare
   }
 
 // Fallback passthrough decision: any /v1/* not owned by a conversion entry -> forwards verbatim to the openai channel
-// (added 2026-10-16: on by default; covers files/batches/vector_stores/images/embeddings/audio/completions/moderations etc.)
+// (fixed gateway behavior: files/batches/vector_stores/images/embeddings/audio/completions/moderations etc. always pass through)
   const isConvEndpoint = (q) => (
     q === '/v1/chat/completions' || q === '/chat/completions' ||
     q === '/v1/messages' || q === '/messages' ||
     q === '/v1/responses' || GEMINI_RE.test(q)
   );
-  const isPassthru = openaiExtrasOn(cfg) && p.startsWith('/v1/') && !isConvEndpoint(p);
+  const isPassthru = p.startsWith('/v1/') && !isConvEndpoint(p);
 
   // unknown non-POST endpoint: if the path looks like a balance/usage query, log one line (to add aliases later); passthrough paths go through
   if (req.method !== 'POST' && !isPassthru) {
@@ -410,7 +409,6 @@ if (quota <= 0 || quota > remaining) quota = remaining; // never exceed the pare
   if (p === '/v1/chat/completions' || p === '/chat/completions') clientFormat = 'openai';
   else if (p === '/v1/messages' || p === '/messages') clientFormat = 'claude';
   else if (p === '/v1/responses') {
-    if (!openaiExtrasOn(cfg)) return sendError('openai', res, 404, 'unknown endpoint: ' + p + ' (OpenAI 扩展端点已关闭: openaiExtras.enable=false)');
     clientFormat = 'openai';
     clientApi = 'responses';
   } else {
@@ -450,6 +448,7 @@ if (quota <= 0 || quota > remaining) quota = remaining; // never exceed the pare
   let bodyStr = '';
   let size = 0;
   let aborted = false;
+  const u8chat = utf8();
   req.on('data', c => {
     if (aborted) return;
     size += c.length;
@@ -459,7 +458,7 @@ if (quota <= 0 || quota > remaining) quota = remaining; // never exceed the pare
       sendError(clientFormat, res, 413, 'request body too large (>' + cfg.maxBodyBytes + ' bytes)');
       return;
     }
-    bodyStr += c.toString('utf8');
+    bodyStr += u8chat(c);
   });
   req.on('end', () => {
     if (aborted) return;
@@ -501,7 +500,8 @@ function startServer(cfg, opts = {}) {
     return Promise.resolve({ pool, port: pool.mainPort, host: pool.mainHost, cfg });
   }
 
-// ===== Single-instance mode (standalone run / testing) =====
+// ===== Single-instance mode =====
+  try { panelAuth.ensure(cfg); } catch (e) { logErr('[panel] 初始化登录状态失败: ' + e.message); }
   admin.setUpstreamModels(ch => fetchUpstreamModels(cfg, ch));
   admin.setSyncFn(() => syncModels(cfg));
   admin.setBalanceFn((c, ch, cb) => fetchChannelBalance(c, ch, cb));
@@ -510,7 +510,7 @@ function startServer(cfg, opts = {}) {
   setupProbe(cfg);
   if (rt.PLUGINS) { try { rt.PLUGINS.activateInstance(cfg._name || 'default', cfg, makeGatewayApi(cfg)); } catch (e) { logErr('[plugins] 激活失败: ' + e.message); } }
   cfg._stats = { startedAt: new Date().toISOString(), requests: 0, errors: 0, retries: 0, byChannel: {}, recent: [] };
-try { // cold-start restore (single-instance mode)
+try { // cold-start restore
     const sf = statsFlushFile(cfg);
     if (fs.existsSync(sf)) {
       const j = JSON.parse(fs.readFileSync(sf, 'utf8'));
@@ -530,8 +530,7 @@ try { // cold-start restore (single-instance mode)
   const host = opts.host || cfg.listen.host;
   const port = opts.port != null ? opts.port : cfg.listen.port;
 
-  // check whether a TLS certificate is usable
-  let tlsCfg = null;
+  let tlsCfg = null;  // populated only when TLS is on and the certificate actually loads
   if (cfg.tls && cfg.tls.enable) {
     const certPath = path.isAbsolute(cfg.tls.cert) ? cfg.tls.cert : path.join(path.dirname(cfg._configFile || process.cwd()), cfg.tls.cert);
     const keyPath = path.isAbsolute(cfg.tls.key) ? cfg.tls.key : path.join(path.dirname(cfg._configFile || process.cwd()), cfg.tls.key);
@@ -539,13 +538,13 @@ try { // cold-start restore (single-instance mode)
       tlsCfg = {
         cert: fs.readFileSync(certPath),
         key: fs.readFileSync(keyPath),
-        port: cfg.tls.port,
       };
     } catch (e) {
       logErr(`⚠ TLS 已启用但证书读取失败: ${e.message}`);
       logErr(`  cert: ${certPath}`);
       logErr(`  key:  ${keyPath}`);
       logErr(`  请先运行 ~/ai-gateway/gen-cert.sh 生成证书, 或在 config.json 中设置 "tls": {"enable": false}`);
+      logErr(`  (TLS 开启后该实例只在 listen.port 上提供 HTTPS, 不再有明文入口)`);
       logErr(`  本次将以纯 HTTP 模式启动`);
     }
   }
@@ -566,9 +565,8 @@ try { // cold-start restore (single-instance mode)
     });
   }
 
-// TLS mode: a separate tls.port -> HTTP + HTTPS dual-stack; otherwise pure HTTPS
-  const httpsPort = tlsCfg.port != null ? tlsCfg.port : port;
-  const dualMode = tlsCfg.port != null && tlsCfg.port !== port;
+  // TLS serves pure HTTPS on listen.port (tls.port is ignored: one entry per instance)
+  const httpsPort = port;
 
   return new Promise((resolve, reject) => {
     const results = { servers: [], ports: [], cfg };
@@ -582,7 +580,7 @@ try { // cold-start restore (single-instance mode)
       for (const [k, v] of Object.entries(cfg.proxies)) log(`  代理 ${k} = ${v.type}://${v.host}:${v.port}${v.username ? ' (带认证)' : ''}`);
     };
 
-    let pending = dualMode ? 2 : 1;
+    let pending = 1;
     const onReady = (server, p, scheme) => {
       results.servers.push(server);
       results.ports.push([p, scheme]);
@@ -590,7 +588,6 @@ try { // cold-start restore (single-instance mode)
     };
     const onErr = (e) => reject(e);
 
-// HTTPS server
     const httpsServer = https.createServer({ cert: tlsCfg.cert, key: tlsCfg.key }, handler);
     httpsServer.once('error', onErr);
     httpsServer.on('tlsClientError', (err) => log('[tls] 握手失败 :' + httpsPort + ' ' + (err.code || err.reason || '') + ' ' + String(err.message || '').slice(0, 120)));
@@ -598,18 +595,7 @@ try { // cold-start restore (single-instance mode)
       httpsServer.removeAllListeners('error');
       onReady(httpsServer, httpsServer.address().port, 'https');
     });
-
-// HTTP server (dual-stack mode)
-    if (dualMode) {
-      const httpServer = http.createServer(handler);
-      httpServer.once('error', onErr);
-      httpServer.listen(port, host, () => {
-        httpServer.removeAllListeners('error');
-        onReady(httpServer, httpServer.address().port, 'http');
-      });
-    }
   });
 }
-
 
 module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, rt, admin, state, GEMINI_RE, handleHttp, startServer };

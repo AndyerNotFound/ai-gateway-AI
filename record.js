@@ -9,14 +9,13 @@ const crypto = require('crypto');
 const os = require('os');
 const zlib = require('zlib');
 const { logErr, rpCompile, log, hdrName, utf8, safeParse, rpWalk, randId } = require('./util');
-const { dsmlDiag, makeDirectPipe, wrapDsmlClean, dsmlExtractCall, dsmlCleanText, dsmlPickCall } = require('./dsml');
+const { dsmlDiag, makeDirectPipe, dsmlExtractCall, dsmlCleanText, dsmlPickCall } = require('./dsml');
 const { ResponsesStreamParser, UpstreamStreamParser, SSEDecoder, responsesRespToCanonical, makeResponsesWriter, makeWriter, canonicalToResponsesResp, canonicalToOpenAIResp, canonicalToClaudeResp, canonicalToGeminiResp, responsesToCanonical } = require('./convert');
 const { UP_RESP, TO_CANON, buildRequestForChannel, SAME_RETRYABLE, BUILD_BODY } = require('./sync');
-const { tokOf, sendError, corsHeaders, estPromptAdj, matchContextWindow, pickChannels, globMatch, forcedChannelName, analyzePrompt, calibRatio, calibUpdate, scaleDist, recordContext } = require('./router');
-const { wrapThinkingSummary, summarizeReasoningText, truncateReasoning, upstreamRequest, joinUrl } = require('./upstream');
+const { tokOf, sendError, corsHeaders, pickChannels, globMatch, forcedChannelName, analyzePrompt, calibRatio, calibUpdate, scaleDist } = require('./router');
+const { upstreamRequest, joinUrl } = require('./upstream');
 const { respRedactOn, wrapRedactWriter, redactText, redactDeep } = require('./redact');
 const { isConnErr, makeFreshAgents } = require('./proxy');
-const ctxp = require('./ctxp');
 
 // ================= Request recording / token stats =================
 /* ================= Request recording (config.record: {enable, server, maxChars}) ================= */
@@ -68,9 +67,9 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
   const chTrans = ch && ch.transcreet ? String(ch.transcreet).toLowerCase() : '';
   const dsmlOn = chTrans === 'off' ? false : (chTrans ? true : !!(cfg.dsmlClean && cfg.dsmlClean.enable));        // 内置 DSML 标记清洗(默认开)
   const dsmlThink = chTrans === 'on' ? true : (chTrans === 'off' || chTrans === 'res-only') ? false : !!(cfg.dsmlClean && cfg.dsmlClean.reasoning); // 思考字段是否也清
-/* *DSML scrubbing only applies to responses parseable as events: SSE streams and non-streaming JSON.
-   *   Gemini's JSON-array stream (content-type: application/json) is not parsed -- parsing would require buffering the whole body,
-   *   it would degrade "stream-as-you-go" into "collect-then-send" (killing the typewriter effect). That path stays untouched. */
+/* SSE streams are never cleaned: no DSML scrubbing, no per-event rewriting.  The stream
+   *   is forwarded byte-for-byte (same format) or converted event-by-event.  DSML cleaning
+   *   remains available for non-streaming JSON only, where the whole body is already in hand. */
 /* Backfill gate: restore a textual call into a structured one only when the function name matches a tool the client declared this round */
   const dsmlBackfill = !!(cfg.dsmlClean && cfg.dsmlClean.backfill);
   const dsmlToolNames = (() => {
@@ -85,7 +84,8 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
     onDiag: (rec) => dsmlDiag(cfg, Object.assign({ ch: ch.name, model: canonical && canonical.model, fmt: clientFormat, stream: !!stream, direct: !!direct }, rec)),
   };
   const ctSse = /event-stream/i.test(String(upRes.headers['content-type'] || ''));
-  const dsmlPipe = dsmlOn && (ctSse || !stream);
+  const dsmlPipe = dsmlOn && !stream;   // stream-process cleaning removed: never rewrite SSE
+  const rewritePipe = !!(rpInc.length || dsmlPipe || (stream && ctSse));   // SSE forwarding still uses the event pipe (no cleaning)
   const isResponsesUp = ch.type === 'openai' && upApi === 'responses';
 
 /* **Unified settlement + finalization hardening (2026-09-18, same origin as ai-gateway-core)
@@ -160,7 +160,16 @@ function handleUpstreamResponse(cfg, ch, clientFormat, clientApi, canonical, bod
         } catch (_) {}
       });
 const u8 = utf8();   /* *chunk-safe decoding (2026-09-18) */
-      upRes.on('data', c => { try { dec.push(u8(c)); } catch (_) {} });
+      let convPaused = false;
+      upRes.on('data', c => {
+        if (convPaused) return;
+        try { dec.push(u8(c)); } catch (_) {}
+        if (res.writableNeedDrain) {
+          convPaused = true;
+          upRes.pause();
+          res.once('drain', () => { convPaused = false; try { upRes.resume(); } catch (_) {} });
+        }
+      });
       upRes.on('end', () => {
         try {
           dec.end(); parser.finish();
@@ -172,9 +181,9 @@ const u8 = utf8();   /* *chunk-safe decoding (2026-09-18) */
         } catch (e) { logErr('[stream] 结算失败，仍强制给下游收尾:', e.message); }
 /* *When a rewrite pipe exists (inc replacement / DSML scrubbing), finalization belongs to the pipe -- it must flush the trailing partial line and the state machine residue first;
          *   calling res.end() here turns later pipe writes into write-after-end (trailing bytes were lost, observed 2026-10-15). */
-        if (!rpInc.length && !dsmlPipe) { try { res.end(); } catch (_) {} }
+        if (!rewritePipe) { try { res.end(); } catch (_) {} }
       });
-      upRes.on('error', (e) => { if (!rpInc.length && !dsmlPipe) { try { res.end(); } catch (_) {} } __settle(502, '上游流中断(' + e.message + ')'); });
+      upRes.on('error', (e) => { if (!rewritePipe) { try { res.end(); } catch (_) {} } __settle(502, '上游流中断(' + e.message + ')'); });
     } else {
       const chunks = [];
       upRes.on('data', c => chunks.push(c));
@@ -185,7 +194,7 @@ const u8 = utf8();   /* *chunk-safe decoding (2026-09-18) */
           usageCapture.input = cr.usage.input; usageCapture.output = cr.usage.output;
           usageCapture.cached = cr.usage.cached || 0; usageCapture.reasoning = cr.usage.reasoning || 0;
           try {
-            const __cpt = Math.max(1, Number((cfg.contextLimit || {}).charsPerToken) || 4);
+            const __cpt = Math.max(1, Number(cfg.charsPerToken) || 4);
             const __tok = (t) => tokOf(t, __cpt);
             ctx.respDist.reasoning = __tok(cr.reasoning);
             ctx.respDist.text = __tok(cr.text);
@@ -196,17 +205,28 @@ const u8 = utf8();   /* *chunk-safe decoding (2026-09-18) */
       });
       upRes.on('error', (e) => { try { res.end(); } catch (_) {} __settle(502, '上游中断(非流式): ' + e.message); });
     }
-/* *DSML scrubbing only applies to responses parseable as events: SSE streams and non-streaming JSON (conditions at the top of dsmlPipe). */
-    if (rpInc.length || dsmlPipe) {
+/* SSE streams keep the event-level forwarding pipe (framing, tolerant decode, [DONE]);
+     * DSML scrubbing is non-stream only, so dsmlPipe is false here for streams. */
+    if (rewritePipe) {
 /* Unified rewrite pipe (2026-10-15): inc text replacement + built-in DSML markup scrubbing
        *   - rewrites line by line; lines that need no rewrite pass through verbatim (same-format passthrough stays as lossless as possible);
        *   - the DSML state machine is isolated per field, touching only content/text and reasoning_content/reasoning/thinking;
        *   - finalization (trailing partial line + state-machine residue) and res.end() both live inside the pipe; see makeDirectPipe. */
-      const pipe = makeDirectPipe(res, rpInc, dsmlPipe, dsmlThink, stream, dsmlOpts);
+      const pipe = makeDirectPipe(res, rpInc, dsmlPipe, dsmlThink, stream, Object.assign({}, dsmlOpts, { isSSE: ctSse, appendDone: clientFormat === 'openai' }));
       let upEnded = false;
       const finishPipe = () => { if (upEnded) return; upEnded = true; try { pipe.end(); } catch (_) {} };
       __forceEnd = () => finishPipe();
-      upRes.on('data', c => pipe.push(c));
+      let pipePaused = false;
+      upRes.on('data', c => {
+        if (pipePaused) return;
+        let ok = true;
+        try { ok = pipe.push(c); } catch (_) {}
+        if (ok === false) {
+          pipePaused = true;
+          upRes.pause();
+          res.once('drain', () => { pipePaused = false; try { upRes.resume(); } catch (_) {} });
+        }
+      });
       upRes.on('end', finishPipe);
       upRes.on('close', finishPipe);                          // ★上游连接被重置/掐断(没发 end) → 强制在管道内收尾, 下游不再悬挂
       upRes.on('error', (e) => { __settle(502, '上游中断(改写管道): ' + e.message); finishPipe(); });   // 错误也走管道收尾(补 [DONE]), 不提前 res.end()
@@ -238,15 +258,14 @@ const u8 = utf8();   /* *chunk-safe decoding (2026-09-18) */
       return;
     }
     const baseWriter = (clientFormat === 'openai' && clientApi === 'responses') ? makeResponsesWriter(res, canonical.model) : makeWriter(clientFormat, res, canonical.model, { geminiArray: isArrayStream });
-/* DSML scrubbing sits innermost (right against the writer): content/thinking are already clean before being converted to the client format,
-     * internal markup is never fed to the thinkingSummary model either. */
-    let writer = wrapThinkingSummary(dsmlOn ? wrapDsmlClean(baseWriter, true, dsmlThink, dsmlOpts) : baseWriter, cfg.thinkingSummary, ch, cfg);
+/* Streaming path: no cleaning stage.  Format conversion and optional privacy filtering only. */
+    let writer = baseWriter;
     if (respRedactOn(cfg, urlInfo)) writer = wrapRedactWriter(writer, cfg.redact && cfg.redact.extra);
 // Response-side token distribution counter (side channel; counts only; ctx.respDist declared at the top of handleChat)
     const __origOnEvent = writer.onEvent.bind(writer);
     writer.onEvent = (ev) => {
       try {
-        const cpt = Math.max(1, Number((cfg.contextLimit || {}).charsPerToken) || 4);
+        const cpt = Math.max(1, Number(cfg.charsPerToken) || 4);
         if (ev.type === 'reasoning') ctx.respDist.reasoning += tokOf(ev.t);
         else if (ev.type === 'text') ctx.respDist.text += tokOf(ev.t);
         else if (ev.type === 'tool_start') ctx.respDist.tool += tokOf(ev.name) + 8;
@@ -264,7 +283,16 @@ const u8 = utf8();   /* *chunk-safe decoding (2026-09-18) */
       try { parser.handle(JSON.parse(data)); } catch (e) { logErr('bad SSE data (first 200 chars):', String(data).slice(0, 200)); }
     });
 const u8 = utf8();   /* *chunk-safe decoding (2026-09-18) */
-    upRes.on('data', c => { try { dec.push(u8(c)); } catch (_) {} });
+    let convPaused = false;
+    upRes.on('data', c => {
+      if (convPaused) return;
+      try { dec.push(u8(c)); } catch (_) {}
+      if (res.writableNeedDrain) {
+        convPaused = true;
+        upRes.pause();
+        res.once('drain', () => { convPaused = false; try { upRes.resume(); } catch (_) {} });
+      }
+    });
     let upStreamDone = false;
     const upStreamFinal = () => {
       if (upStreamDone) return; upStreamDone = true;
@@ -314,12 +342,6 @@ if (dsmlOn) {   /* non-streaming: scrub the whole text at once (final=true: uncl
           }
           if (dsmlThink && typeof cresp.reasoning === 'string') cresp.reasoning = dsmlCleanText(cresp.reasoning);
         } catch (e) { logErr('[dsml] 非流式清洗失败:', e.message); }
-      }
-      if (cfg.thinkingSummary && cfg.thinkingSummary.enable && cresp.reasoning) {
-        try {
-          if (cfg.thinkingSummary.mode === 'summarize') { const s = await summarizeReasoningText(cresp.reasoning, cfg.thinkingSummary, ch, cfg); if (s) cresp.reasoning = s; }
-          else cresp.reasoning = truncateReasoning(cresp.reasoning, cfg.thinkingSummary.maxCharsPerSegment);
-        } catch (e) { logErr('[thinkingSummary] 非流式精简失败:', e.message); }
       }
 if (respRedactOn(cfg, urlInfo)) {   // response-direction filter (non-streaming): content/thinking/tool args
         try {
@@ -379,54 +401,8 @@ if (urlInfo.stream) canonical.stream = true; // gemini: the streaming flag lives
 // Card-level privacy overrides are applied earlier (inside redactDeep, ~line 2250); not repeated here
 
 
-// Hard context limit: block on the estimate up front rather than wasting a trip upstream (soft limit only tints the indicator, never blocks)
-  const cl = cfg.contextLimit || { soft: 80, hard: 0, charsPerToken: 2 };
-  if (cl.hard > 0) {
-    const win = matchContextWindow(cfg, canonical.model);
-    if (win > 0) {
-      const est = estPromptAdj(cfg, canonical.model, canonical).total;
-      const limit = Math.floor(win * cl.hard / 100);
-      if (est > limit) {
-        log('[ctx] 拒收超限请求 model=' + canonical.model + ' est=' + est + ' limit=' + limit + ' win=' + win);
-        stats.errors++;
-        return sendError(clientFormat, res, 400,
-          '上下文超出硬上限: 估算 ' + est + ' tokens > 上限 ' + limit + ' (窗口 ' + win + ' × ' + cl.hard + '%)。估算: 中日韩 1 字/token, 其他 ' + cl.charsPerToken + ' 字符/token, 可在设置里调。');
-      }
-    }
-  }
-
   const candidates = pickChannels(cfg, canonical.model, forcedChannelName(cfg, req));
   if (!candidates.length) return sendError(clientFormat, res, 503, 'no channel configured in config.json');
-
-// Global context limit (ctxp): model-name globs; max blocks / warn sends a TermuxBridge notification (5-min throttle)
-  // channel-level ch.ctxp overrides the mode (force/warn/none) and limits scope via models (* wildcard supported)
-  {
-    const __cand = candidates[0] && candidates[0].ch;
-    const __cctx = __cand && __cand.ctxp;
-    const __mode = (__cctx && __cctx.mode) || cfg.ctxpMode || 'force';
-    const __scoped = !!(__cctx && Array.isArray(__cctx.models) && __cctx.models.length);
-    const __inScope = !__scoped || __cctx.models.some(p => p === '*' || globMatch(p, canonical.model));
-    const __fresh = ctxp.loadRulesIfChanged();
-    if (__fresh !== undefined) cfg._ctxpRules = __fresh;
-    else if (!cfg._ctxpRules) cfg._ctxpRules = ctxp.loadRules();
-    if (__inScope && __mode !== 'none' && cfg._ctxpRules && Object.keys(cfg._ctxpRules).length) {
-      const __hit = ctxp.matchRule(cfg._ctxpRules, canonical.model);
-      if (__hit) {
-        const __rule = __hit.rule;
-        const __mx = Math.max(0, Number(__rule.max) || 0), __wn = Math.max(0, Number(__rule.warn) || 0);
-        if (__mx > 0 || __wn > 0) {
-          const __estC = estPromptAdj(cfg, canonical.model, canonical).total;
-          if (__mode === 'force' && __mx > 0 && __estC > __mx) {
-            log('[ctxp] 拒收超限请求 model=' + canonical.model + ' est=' + __estC + ' max=' + __mx + ' (rule ' + __hit.pattern + ')');
-            stats.errors++;
-            return sendError(clientFormat, res, 400,
-              '上下文超出全局上限: 估算 ' + __estC + ' tokens > max ' + __mx + ' (规则: ' + __hit.pattern + ')');
-          }
-          if (__wn > 0 && __estC > __wn) ctxp.fireWarn(__hit.pattern, __rule, canonical.model, __estC).catch(() => {});
-        }
-      }
-    }
-  }
 
   stats.requests++;
 // Request recording (optional, off by default): wraps res.write/res.end to capture what was actually sent to the client
@@ -530,13 +506,12 @@ const respDist = { reasoning: 0, text: 0, tool: 0 }; // response-side distributi
           cfg._keyUsageDirty = true;
         }
         // Some reverse-proxy channels never send usage: fall back to the local estimate, otherwise the ball's context ring never moves
-        const __cpt = Math.max(1, Number((cfg.contextLimit || {}).charsPerToken) || 4);
+        const __cpt = Math.max(1, Number(cfg.charsPerToken) || 4);
         const __raw = analyzePrompt(canonical, __cpt);
         const __est = !usageCapture.input;
         const __inTok = usageCapture.input || Math.round(__raw.total * calibRatio(cfg, canonical.model));
 calibUpdate(cfg, canonical.model, usageCapture.input, __raw.total); // self-calibration EMA (real/estimated)
 const __pd = scaleDist(__raw.dist, __raw.total, usageCapture.input); // normalize to input when real usage exists
-        recordContext(cfg, canonical.model, __inTok, usageCapture.output, ch.name, __est, { cached: usageCapture.cached || 0, dist: __pd });
 // ===== Token distribution + daily/byModel accumulation (2026-10-27) =====
         try {
           const __rd = respDist || { reasoning: 0, text: 0, tool: 0 };
@@ -654,7 +629,8 @@ const __pd = scaleDist(__raw.dist, __raw.total, usageCapture.input); // normaliz
 // * Responses passthrough downgrade (2026-10-16): when a client's /v1/responses passes through to upstream /v1/responses,
 //   upstream replies 404/405 (that upstream has no Responses endpoint, e.g. old vLLM/some relays) -> automatically resend as
 //   /v1/chat/completions (same channel) and converts the response back to responses format. Each channel degrades at most once.
-      if (clientApi === 'responses' && built.direct && ch.type === 'openai'
+//   Channels with a locked `path` never downgrade: the path is an explicit contract and must not be silently changed.
+      if (clientApi === 'responses' && built.direct && ch.type === 'openai' && !ch.path
           && (upRes.statusCode === 404 || upRes.statusCode === 405)) {
         ctx.respDg = ctx.respDg || {};
         if (!ctx.respDg[ch.name]) {
@@ -731,4 +707,4 @@ upRes.resume(); // discard the original 404/405 body
   tryNext();
 }
 
-module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, ctxp, instName, writeRequestRecord, postRequestRecord, handleUpstreamResponse, handleChat };
+module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, instName, writeRequestRecord, postRequestRecord, handleUpstreamResponse, handleChat };

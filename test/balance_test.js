@@ -12,6 +12,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const G = require('../gateway.js');
+const { utf8 } = require('../util.js');
+const u8 = utf8();
 const adminMod = require('../admin.js');
 
 let pass = 0, fail = 0;
@@ -23,7 +25,7 @@ function get(port, p, headers = {}) {
   return new Promise((resolve, reject) => {
     const req = http.request({ host: '127.0.0.1', port, path: p, method: 'GET', headers }, res => {
       let raw = '';
-      res.on('data', c => raw += c);
+      res.on('data', c => raw += u8(c));
       res.on('end', () => { let j = null; try { j = JSON.parse(raw); } catch (_) {} resolve({ status: res.statusCode, raw, json: j }); });
     });
     req.on('error', reject);
@@ -57,7 +59,7 @@ function fakeRes() {
   o.json = () => { try { return JSON.parse(o.body); } catch (_) { return null; } };
   return o;
 }
-const fakeReq = () => ({ method: 'GET', headers: {}, on() {}, destroy() {} });
+const fakeReq = () => ({ method: 'GET', headers: { 'x-agw-token': 'test-admin' }, on() {}, destroy() {} });
 // handleAdmin's balance branch is callback-style (the response is written only after the upstream query) -> tests must wait for the response to land before asserting
 async function waitRes(res, ms = 4000) {
   const t0 = Date.now();
@@ -95,6 +97,7 @@ function readCfg(file) {
   fs.writeFileSync(tmpCfg, JSON.stringify({
     listen: { host: '127.0.0.1', port: 0 },
     gatewayKey: '',
+    webToken: 'test-admin',
     proxies: { dead: { type: 'socks5', host: '127.0.0.1', port: 1 } },
     apiKeys: [
       { key: 'sk-card-all', name: '无绑定', enable: true, quotaTokens: 0, usedTokens: 0 },
@@ -136,6 +139,7 @@ function readCfg(file) {
 /* ============ 4. Client endpoints (OpenAI semantics) ============ */
   console.log('── Part 4: /v1/dashboard/billing/* ──');
   const cfgE2E = readCfg(tmpCfg);
+  cfgE2E._configFile = tmpCfg;
   const gw = await G.startServer(cfgE2E, { port: 0 });
   const port = gw.port;
   const H = { Authorization: 'Bearer sk-card-all' };
@@ -231,18 +235,18 @@ function readCfg(file) {
   const reloads = [];
   adminMod.setPool({ reload: (n) => reloads.push(n) });
   const res1 = fakeRes();
-  await adminMod.handleAdmin({}, fakeReq(), res1, new URL('http://x/admin/api/balance/default/relay-custom'), '/admin/api/balance/default/relay-custom', '');
+  await adminMod.handleAdmin(lc, fakeReq(), res1, new URL('http://x/admin/api/balance/default/relay-custom'), '/admin/api/balance/default/relay-custom', '');
   await waitRes(res1);
   eq(res1.status, 200, 'admin 余额路由 200');
   eq(res1.json() && String(res1.json().balance), '42.50', 'admin 余额路由取值');
   const res2 = fakeRes();
-  await adminMod.handleAdmin({}, fakeReq(), res2, new URL('http://x/admin/api/balance/default/relay-plain'), '/admin/api/balance/default/relay-plain', '');
+  await adminMod.handleAdmin(lc, fakeReq(), res2, new URL('http://x/admin/api/balance/default/relay-plain'), '/admin/api/balance/default/relay-plain', '');
   await waitRes(res2);
   eq(res2.status, 400, 'admin 余额路由: 无预设 → 400');
 // Old panels (unaware of the balance trio) saving a channel -> the fields must be preserved
   const res3 = fakeRes();
   const bodyOld = JSON.stringify({ name: 'relay-custom', type: 'openai', baseUrl: `http://127.0.0.1:${up.port}`, proxy: '-', models: ['m2'], apiKey: '', default: true, useResponses: false, probe: false });
-  await adminMod.handleAdmin({}, { method: 'POST', headers: {}, on() {} }, res3, new URL('http://x/admin/api/channel/default'), '/admin/api/channel/default', bodyOld);
+  await adminMod.handleAdmin(lc, { method: 'POST', headers: { 'x-agw-token': 'test-admin' }, on() {} }, res3, new URL('http://x/admin/api/channel/default'), '/admin/api/channel/default', bodyOld);
   eq(res3.status, 200, '面板保存渠道 200');
   const afterSave = readCfg(tmpCfg).channels.find(c => c.name === 'relay-custom');
   eq(afterSave.balanceUrl, '/v1/user/info', '旧面板保存: balanceUrl 未被抹掉');
@@ -250,13 +254,13 @@ function readCfg(file) {
 // New panel submits an empty string = explicit clear
   const res4 = fakeRes();
   const bodyClear = JSON.stringify({ name: 'relay-custom', type: 'openai', baseUrl: `http://127.0.0.1:${up.port}`, models: ['m2'], apiKey: '', balanceUrl: '', balancePath: '', balanceUnit: '' });
-  await adminMod.handleAdmin({}, { method: 'POST', headers: {}, on() {} }, res4, new URL('http://x/admin/api/channel/default'), '/admin/api/channel/default', bodyClear);
+  await adminMod.handleAdmin(lc, { method: 'POST', headers: { 'x-agw-token': 'test-admin' }, on() {} }, res4, new URL('http://x/admin/api/channel/default'), '/admin/api/channel/default', bodyClear);
   const cleared = readCfg(tmpCfg).channels.find(c => c.name === 'relay-custom');
   eq(cleared.balanceUrl, undefined, '显式空串 = 清空 balanceUrl');
   eq(cleared.balanceUnit, undefined, '显式空串 = 清空 balanceUnit');
 // maskedChannels must return all three fields (otherwise the panel can neither see nor edit them)
   const res5 = fakeRes();
-  await adminMod.handleAdmin({}, fakeReq(), res5, new URL('http://x/admin/api/config/default'), '/admin/api/config/default', '');
+  await adminMod.handleAdmin(lc, fakeReq(), res5, new URL('http://x/admin/api/config/default'), '/admin/api/config/default', '');
   const cfgOut = res5.json();
   const chOut = cfgOut && cfgOut.channels && cfgOut.channels.find(c => c.name === 'relay-proxy');
   eq(chOut && chOut.balanceUrl, '/v1/user/info', '面板读取: 回传 balanceUrl');

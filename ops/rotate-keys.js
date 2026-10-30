@@ -26,6 +26,7 @@ const https = require('https');
 
 const ROOT = path.join(__dirname, '..');
 const crypt = require(path.join(ROOT, 'crypt.js'));
+const { utf8 } = require(path.join(ROOT, 'util.js'));
 const STATE_FILE = path.join(ROOT, 'data', '.keyrotation.json');
 const LOG_FILE = path.join(ROOT, 'data', 'log', 'keyrotation.log');
 const CA_FILE = path.join(ROOT, 'tls', 'ca.pem');
@@ -47,7 +48,7 @@ function resolveInst(name) {
   if (all.includes(name)) return name;
   const hit = all.find(x => x.toLowerCase() === String(name).toLowerCase());
   if (hit) return hit;
-  throw new Error(`实例 "${name}" 不存在。可用: ${all.join(', ')}`);
+  throw new Error(`Instance "${name}" not found. Available: ${all.join(', ')}`);
 }
 
 function cfgFileOf(inst) { return path.join(ROOT, 'data', inst === 'default' ? 'config.json' : `config.${inst}.json`); }
@@ -58,7 +59,7 @@ function loadCfg(inst) {
   let raw = fs.readFileSync(f, 'utf8');
   if (crypt.isEncText(raw)) {
     const p = crypt.loadPass();
-    if (!p) throw new Error('配置已加密但取不到口令');
+    if (!p) throw new Error('Config is encrypted but no passphrase found');
     raw = crypt.decryptText(raw, p);
   }
   const cfg = JSON.parse(raw);
@@ -92,7 +93,7 @@ function saveState(s) {
 
 function api(inst, method, apiPath, body) {
   const cfg = loadCfg(inst);
-  if (!cfg) return Promise.reject(new Error(`实例 ${inst} 不存在`));
+  if (!cfg) return Promise.reject(new Error(`Instance ${inst} not found`));
   const port = Number((cfg.listen || {}).port || 16384);
   const headers = { 'Content-Type': 'application/json' };
   if (cfg.webToken) headers['x-agw-token'] = cfg.webToken;
@@ -107,8 +108,9 @@ const viaHttps = useTls.enable && Number(useTls.port) === port; // TLS only when
 
   return new Promise((resolve, reject) => {
     const req = mod.request(opts, (res) => {
+      const u8 = utf8();
       let buf = '';
-      res.on('data', d => buf += d);
+      res.on('data', d => buf += u8(d));
       res.on('end', () => {
         let j = null; try { j = JSON.parse(buf); } catch (_) {}
         if (res.statusCode >= 400) return reject(new Error(`${method} ${apiPath} → ${res.statusCode} ${buf.slice(0, 200)}`));
@@ -132,7 +134,7 @@ function isActive(k, now) {
 async function cmdList(state) {
   for (const inst of listInstances()) {
     let cfg;
-    try { cfg = loadCfg(inst); } catch (e) { console.log(`${inst}: 读取失败 ${e.message}`); continue; }
+    try { cfg = loadCfg(inst); } catch (e) { console.log(`${inst}: read failed ${e.message}`); continue; }
     const keys = (cfg.apiKeys || []);
     const auto = keys.filter(k => String(k.name || '').startsWith(AUTO_PREFIX));
     const active = keys.filter(k => isActive(k, Date.now()));
@@ -142,14 +144,14 @@ async function cmdList(state) {
       inst.padEnd(32),
       String((cfg.listen || {}).port || '?').padEnd(6),
       gw.padEnd(20),
-      `key: ${keys.length} (有效 ${active.length}, auto ${auto.length})`
+      `key: ${keys.length} (valid ${active.length}, auto ${auto.length})`
     );
   }
 }
 
 async function rotateInstance(inst, state, apply) {
   const cfg = loadCfg(inst);
-  if (!cfg) { log(`跳过 ${inst}: 配置不存在`); return null; }
+  if (!cfg) { log(`Skipping ${inst}: config not found`); return null; }
   const now = Date.now();
   const list = await api(inst, 'GET', `/admin/api/keys/${encodeURIComponent(inst)}`);
   const keys = (list && list.keys) || [];
@@ -157,13 +159,13 @@ async function rotateInstance(inst, state, apply) {
   const activeAuto = auto.filter(k => isActive(k, now) && k.expiresAt === '');
 
   if (activeAuto.length && !flag('now')) {
-    log(`${inst}: 已有无过期时间的 auto key（${activeAuto.map(k => k.name).join(',')}），跳过`);
+    log(`${inst}: already has a non-expiring auto key (${activeAuto.map(k => k.name).join(',')}); skipping`);
     return null;
   }
 
   const name = `${AUTO_PREFIX}${new Date().toISOString().slice(0, 10)}`;
   if (!apply) {
-    log(`[dry-run] ${inst}: 将新建 ${name}，并把 ${auto.filter(k => !k.expiresAt).length} 个旧 auto key 的 expiresAt 设为 +${state.graceDays} 天`);
+    log(`[dry-run] ${inst}: would create ${name} and set ${auto.filter(k => !k.expiresAt).length} old auto keys' expiresAt to +${state.graceDays} days`);
     return { inst, name, dryRun: true };
   }
 
@@ -171,7 +173,7 @@ async function rotateInstance(inst, state, apply) {
     name, note: 'auto rotation', quotaTokens: 0, expiresAt: '',
   });
   const newKey = created && created.key && created.key.key;
-  if (!newKey) throw new Error(`${inst}: 创建密钥失败（响应无 key）`);
+  if (!newKey) throw new Error(`${inst}: key creation failed (no key in response)`);
 
   const exp = new Date(now + state.graceDays * 86400e3).toISOString();
   let demoted = 0;
@@ -186,7 +188,7 @@ async function rotateInstance(inst, state, apply) {
   const port = Number((cfg.listen || {}).port || 16384);
   await verifyKey(inst, port, newKey, cfg);
 
-  log(`${inst}: ✓ 已轮换 → ${name}，${demoted} 个旧 key 将于 ${exp.slice(0, 10)} 过期`);
+  log(`${inst}: ✓ rotated → ${name}; ${demoted} old keys expire on ${exp.slice(0, 10)}`);
   const outFile = path.join(ROOT, 'data', `.current-key-${inst}`);
   fs.writeFileSync(outFile, newKey + '\n', { mode: 0o600 });
   try { fs.chmodSync(outFile, 0o600); } catch (_) {}
@@ -204,7 +206,8 @@ function verifyKey(inst, port, key, cfg) {
   if (httpsPort) { opts.ca = fs.readFileSync(CA_FILE); opts.servername = 'localhost'; }
   return new Promise((resolve, reject) => {
     const req = mod.request(opts, (res) => {
-      let b = ''; res.on('data', d => b += d);
+      const u8 = utf8();
+      let b = ''; res.on('data', d => b += u8(d));
       res.on('end', () => res.statusCode === 200 ? resolve(true)
         : reject(new Error(`${inst}: 新 key 鉴权失败 ${res.statusCode} ${b.slice(0, 120)}`)));
     });

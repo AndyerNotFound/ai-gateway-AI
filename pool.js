@@ -16,13 +16,13 @@ const { loadConfig } = require('./config');
 const { setupProbe } = require('./upstream');
 const state = require('./state');
 const rt = require('./runtime');
+const panelAuth = require('./panel-auth');
 
-// ================= Multi-instance pool =================
-/* ================= Multi-instance pool (one process hosts all instances) ================= */
-// one process loads every config*.json in the directory:
-//   - the main port (default instance listen.port) routes /<instance>/ prefixes to that instance; prefix-less paths belong to default
-//   - each instance keeps listening on its original listen.port / tls.port (compatible with old clients; direct access needs no prefix)
-//   - config saves / instance create-delete-edit / start-stop all apply hot, no process restart
+// ================= Multi-instance pool (one process hosts every config*.json) =================
+//   - main port = default instance's listen.port, routes /<instance>/ prefixes; no prefix = default
+//   - plaintext instances keep their own compat port (old clients, no prefix needed)
+//   - TLS instances listen nowhere themselves: only the main port's HTTPS + /<instance>/ reaches them
+//   - config saves and instance create/rename/delete/start/stop all apply hot, no restart
 const INST_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
 // Reserved first path segments: never routed as an instance name (avoids clashing with API/admin endpoints)
 const RESERVED_PATHS = new Set(['v1', 'v1beta', 'v1alpha', 'admin', 'health', 'status', 'favicon.ico', 'robots.txt', 'credits', 'auth', 'plugins', 'user', 'dashboard']);
@@ -81,6 +81,7 @@ function createInstancePool(dir) {
     mainPort: 0,
     mainTlsPort: 0,
     mainHost: '0.0.0.0',
+    tlsOnly: new Set(),    // instances that listen nowhere themselves (reachable only via main port + /<name>/)
   };
   pool.reload = (name) => poolLoadInstance(pool, name);
   pool.removeInst = (name) => poolRemoveInstance(pool, name);
@@ -96,7 +97,7 @@ function readTlsCfg(cfg) {
   const certPath = path.isAbsolute(cfg.tls.cert) ? cfg.tls.cert : path.join(base, String(cfg.tls.cert || 'cert.pem'));
   const keyPath = path.isAbsolute(cfg.tls.key) ? cfg.tls.key : path.join(base, String(cfg.tls.key || 'key.pem'));
   try {
-    cfg._tlsCache = { cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath), port: cfg.tls.port };
+    cfg._tlsCache = { cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath) };
   } catch (e) {
     logErr('[pool] 实例 ' + instName(cfg) + ' TLS 证书读取失败(' + e.message + '), 该实例 HTTPS 端口跳过');
     return null;
@@ -104,39 +105,37 @@ function readTlsCfg(cfg) {
   return cfg._tlsCache;
 }
 
-// Compute the set of ports that should be listening: main port (default) + compat ports of enabled instances
+// Compute the desired port map. One entry per instance, never a plaintext twin:
+//   - default: a single listener on listen.port (HTTPS when tls.enable, else plaintext; tls.port is ignored)
+//   - a TLS instance: no listener of its own, only mainPort + /<name>/; a broken certificate fails closed
+//   - a plaintext instance: keeps its compat port
 function poolDesiredPorts(pool) {
   const d = new Map(); // key → { name, port, tls, tlsCfg, main }
+  pool.tlsOnly = new Set();
   const def = pool.instances.get('default');
   if (!def) return d;
   const mainPort = def.listen.port;
   pool.mainPort = mainPort;
   pool.mainTlsPort = 0;
+  const defWantsTls = !!(def.tls && def.tls.enable);
   const defTls = readTlsCfg(def);
-  if (defTls && (defTls.port == null || Number(defTls.port) === Number(mainPort))) {
-// Main port pure HTTPS (tls.port empty or equal to the main port)
+  if (defTls) {
     d.set('https:' + mainPort, { name: 'default', port: mainPort, tls: true, tlsCfg: defTls, main: true });
     pool.mainTlsPort = mainPort;
   } else {
     d.set('http:' + mainPort, { name: 'default', port: mainPort, tls: false, main: true });
-    if (defTls && defTls.port != null && defTls.port !== mainPort) {
-      d.set('https:' + defTls.port, { name: 'default', port: defTls.port, tls: true, tlsCfg: defTls, main: true });
-      pool.mainTlsPort = defTls.port;
-    }
+    if (defWantsTls) logErr('[pool] 主端口 ' + mainPort + ' 已开启 TLS 但证书读取失败 → 退回明文; 开启 TLS 的实例将无法访问');
   }
-// Compatibility ports of enabled instances (disabled instances get none)
+  // TLS instances never get their own port
   for (const [name, cfg] of pool.instances) {
     if (name === 'default' || cfg._disabled) continue;
-    const p = cfg.listen.port;
-    const tc = readTlsCfg(cfg);
-// Same-port pure HTTPS: tls.port empty, or explicitly equal to listen.port
-    const pureHttps = !!(tc && (tc.port == null || Number(tc.port) === Number(p)));
-    if (p && p !== mainPort && !d.has('http:' + p) && !d.has('https:' + p)) {
-      if (pureHttps) d.set('https:' + p, { name, port: p, tls: true, tlsCfg: tc });
-      else d.set('http:' + p, { name, port: p, tls: false });
+    if (cfg.tls && cfg.tls.enable) {
+      pool.tlsOnly.add(name);
+      if (!readTlsCfg(cfg)) logErr('[pool] 实例 ' + name + ' 已开启 TLS 但证书读取失败 → 不监听自身端口(仅经主端口访问)');
+      continue;
     }
-    if (!pureHttps && tc && tc.port != null && tc.port !== mainPort && !d.has('http:' + tc.port) && !d.has('https:' + tc.port))
-      d.set('https:' + tc.port, { name, port: tc.port, tls: true, tlsCfg: tc });
+    const p = cfg.listen.port;
+    if (p && p !== mainPort && !d.has('http:' + p) && !d.has('https:' + p)) d.set('http:' + p, { name, port: p, tls: false });
   }
   return d;
 }
@@ -219,6 +218,16 @@ function poolLoadInstance(pool, name) {
   const cfg = loadConfig(f);
   cfg._name = name;
   cfg._disabled = !!cfg.disabled;
+  try {
+    if (!old) panelAuth.ensure(cfg, name);
+    else {
+      const panelState = panelAuth.read(cfg, name);
+      if (panelState) cfg._panelAuth = panelState;
+      else panelAuth.init(cfg, name);
+      if (old._webSess) cfg._webSess = old._webSess;
+      if (old._webSessPend) cfg._webSessPend = old._webSessPend;
+    }
+  } catch (e) { logErr('[panel] 初始化实例 ' + name + ' 登录状态失败: ' + e.message); }
 loadKeyUsage(cfg); // read key card usage back
   // hot reload inherits the old cfg's usedTokens (keeps the larger value so user quotas never reset to zero)
   if (old && Array.isArray(old.apiKeys)) {
@@ -251,6 +260,7 @@ if (!old) { // cold start: restore history from data/stats-<inst>.json (fallback
 function poolLoadAll(pool, defaultCfg) {
   defaultCfg._name = 'default';
   defaultCfg._disabled = !!defaultCfg.disabled;
+  try { panelAuth.ensure(defaultCfg, 'default'); } catch (e) { logErr('[panel] 初始化 default 登录状态失败: ' + e.message); }
   defaultCfg._stats = { startedAt: new Date().toISOString(), requests: 0, errors: 0, retries: 0, byChannel: {}, recent: [] };
   setupStatsFlush(defaultCfg);
   pool.instances.set('default', defaultCfg);
@@ -260,7 +270,7 @@ function poolLoadAll(pool, defaultCfg) {
   try { files = fs.readdirSync(pool.dir); } catch (_) {}
   for (const f of files.sort()) {
     const m = /^config\.([A-Za-z0-9_-]{1,32})\.json$/.exec(f);
-    if (!m || pool.instances.has(m[1])) continue;
+    if (!m || m[1] === 'example' || pool.instances.has(m[1])) continue;
     try { poolLoadInstance(pool, m[1]); log('[pool] 实例 ' + m[1] + ' 已加载 (' + (pool.instances.get(m[1]).channels.length) + ' 渠道)'); }
     catch (e) { logErr('[pool] 实例 ' + m[1] + ' 配置加载失败: ' + e.message); }
   }
@@ -281,9 +291,17 @@ function poolRenameInstance(pool, oldName, newName) {
   pool.instances.delete(oldName);
   cfg._name = newName;
   cfg._configFile = path.join(pool.dir, 'config.' + newName + '.json');
+  try { panelAuth.ensure(cfg, newName); } catch (e) { logErr('[panel] 重命名后初始化登录状态失败: ' + e.message); }
   pool.instances.set(newName, cfg);
   poolReconcilePorts(pool);
   return true;
+}
+
+// A TLS instance must not be reachable over a plaintext listener (no silent downgrade)
+function tlsBlocked(pool, name, req) {
+  if (!pool.tlsOnly || !pool.tlsOnly.has(name)) return null;
+  if (req.socket && req.socket.encrypted) return null;
+  return { error: '实例 ' + name + ' 已开启 TLS: 只能通过主端口 HTTPS 的 /' + name + '/ 访问 (请给 default 也开启 TLS)', status: 400 };
 }
 
 // Request routing: compat ports bind directly by port; main port routes by /<instance>/ prefix; otherwise default
@@ -306,6 +324,8 @@ function poolRoute(pool, req, p) {
     const cfg = pool.instances.get(name);
     if (!cfg) return { error: '未知实例: ' + name + ' (可用实例: ' + [...pool.instances.keys()].join(', ') + ')', status: 404 };
     if (cfg._disabled) return { error: '实例已停用: ' + name, status: 503 };
+    const blk = tlsBlocked(pool, name, req);
+    if (blk) return blk;
     const rest = p.slice(name.length + 1) || '/';
     return { cfg, path: rest, name, via: 'path' };
   }
@@ -314,4 +334,4 @@ function poolRoute(pool, req, p) {
   return { cfg, path: p, name: 'default', via: 'default' };
 }
 
-module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, state, rt, INST_NAME_RE, RESERVED_PATHS, BILLING_PATHS, GENERIC_BALANCE_PATHS, setupModelSync, teardownModelSync, createInstancePool, readTlsCfg, poolDesiredPorts, poolReconcilePorts, poolHandler, statsFlushFile, flushStats, setupStatsFlush, poolLoadInstance, poolLoadAll, poolRemoveInstance, poolRenameInstance, poolRoute };
+module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, state, rt, INST_NAME_RE, RESERVED_PATHS, BILLING_PATHS, GENERIC_BALANCE_PATHS, setupModelSync, teardownModelSync, createInstancePool, readTlsCfg, poolDesiredPorts, poolReconcilePorts, poolHandler, statsFlushFile, flushStats, setupStatsFlush, poolLoadInstance, poolLoadAll, poolRemoveInstance, poolRenameInstance, poolRoute, tlsBlocked };

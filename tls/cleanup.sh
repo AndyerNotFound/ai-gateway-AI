@@ -16,14 +16,14 @@ id_of() { printf '%s' "$1" | sha256sum | awk '{print substr($1,1,16)}'; }
 
 add() {
   local p="$1" m="$2" id secs at
-  [ -z "${p:-}" ] && { echo "✗ 缺少路径"; exit 1; }
-  [ -e "$p" ] || { echo "✗ 文件不存在: $p"; exit 1; }
+  [ -z "${p:-}" ] && { echo "✗ Missing path"; exit 1; }
+  [ -e "$p" ] || { echo "✗ File not found: $p"; exit 1; }
   id="$(id_of "$p")"
   secs="$(awk -v m="$m" 'BEGIN{printf "%d", m*60}')"
   [ "$secs" -lt 1 ] && secs=1
   at=$(( $(date +%s) + secs ))
   printf '%s\n%s\n' "$p" "$at" > "$JOBDIR/$id.job"
-  log "安排删除 $p （${secs}s 后）"
+  log "Scheduled deletion of $p (in ${secs}s)"
   setsid nohup sh -c "sleep $secs; bash '$DIR/tls/cleanup.sh' sweep" >/dev/null 2>&1 9>&- &
   echo "$id"
 }
@@ -37,7 +37,7 @@ sweep() {
     { IFS= read -r p; IFS= read -r at; } < "$f"
     [ -z "$p" ] && { rm -f "$f"; continue; }
     if [ "${at:-0}" -le "$now" ]; then
-      if [ -e "$p" ]; then rm -f "$p" && { log "已删除 $p"; removed=$((removed+1)); }; fi
+      if [ -e "$p" ]; then rm -f "$p" && { log "Deleted $p"; removed=$((removed+1)); }; fi
       rm -f "$f"
     fi
   done
@@ -51,14 +51,14 @@ list_jobs() {
     [ -e "$f" ] || continue
     { IFS= read -r p; IFS= read -r at; } < "$f"
     left=$(( ${at:-0} - now )); [ $left -lt 0 ] && left=0
-    printf '  %-52s %s 后删除\n' "$p" "${left}s"; n=$((n+1))
+    printf '  %-52s deleted in %s\n' "$p" "${left}s"; n=$((n+1))
   done
-  [ $n -eq 0 ] && echo "  （没有排队中的任务）"
+  [ $n -eq 0 ] && echo "  (no queued jobs)"
 }
 
 cancel() {
   local p="$1" id; id="$(id_of "$p")"
-  if [ -f "$JOBDIR/$id.job" ]; then rm -f "$JOBDIR/$id.job"; log "取消删除 $p"; echo "✓ 已取消"; else echo "（没有这个任务）"; fi
+  if [ -f "$JOBDIR/$id.job" ]; then rm -f "$JOBDIR/$id.job"; log "Cancelled deletion of $p"; echo "✓ Cancelled"; else echo "(no such job)"; fi
 }
 
 case "${1:-}" in

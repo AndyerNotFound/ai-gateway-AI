@@ -101,23 +101,14 @@ const RETRYABLE = new Set([401, 403, 408, 409, 425, 429, 500, 502, 503, 504, 529
 // These conditions are "might recover shortly": retry on the same channel with backoff first, then switch after the budget
 const SAME_RETRYABLE = new Set([408, 429, 500, 502, 503, 504, 529]);
 
-// Whether OpenAI extended endpoints/passthrough are on (default on; only explicit enable:false turns them off) -- 2026-10-16
-function openaiExtrasOn(cfg) {
-  const oe = (cfg && cfg.openaiExtras) || {};
-  return oe.enable !== false;
-}
-
 // Whether OpenAI channels use the Responses API upstream
 //  - an explicit channel-level useResponses takes priority
-//  - Responses clients (/v1/responses) pass through to upstream /v1/responses by default (2026-10-16)
-//  - everything else (chat clients) follows the global upstreamResponses (default false)
+//  - Responses clients (/v1/responses) pass through to upstream /v1/responses by default
+//  - everything else (chat clients) uses the chat endpoint
 function chUsesResponses(cfg, ch, clientApi) {
   if (ch.type !== 'openai') return false;
-  if (!openaiExtrasOn(cfg)) return false;
-  const oe = cfg.openaiExtras || {};
   if (ch.useResponses !== undefined) return !!ch.useResponses;
-  if (clientApi === 'responses') return true;
-  return !!oe.upstreamResponses;
+  return clientApi === 'responses';
 }
 
 // Build the upstream request url / headers / body for a channel
@@ -125,44 +116,49 @@ function buildRequestForChannel(cfg, ch, clientFormat, clientApi, canonical, bod
   // when condensing is on, even same-format requests take the canonical conversion path (otherwise the passthrough pipe would bypass it);
 // When the client API (chat/responses) and upstream API (chat/responses) differ, the conversion hub is mandatory
   const upApi = chUsesResponses(cfg, ch, clientApi) ? 'responses' : 'chat';
-  const direct = clientFormat === ch.type && clientApi === upApi && !(cfg.thinkingSummary && cfg.thinkingSummary.enable) && !respRedactOn(cfg, urlInfo);
+  const direct = clientFormat === ch.type && clientApi === upApi && !respRedactOn(cfg, urlInfo);
   const stream = canonical.stream;
 const upstreamModel = canonical.model; // already rewritten by the caller to this channel's upstream model name
   let url, headers = {}, bodyBuf;
+  const lockedPath = ch.path || null;
   if (direct) {
     if (ch.type === 'openai') {
-      url = joinUrl(ch.baseUrl, upApi === 'responses' ? '/v1/responses' : '/v1/chat/completions');
+      url = joinUrl(ch.baseUrl, lockedPath || (upApi === 'responses' ? '/v1/responses' : '/v1/chat/completions'));
       body.model = upstreamModel;
       if (body && typeof body === 'object' && ch.maxTokens && body.max_tokens == null && body.max_completion_tokens == null) {
 body.max_tokens = Number(ch.maxTokens);   // *channel-level output cap (injected when absent): thinking models default low and run out of budget mid-markup (observed 2026-10-16)
       }
       headers.authorization = 'Bearer ' + ch.apiKey;
     } else if (ch.type === 'claude') {
-      url = joinUrl(ch.baseUrl, '/v1/messages');
+      url = joinUrl(ch.baseUrl, lockedPath || '/v1/messages');
       body.model = upstreamModel;
       headers['x-api-key'] = ch.apiKey;
       headers['anthropic-version'] = ch.anthropicVersion || req.headers['anthropic-version'] || '2023-06-01';
     } else {
       const action = stream ? 'streamGenerateContent' : 'generateContent';
-      url = joinUrl(ch.baseUrl, '/v1beta/models/' + encodeURIComponent(upstreamModel) + ':' + action) + (stream && urlInfo.altSse ? '?alt=sse' : '');
+      url = lockedPath
+        ? joinUrl(ch.baseUrl, lockedPath)
+        : joinUrl(ch.baseUrl, '/v1beta/models/' + encodeURIComponent(upstreamModel) + ':' + action) + (stream && urlInfo.altSse ? '?alt=sse' : '');
       headers['x-goog-api-key'] = ch.apiKey;
     }
     bodyBuf = Buffer.from(JSON.stringify(body));
   } else {
     const uc = { ...canonical, model: upstreamModel };
     if (ch.type === 'openai') {
-      url = joinUrl(ch.baseUrl, upApi === 'responses' ? '/v1/responses' : '/v1/chat/completions');
+      url = joinUrl(ch.baseUrl, lockedPath || (upApi === 'responses' ? '/v1/responses' : '/v1/chat/completions'));
 if (ch.maxTokens && uc.max_tokens == null && uc.max_completion_tokens == null) uc.max_tokens = Number(ch.maxTokens);   // *same as above: injected on the conversion path too
       bodyBuf = Buffer.from(JSON.stringify(upApi === 'responses' ? canonicalToResponsesBody(uc) : BUILD_BODY.openai(uc, { addUsage: ch.addUsage })));
       headers.authorization = 'Bearer ' + ch.apiKey;
     } else if (ch.type === 'claude') {
-      url = joinUrl(ch.baseUrl, '/v1/messages');
+      url = joinUrl(ch.baseUrl, lockedPath || '/v1/messages');
       bodyBuf = Buffer.from(JSON.stringify(BUILD_BODY.claude(uc)));
       headers['x-api-key'] = ch.apiKey;
       headers['anthropic-version'] = ch.anthropicVersion || '2023-06-01';
     } else {
       const action = stream ? 'streamGenerateContent' : 'generateContent';
-      url = joinUrl(ch.baseUrl, '/v1beta/models/' + encodeURIComponent(upstreamModel) + ':' + action) + (stream ? '?alt=sse' : '');
+      url = lockedPath
+        ? joinUrl(ch.baseUrl, lockedPath)
+        : joinUrl(ch.baseUrl, '/v1beta/models/' + encodeURIComponent(upstreamModel) + ':' + action) + (stream ? '?alt=sse' : '');
       bodyBuf = Buffer.from(JSON.stringify(BUILD_BODY.gemini(uc)));
       headers['x-goog-api-key'] = ch.apiKey;
     }
@@ -172,4 +168,4 @@ if (ch.maxTokens && uc.max_tokens == null && uc.max_completion_tokens == null) u
 }
 
 // Handle a successful upstream response (2xx): passthrough or cross-format conversion. Extracted from the original handleChat.
-module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, crypt, admin, TO_CANON, fetchUpstreamModels, _syncing, syncModels, UP_RESP, BUILD_BODY, RETRYABLE, SAME_RETRYABLE, openaiExtrasOn, chUsesResponses, buildRequestForChannel };
+module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, crypt, admin, TO_CANON, fetchUpstreamModels, _syncing, syncModels, UP_RESP, BUILD_BODY, RETRYABLE, SAME_RETRYABLE, chUsesResponses, buildRequestForChannel };

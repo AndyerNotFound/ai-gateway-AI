@@ -8,7 +8,8 @@ const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
 const zlib = require('zlib');
-const { log, randId, utf8, rpApplyText, safeParse, logErr } = require('./util');
+const { log, randId, utf8, rpApplyText, rpWalk, safeParse, logErr } = require('./util');
+const { SSEParser, serializeEvent, isDoneEvent, jsonish } = require('./sse');
 const { cfgDirOf } = require('./router');
 
 // ================= DSML tool-call parsing/scrubbing (formerly inlined in gateway.js) =================
@@ -111,6 +112,10 @@ function dsmlLooseParams(body) {
       const k = body.lastIndexOf('<', marks[i + 1].start);
       end = (k > marks[i].start) ? k : marks[i + 1].start;
     } else end = body.length;
+    const closeRe = /[<＜]\/(?:[^>＞]*[｜|])?parameter\s*[>＞]/ig;
+    closeRe.lastIndex = marks[i].start;
+    const cm = closeRe.exec(body);
+    if (cm && cm.index < end) end = cm.index;
     let v = body.slice(marks[i].start, end)
                   .replace(/<\/(?:[^>]*?)(?:parameter|invoke|tool_calls|calls)>/ig, '')
                   .trim();
@@ -178,6 +183,73 @@ function dsmlActive(st) { return !!(st && (st.pend || st.held || st.eat)); }
  *   pend  an unclassified tail (whitespace [+ half a closing tag]): dropped together if a block end like "</...calls>" follows
  *   polar = just exited a block, bailed out by an inner closing tag -- whitespace is deferred only in this phase (until it is clear whether this is a block end)
  */
+/* At EOF an unclosed "<..." tail may be a truncated DSML tag.  Any classifier that guesses
+ * from nearby words ("calls"/"invoke"/"parameter") eats ordinary prose such as
+ * "if n < 16 the parameter is ignored" -- the exact character-loss bug this pipeline must not
+ * reintroduce.  Only unmistakable markup prefixes are discarded here: DSML markers,
+ * bar-prefixed tags and closing tags.  A bare "<invoke"/"<tool_calls" at EOF is released as
+ * text, because it cannot be distinguished from prose; leaking a short tag fragment is
+ * strictly better than losing a sentence. */
+function dsmlOrphanIsMarkup(s) {
+  const t = String(s == null ? '' : s).replace(/^[<＜]/, '');
+  if (!t) return false;
+  if (/^[｜|]?DSML(?:[｜|]|\b)/i.test(t)) return true;
+  if (/^\/?[｜|](?:tool_calls|calls|invoke|parameter)\b/i.test(t)) return true;
+  if (/^\/(?:tool_calls|calls|invoke|parameter)\b/i.test(t)) return true;
+  return false;
+}
+
+/* A swallowed block at EOF is safe to discard only when nothing but markup tags
+ * and whitespace is left.  If ordinary prose remains ("x <invoke> y z"), releasing
+ * the whole tail is the only way to guarantee no character loss. */
+function dsmlOrphanPureMarkup(s) {
+  let t = String(s == null ? '' : s).replace(/^[<＜]/, '');
+  t = t.replace(/^\//, '').replace(/^[｜|]/, '');
+  const m = /^DSML[｜|]/i.exec(t);
+  if (m) t = t.slice(m[0].length);
+  if (t === '') return true;
+  return /^[A-Za-z][A-Za-z0-9_.:-]*(?:\s+[A-Za-z_:][-A-Za-z0-9_.:]*\s*=\s*(?:"[^"]*"|'[^']*'|[^\s]+))*\s*\/?\s*$/.test(t);
+}
+
+function dsmlPureMarkup(s) {
+  const t = String(s == null ? '' : s)
+    .replace(/<[^>]*>/g, '')
+    .replace(/＜[^＞]*＞/g, '')
+    .replace(/[<>＜＞｜|\s]/g, '');
+  return t === '';
+}
+
+/* Prose after the last DSML-family tag belongs to the client.  Do not anchor on
+ * arbitrary "<...>" spans: a sentence like "当 n < 16 且 m > 3 时" contains both
+ * brackets and would otherwise be mistaken for a tag. */
+function dsmlTagIsFamily(tag) {
+  const n = String(tag).replace(/＜/g, '<').replace(/＞/g, '>');
+  if (/(?:DSML|[｜|])/i.test(n)) return true;
+  return /^<\/?(?:invoke|parameter|tool_calls|calls)\b/i.test(n);
+}
+function dsmlTrailingProse(s) {
+  const t = String(s == null ? '' : s);
+  const re = /[<＜][^<>＜＞]*[>＞]/g;
+  let m, last = null;
+  while ((m = re.exec(t)) !== null) if (dsmlTagIsFamily(m[0])) last = m;
+  if (!last) return '';
+  const after = t.slice(last.index + last[0].length);
+  if (!after.trim()) return '';
+  const tag = last[0].replace(/＜/g, '<').replace(/＞/g, '>');
+  if (/^<(?!\/)(?:[^>]*[｜|])?parameter\b/i.test(tag)) return '';
+  return after;
+}
+
+/* A complete block is safe to drop only when it contains no ordinary text outside
+ * <parameter> elements (and outside an unclosed parameter value). */
+function dsmlBlockHasProse(block) {
+  let t = String(block == null ? '' : block);
+  t = t.replace(/[<＜](?!\/)(?:[^>＞]*[｜|])?parameter\b[^>＞]*[>＞][\s\S]*?[<＜]\/(?:[^>＞]*[｜|])?parameter\s*[>＞]/gi, '');
+  t = t.replace(/[<＜](?!\/)(?:[^>＞]*[｜|])?parameter\b[^>＞]*[>＞][\s\S]*$/i, '');
+  t = t.replace(/[<＜][^<>＜＞]*[>＞]/g, '').replace(/[<>＜＞｜|\s]/g, '');
+  return t !== '';
+}
+
 function dsmlFeed(st, s, final) {
   if (!st) return s == null ? '' : String(s);
   let out = '';
@@ -207,9 +279,12 @@ if (st.pool.length + st.held.length > DSML_BLOCK_MAX) {   // (3) fail open: put 
 if (st.canCall) {                                   // markup block inside content -> parse first (backfill needs it), then drop
         let cs = null;
         try { cs = dsmlParseCall(blockTxt); } catch (e) { dsmlMissDump('parse-throw', blockTxt, e && e.message); }
-        if (cs) st.call = (st.call || []).concat(cs);
-        else dsmlMissDump('block-unparsed', blockTxt, fb ? 'closed-by-</invoke>' : null);   // ★不静默丢: 留证
-      }
+        if (cs && !dsmlBlockHasProse(blockTxt)) st.call = (st.call || []).concat(cs);
+        else {
+          dsmlMissDump(cs ? 'block-prose-failopen' : 'block-unparsed', blockTxt, fb ? 'closed-by-</invoke>' : null);
+out += blockTxt;                                  // fail open: an unparseable block / a block with prose is never silently eaten
+        }
+} else out += blockTxt;                             // thinking fields never parse calls; keep their text
 buf = scoped.slice(m.index + m[0].length);          // drop the whole block (closing tag included)
       st.pool = ''; st.held = ''; st.openTag = ''; st.eat = null; st.polar = fb; pos = 0;
       if (fb) polarAt = out.length;
@@ -237,7 +312,11 @@ st.held = buf.slice(i);                                            // unclosed: 
     }
     const tag = buf.slice(i, j + 1);
 const isDsml = DSML_ANY_TAG.test(tag) || DSML_BAR_KEY.test(tag) || DSML_BLOCK_TAG.test(tag);   // *bare calls/invoke/parameter count as markup (prefer over-eating; markup must never leak to the client)
-    if (isDsml && tag.charAt(1) === '/') {                 // 孤立的块结束标记 → 连同它前面的空白一起丢
+    if (isDsml && (tag.charAt(1) === '/' || tag.charAt(1) === '／')) {   // 孤立的块结束标记 → 连同它前面的空白一起丢
+      const normTag = tag.replace(/＜/g, '<').replace(/＞/g, '>').replace(/／/g, '/');
+      if (!/^<\/(?:[^>]*[｜|][^>]*)?(?:tool_calls|calls|invoke|parameter)\s*>$/i.test(normTag)) {
+        out += pre + tag; pos = j + 1; continue;           // "</invoke 温度 >" is prose, not a closing tag
+      }
       out += st.polar ? pre.replace(/[ \t\r\n]+$/, '') : pre;
       pos = j + 1;
       continue;
@@ -258,22 +337,33 @@ pos = j + 1; continue;                                 // other stray DSML tags 
   }
 if (st.polar && polarAt >= 0 && /\S/.test(out.slice(polarAt))) st.polar = false; // non-whitespace emitted -> no longer in the "block-end phase"
   if (final) {
-if (st.eat) {                                          // (4) still inside a block at stream end (upstream truncated)
+if (st.eat) {                                          // (4) block still open at EOF: parse calls, drop pure markup, release prose
       const tail = (st.openTag || '') + st.pool + st.held;
 let cs = null;                                       // *never discard on truncation either: backfill whenever a call can be assembled (the main blank-output source among rare variants)
-      try { cs = dsmlParseCall(tail); } catch (_) {}
-      if (cs) st.call = (st.call || []).concat(cs);
-      else if (tail.trim()) dsmlMissDump('truncated-drop', tail, 'len=' + tail.length);
+      if (st.canCall) { try { cs = dsmlParseCall(tail); } catch (_) {} }
+      const prose = dsmlTrailingProse(tail);
+      const head = prose ? tail.slice(0, tail.length - prose.length) : tail;
+      const insideProse = dsmlBlockHasProse(head);
+      const hasProse = dsmlBlockHasProse(tail);
+      const hasParam = /[<＜](?!\/)(?:[^>＞]*[｜|])?parameter\b/i.test(head);
+      if (cs && !insideProse && (!prose || hasParam)) {
+        st.call = (st.call || []).concat(cs);
+        if (prose) out += prose;
+      } else if (tail.trim() && !hasProse) dsmlMissDump('truncated-drop', tail, 'len=' + tail.length);
+      else if (tail.trim()) {
+        out += tail;
+        dsmlMissDump('truncated-released', tail, 'len=' + tail.length);
+      }
       if (!st.warned) {
         st.warned = true;
-        try { log('[dsml] 流结束标记块仍未闭合(上游截断), ' + (cs ? '已尽力回填 ' + cs.length + ' 个调用' : '已丢弃 ' + tail.length + ' 字符')); } catch (_) {}
+        try { log('[dsml] 流结束标记块仍未闭合(上游截断), ' + (cs && !insideProse ? '已尽力回填 ' + cs.length + ' 个调用' : (hasProse ? '正文原样放行 ' + tail.length + ' 字符' : '已丢弃 ' + tail.length + ' 字符'))); } catch (_) {}
       }
       st.pool = ''; st.held = ''; st.pend = ''; st.eat = null; st.openTag = '';
     } else {
       const orphan = st.pend + st.held;
 /* *If the "unclosed tail" released at stream end belongs to the markup family (<...calls/invoke/parameter, or containing full/half-width bars), it must never be emitted as content --
        *   full-width '>' keeps a tag "unclosed" forever, leaking <| calls> verbatim to the client at finalization (user-confirmed 2026-10-16). */
-      if (orphan && /(?:<|＜)[^]{0,80}(?:calls|invoke|parameter)\b|(?:<|＜)[^]{0,40}[｜|＜]/.test(orphan)) {
+      if (orphan && dsmlOrphanIsMarkup(orphan) && dsmlOrphanPureMarkup(orphan)) {
         dsmlMissDump('orphan-tag-released', orphan, 'hex=' + Buffer.from(orphan, 'utf8').toString('hex').slice(0, 300));
 } else if (orphan) out += orphan;                    // an unclosed ordinary tail goes out as content (no loss)
       st.pend = ''; st.held = '';
@@ -311,84 +401,21 @@ function dsmlCleanRespObj(j, states, final, withReasoning) {
       const isThink = withReasoning && DSML_THINK_FIELD_RE.test(k);
       if (!isText && !isThink) continue;
       const st = states.get(p);
-      if (val.indexOf('<') < 0 && !dsmlActive(st)) continue;   // 快路径: 没 '<' 且状态空闲 → 不建状态、不解析
+      if (val.indexOf('<') < 0 && val.indexOf('＜') < 0 && !dsmlActive(st)) continue;   // 快路径: 没 '<' 且状态空闲 → 不建状态、不解析
       const s2 = st || dsmlNewState(isText);
-      if (!st) states.set(p, s2);
+      if (!st) { s2.think = !isText; states.set(p, s2); }
       const nt = dsmlFeed(s2, val, final);
       if (nt !== val) {
         changed = true;
 /* *If only whitespace remains after scrubbing (the whole delta was markup +/- newlines) -> drop the field entirely.
          *   keeping content:"" made clients insert an empty content segment between thinking and tool calls (reproduced 2026-10-16). */
-        if (nt.trim() === '' && p.indexOf('.delta.') >= 0) delete v[k];
+        if (nt === '' && p.indexOf('.delta.') >= 0) delete v[k];
         else v[k] = nt;
       }
     }
   };
   walk(j, '', 0);
   return changed;
-}
-/* Canonical-event-level scrubbing (cross-format conversion path): one state machine each for content/thinking; tool_* events pass through untouched */
-function wrapDsmlClean(writer, cleanText, cleanReasoning, opts) {
-  const toolNames = (opts && opts.toolNames) || null;
-  const onDiag = (opts && opts.onDiag) || null;
-  const stText = cleanText ? dsmlNewState(true) : null;
-  const stThink = cleanReasoning ? dsmlNewState(false) : null;
-  const stat = { reasoning: 0, content: 0, emptied: 0, blocks: 0, structured: 0, finishIn: null, finishOut: null, backfill: null, dsmlSeen: false, names: [] };
-  let pending = null, sawTool = false, diagDone = false;
-  const collect = (st) => {
-    if (st && st.call) {
-      stat.blocks += st.call.length;
-      for (const c of st.call) stat.names.push(c.name);
-      pending = (pending || []).concat(st.call);
-      st.call = null;
-    }
-  };
-  const feed = (st, t) => {
-    if (!st) return t == null ? '' : t;
-    if ((t == null || t === '') && !dsmlActive(st)) return t == null ? '' : t;
-    if (t && t.indexOf('<') < 0 && !dsmlActive(st)) return t;
-    return dsmlFeed(st, t, false);
-  };
-  return {
-    onEvent(ev) {
-      if (!ev) return;
-      if (ev.type === 'text') {
-        const raw = ev.t == null ? '' : String(ev.t);
-        if (raw && raw.indexOf('DSML') >= 0) stat.dsmlSeen = true;
-        const t = feed(stText, ev.t);
-        stat.content++;
-        if (t !== raw) stat.emptied++;
-        collect(stText);
-        if (t) writer.onEvent({ type: 'text', t });
-        return;
-      }
-      if (ev.type === 'reasoning') { stat.reasoning++; const t = feed(stThink, ev.t); if (t) writer.onEvent({ type: 'reasoning', t }); return; }
-      if (ev.type === 'tool_start' || ev.type === 'tool_delta') { sawTool = true; stat.structured++; writer.onEvent(ev); return; }
-      if (ev.type === 'end') {
-        const t = stText ? dsmlFeed(stText, '', true) : '';
-        collect(stText);
-        if (t) writer.onEvent({ type: 'text', t });
-        const r = stThink ? dsmlFeed(stThink, '', true) : '';
-        if (r) writer.onEvent({ type: 'reasoning', t: r });
-        stat.finishIn = ev.finish_reason || 'stop';
-if (pending && toolNames && !sawTool) {                     // *backfill
-          const pick = dsmlPickCall(pending, toolNames);
-          if (pick) {
-            writer.onEvent({ type: 'tool_start', i: 0, id: randId('call_dsml_'), name: pick.name });
-            writer.onEvent({ type: 'tool_delta', i: 0, s: pick.arguments });
-            if (!ev.finish_reason || ev.finish_reason === 'stop') ev.finish_reason = 'tool_calls';
-            stat.backfill = 'no-structured-call→tool_calls';
-          } else stat.backfill = 'parsed-call-not-in-declared-tools';
-        } else if (sawTool) stat.backfill = 'already-has-structured-call';
-        pending = null;
-        stat.finishOut = ev.finish_reason || 'stop';
-        if (!diagDone) { diagDone = true; if (onDiag) onDiag(stat); }
-        writer.onEvent(ev);
-        return;
-      }
-      writer.onEvent(ev);
-    },
-  };
 }
 /* Passthrough rewrite pipe (2026-10-15): carries both inc text replacement and built-in DSML scrubbing
  * *finalization (trailing partial line + state-machine residue) happens entirely inside this pipe: no bytes are lost even when the upstream's last line lacks a newline (the old res.end()-first version lost them).
@@ -419,25 +446,54 @@ fs.mkdirSync(path.dirname(dsmlDiagCache.file), { recursive: true });   // create
 function makeDirectPipe(res, rpInc, dsmlOn, dsmlThink, isStream, opts) {
   const u8 = utf8();
   const states = new Map();
-const toolNames = (opts && opts.toolNames) || null;   // tool names the client declared this round (backfill must match one)
+  const toolNames = (opts && opts.toolNames) || null;
   const onDiag = (opts && opts.onDiag) || null;
-  let buf = '', lastObj = null, closed = false, pending = null, sawDone = false, ring = [], wireLogged = false;
+  const isSSE = !!(opts && opts.isSSE != null ? opts.isSSE : isStream);
+  const appendDone = !(opts && opts.appendDone === false);
+  const cleanDSML = !!dsmlOn && !isStream;   // stream-process cleaning removed: never scrub a stream
+  let buf = '';
+  let lastObj = null;
+  let closed = false;
+  let finished = false;
+  let pending = null;
+  let sawDone = false;
+  let ring = [];
+  let wireLogged = false;
+  let lastWriteOk = true;
+  let claudeTextIdx = null;
+  let claudeThinkIdx = null;
+  let lastEventName = '';
+  let lastEventId = null;
   const stat = { reasoning: 0, content: 0, emptied: 0, blocks: 0, structured: 0, finishIn: null, finishOut: null, backfill: null, dsmlSeen: false, names: [] };
-  const anyActive = () => { for (const st of states.values()) if (dsmlActive(st)) return true; return false; };
-/* Synthesize a tool_calls chunk from the last chunk as a template and emit it */
-  const writeEvent = (deltaObj, ci) => {
-    try {
-      const t = lastObj ? JSON.parse(JSON.stringify(lastObj)) : { object: 'chat.completion.chunk', choices: [] };
-      delete t.usage;
-      t.choices = [{ index: ci || 0, delta: deltaObj, finish_reason: null }];
-      res.write('data: ' + JSON.stringify(t) + '\n\n');
-    } catch (_) {}
+
+  const write = (s) => {
+    if (finished || !s) return true;
+    try { lastWriteOk = res.write(s); } catch (_) { finished = true; lastWriteOk = true; }
+    return lastWriteOk;
   };
-  const emitCalls = (calls, ci) => {
+  const anyActive = () => { for (const st of states.values()) if (dsmlActive(st)) return true; return false; };
+  const clone = (o) => { try { return JSON.parse(JSON.stringify(o)); } catch (_) { return null; } };
+  const openaiShaped = () => !!(lastObj && Array.isArray(lastObj.choices));
+
+  const writeEventObj = (obj, ev, eventName) => {
+    const en = eventName || (ev && ev.event) || lastEventName;
+    const id = ev && ev.id != null ? ev.id : lastEventId;
+    write(serializeEvent({ event: en, id: id, retry: ev && ev.retry }, [JSON.stringify(obj)]));
+  };
+  const writeEventDelta = (deltaObj, ci, ev, finishReason) => {
+    if (!openaiShaped()) return;
+    const t = clone(lastObj);
+    if (!t) return;
+    delete t.usage;
+    t.choices = [{ index: ci || 0, delta: deltaObj, finish_reason: finishReason || null }];
+    writeEventObj(t, ev);
+  };
+  const emitCalls = (calls, ci, ev) => {
+    if (!openaiShaped()) { stat.backfill = stat.backfill || 'unsupported-format'; return; }
     for (let k = 0; k < calls.length; k++) {
       const c = calls[k];
-      writeEvent({ tool_calls: [{ index: k, id: randId('call_dsml_'), type: 'function', function: { name: c.name, arguments: '' } }] }, ci);
-      writeEvent({ tool_calls: [{ index: k, function: { arguments: c.arguments } }] }, ci);
+      writeEventDelta({ tool_calls: [{ index: k, id: randId('call_dsml_'), type: 'function', function: { name: c.name, arguments: '' } }] }, ci, ev);
+      writeEventDelta({ tool_calls: [{ index: k, function: { arguments: c.arguments } }] }, ci, ev);
     }
   };
   const collect = () => {
@@ -445,149 +501,235 @@ const toolNames = (opts && opts.toolNames) || null;   // tool names the client d
     for (const st of states.values()) if (st.call) { out = (out || []).concat(st.call); st.call = null; }
     if (out) { stat.blocks += out.length; for (const c of out) stat.names.push(c.name); pending = (pending || []).concat(out); }
   };
-  const lineOut = (line) => {
-    let out = rpInc.length ? rpApplyText(line, rpInc) : line;
-    if (dsmlOn && out.length >= 6 && out.slice(0, 6) === 'data: ') {
-      const bodyTxt = out.slice(6);
-      if (bodyTxt === '[DONE]') sawDone = true;
-ring.push(bodyTxt); if (ring.length > 12) ring.shift();   // *evidence ring: on truncation/orphan markup, persist the last few upstream payloads too
-/* *Wire sampling: the first upstream payload per stream containing calls/invoke/parameter is dumped raw + hex to disk --
-       *   captures the exact bytes of "markup the client could see" (full-width brackets / special prefixes and other variants), 2026-10-16 */
-      if (!wireLogged && bodyTxt.length < 3000 && /calls\b|invoke\b|parameter\b/i.test(bodyTxt)) {
-        wireLogged = true;
-        dsmlMissDump('wire-chunk-sample', bodyTxt, 'hex=' + Buffer.from(bodyTxt, 'utf8').toString('hex').slice(0, 500));
-      }
-/* *Fast path: parse JSON only on chunks that might contain markup or need structured-call decisions.
-       *   earlier versions only looked for '<' -> chunks carrying tool_calls/finish_reason were skipped, causing
-       *   gate failure (duplicate backfill) + the upstream's finish=stop going out first (observed 2026-10-16). */
-      if (bodyTxt !== '[DONE]' && (anyActive() || bodyTxt.indexOf('<') >= 0
-          || bodyTxt.indexOf('tool_calls') >= 0 || bodyTxt.indexOf('finish_reason') >= 0 || bodyTxt.indexOf('"usage"') >= 0)) {
-        const j = safeParse(bodyTxt);
-        if (j && typeof j === 'object') {
-          lastObj = j;
-          let dirty = false;
-          try { dirty = dsmlCleanRespObj(j, states, false, dsmlThink); } catch (_) {}
-          if (dirty) { stat.emptied++; if (/DSML/i.test(bodyTxt)) stat.dsmlSeen = true; }
-          collect();
-          const chs = Array.isArray(j.choices) ? j.choices : [];
-          for (let ci = 0; ci < chs.length; ci++) {
-            const ch = chs[ci] || {};
-            const d = ch.delta || {};
-            if (d && typeof d === 'object') {
-              if ('reasoning_content' in d || 'reasoning' in d) stat.reasoning++;
-              if ('content' in d) stat.content++;
-            }
-            if (Array.isArray(d.tool_calls) && d.tool_calls.length) stat.structured++;
-            if (ch.finish_reason) {
-              stat.finishIn = ch.finish_reason;
-if (pending && toolNames && !stat.structured) {          // *backfill: substitute a textual call only when the response has no structured one
-                const pick = dsmlPickCall(pending, toolNames);
-                if (pick) {
-                  try { emitCalls([pick], ci); } catch (_) {}
-                  if (ch.finish_reason === 'stop') { ch.finish_reason = 'tool_calls'; dirty = true; }
-                  stat.backfill = 'no-structured-call→tool_calls';
-                } else stat.backfill = 'parsed-call-not-in-declared-tools';
-              } else if (stat.structured) stat.backfill = 'already-has-structured-call';
-              pending = null;
-              stat.finishOut = ch.finish_reason;
-            }
-          }
-          if (dirty) {
-if (dsmlChunkPayloadEmpty(j)) return;                      // the whole chunk was scrubbed markup -> send nothing
-            out = 'data: ' + JSON.stringify(j);
-          }
-        }
+  const emitDeferred = (text, thinking, ev) => {
+    if (!text) return;
+    const last = lastObj;
+    if (last && Array.isArray(last.choices)) {
+      writeEventDelta(thinking ? { reasoning_content: text } : { content: text }, 0, ev);
+      return;
+    }
+    if (last && typeof last === 'object' && (last.type || claudeTextIdx != null || claudeThinkIdx != null)) {
+      const idx = thinking ? (claudeThinkIdx != null ? claudeThinkIdx : 0) : (claudeTextIdx != null ? claudeTextIdx : 0);
+      const delta = thinking ? { type: 'thinking_delta', thinking: text } : { type: 'text_delta', text: text };
+      writeEventObj({ type: 'content_block_delta', index: idx, delta: delta }, ev, 'content_block_delta');
+      return;
+    }
+    if (last && Array.isArray(last.candidates)) {
+      const part = thinking ? { text: text, thought: true } : { text: text };
+      writeEventObj({ candidates: [{ content: { role: 'model', parts: [part] }, index: 0 }] }, ev);
+      return;
+    }
+    write(serializeEvent({ event: (ev && ev.event) || lastEventName, id: (ev && ev.id) || lastEventId }, [JSON.stringify({ content: text })]));
+  };
+  const finishOf = (j) => {
+    if (!j || typeof j !== 'object') return null;
+    if (Array.isArray(j.choices)) {
+      for (let i = 0; i < j.choices.length; i++) {
+        const c = j.choices[i];
+        if (c && c.finish_reason) return { kind: 'openai', index: i, value: c.finish_reason, choice: c };
       }
     }
-    try { res.write(out + '\n'); } catch (_) {}
+    if (j.type === 'message_delta' && j.delta && j.delta.stop_reason) return { kind: 'claude', value: j.delta.stop_reason };
+    if (j.type === 'message_stop') return { kind: 'claude', value: 'stop' };
+    if (Array.isArray(j.candidates)) {
+      for (let i = 0; i < j.candidates.length; i++) {
+        const c = j.candidates[i];
+        if (c && (c.finishReason || c.finish_reason)) return { kind: 'gemini', index: i, value: c.finishReason || c.finish_reason };
+      }
+    }
+    return null;
   };
+  const flushStates = (ev) => {
+    const extra = [];
+    for (const st of states.values()) {
+      const t = dsmlFeed(st, '', true);
+      if (t) extra.push({ t: t, think: !!st.think });
+    }
+    collect();
+    for (const x of extra) emitDeferred(x.t, x.think, ev);
+  };
+  const wireSample = (bodyTxt) => {
+    if (wireLogged || !cleanDSML || bodyTxt.length >= 3000 || !/calls\b|invoke\b|parameter\b/i.test(bodyTxt)) return;
+    wireLogged = true;
+    dsmlMissDump('wire-chunk-sample', bodyTxt, 'hex=' + Buffer.from(bodyTxt, 'utf8').toString('hex').slice(0, 500));
+  };
+
+  const handleSSEEvent = (ev) => {
+    if (!ev) return;
+    if (!ev.dataLines || !ev.dataLines.length) { write(ev.raw || serializeEvent(ev, [])); return; }
+    if (isDoneEvent(ev)) { sawDone = true; return; }
+    lastEventName = ev.event || lastEventName;
+    if (ev.id != null) lastEventId = ev.id;
+    ring.push(ev.data); if (ring.length > 12) ring.shift();
+    wireSample(ev.data);
+    const j = safeParse(ev.data);
+    if (!j || typeof j !== 'object') {
+      if (ev.dataLines.length > 1) {
+        let each = true;
+        for (const l of ev.dataLines) { const t = l.trim(); if (t !== '' && t !== '[DONE]' && !jsonish(t)) { each = false; break; } }
+        if (each) {
+          for (const l of ev.dataLines) {
+            if (l.trim() === '') continue;
+            handleSSEEvent({ event: ev.event, data: l, dataLines: [l], id: ev.id, retry: ev.retry, raw: '' });
+          }
+          return;
+        }
+      }
+      const lines = rpInc.length ? ev.dataLines.map(l => rpApplyText(l, rpInc)) : ev.dataLines;
+      write(serializeEvent({ event: ev.event, id: ev.id, retry: ev.retry }, lines));
+      return;
+    }
+    lastObj = j;
+    if (j.type === 'content_block_start') {
+      const bt = j.content_block && j.content_block.type;
+      if (bt === 'text') claudeTextIdx = j.index;
+      else if (bt === 'thinking') claudeThinkIdx = j.index;
+    } else if (j.type === 'content_block_delta' && j.delta) {
+      if (j.delta.type === 'text_delta') claudeTextIdx = j.index;
+      else if (j.delta.type === 'thinking_delta') claudeThinkIdx = j.index;
+    }
+    if (cleanDSML && j.type === 'content_block_stop' && anyActive()) flushStates(ev);
+    let dirty = false;
+    if (rpInc.length) { try { rpWalk(j, rpInc, 0, true); dirty = true; } catch (_) {} }
+    let dsmlDirty = false;
+    if (cleanDSML) {
+      try { dsmlDirty = dsmlCleanRespObj(j, states, false, dsmlThink); } catch (_) {}
+      if (dsmlDirty) { stat.emptied++; if (/DSML/i.test(ev.data)) stat.dsmlSeen = true; }
+      collect();
+      const chs = Array.isArray(j.choices) ? j.choices : [];
+      for (let ci = 0; ci < chs.length; ci++) {
+        const ch = chs[ci] || {};
+        const d = ch.delta || {};
+        if (d && typeof d === 'object') {
+          if ('reasoning_content' in d || 'reasoning' in d) stat.reasoning++;
+          if ('content' in d) stat.content++;
+        }
+        if (Array.isArray(d.tool_calls) && d.tool_calls.length) stat.structured++;
+      }
+      const fin = finishOf(j);
+      if (fin && anyActive()) flushStates(ev);
+      if (fin) {
+        stat.finishIn = stat.finishIn || fin.value;
+        if (fin.kind === 'openai' && pending && toolNames && !stat.structured) {
+          const pick = dsmlPickCall(pending, toolNames);
+          if (pick) {
+            emitCalls([pick], fin.index, ev);
+            if (fin.choice.finish_reason === 'stop') { fin.choice.finish_reason = 'tool_calls'; dirty = true; }
+            stat.backfill = 'no-structured-call→tool_calls';
+          } else stat.backfill = 'parsed-call-not-in-declared-tools';
+        } else if (stat.structured) stat.backfill = 'already-has-structured-call';
+        pending = null;
+        stat.finishOut = fin.choice ? fin.choice.finish_reason : fin.value;
+      }
+    }
+    if (dirty || dsmlDirty) {
+      if (dsmlDirty && dsmlChunkPayloadEmpty(j)) return;
+      writeEventObj(j, ev);
+    } else {
+      write(ev.raw || serializeEvent(ev, ev.dataLines));
+    }
+  };
+
+  const parser = new SSEParser({
+    onEvent: handleSSEEvent,
+    onComment: (raw) => write(raw),
+  });
+
+  const handleNonStreamEnd = () => {
+    const j = safeParse(buf);
+    if (!j || typeof j !== 'object') {
+      let out = buf;
+      if (rpInc.length) out = rpApplyText(out, rpInc);
+      if (out) write(out);
+      return;
+    }
+    lastObj = j;
+    let dirty = false;
+    if (rpInc.length) { try { rpWalk(j, rpInc, 0, true); dirty = true; } catch (_) {} }
+    if (cleanDSML) {
+      try {
+        if (dsmlCleanRespObj(j, states, true, dsmlThink)) dirty = true;
+      } catch (_) {}
+      collect();
+      const msg = (Array.isArray(j.choices) && j.choices[0] && j.choices[0].message) || null;
+      if (msg && pending && toolNames && !(Array.isArray(msg.tool_calls) && msg.tool_calls.length)) {
+        const pick = dsmlPickCall(pending, toolNames);
+        if (pick) {
+          msg.tool_calls = [{ id: randId('call_dsml_'), type: 'function', function: { name: pick.name, arguments: pick.arguments } }];
+          if (!j.choices[0].finish_reason || j.choices[0].finish_reason === 'stop') j.choices[0].finish_reason = 'tool_calls';
+          stat.finishIn = stat.finishIn || 'stop';
+          stat.finishOut = j.choices[0].finish_reason;
+          stat.backfill = 'no-structured-call→tool_calls';
+          dirty = true;
+        }
+      }
+      pending = null;
+    }
+    if (dirty) write(JSON.stringify(j));
+    else write(buf);
+  };
+
+  const handleGenericStreamEnd = () => {
+    if (buf) {
+      let tail = buf;
+      buf = '';
+      if (rpInc.length) tail = rpApplyText(tail, rpInc);
+      if (/^\s*data:\s*\[DONE\]\s*$/.test(tail)) sawDone = true;
+      write(tail);
+    }
+  };
+
   return {
     push(c) {
+      if (finished) return true;
       try {
-        const s2 = u8(c);
-        if (!isStream) { buf += s2; return; }
-        buf += s2;
-        const lines = buf.split('\n');
-        buf = lines.pop();
-        for (const l of lines) lineOut(l);
-      } catch (e) { logErr('[dsml] 流式改写失败:', e.message); }
+        if (!isStream) { buf += u8(c); return true; }
+        if (!isSSE) {
+          buf += u8(c);
+          const lines = buf.split('\n');
+          buf = lines.pop();
+          for (const l of lines) {
+            const out = rpInc.length ? rpApplyText(l, rpInc) : l;
+            if (/^\s*data:\s*\[DONE\]\s*$/.test(out)) sawDone = true;
+            write(out + '\n');
+          }
+          return lastWriteOk;
+        }
+        parser.push(c);
+        return lastWriteOk;
+      } catch (e) { logErr('[sse] 流式改写失败:', e.message); return true; }
     },
     end() {
-      if (closed) return; closed = true;
+      if (closed) return;
+      closed = true;
       try {
-        let tail = buf; buf = '';
-        if (rpInc.length) tail = rpApplyText(tail, rpInc);
-        if (dsmlOn && tail) {
-if (isStream) {                                   /* trailing partial line (upstream sent no final newline) */
-            const bodyTxt = tail.slice(0, 6) === 'data: ' ? tail.slice(6) : null;
-            const j = (bodyTxt && bodyTxt !== '[DONE]') ? safeParse(bodyTxt) : undefined;
-            if (j && typeof j === 'object') {
-              lastObj = j;
-              let dirty = false;
-              try { dirty = dsmlCleanRespObj(j, states, false, dsmlThink); } catch (_) {}
-              collect();
-              if (dirty) tail = dsmlChunkPayloadEmpty(j) ? '' : 'data: ' + JSON.stringify(j);
-            }
-} else {                                          /* non-streaming: scrub the whole JSON once + backfill */
-            const j = safeParse(tail);
-            if (j && typeof j === 'object') {
-              lastObj = j;
-              let dirty = false;
-              try { dirty = dsmlCleanRespObj(j, states, true, dsmlThink); } catch (_) {}
-              collect();
-              stat.content++;
-              const msg = (Array.isArray(j.choices) && j.choices[0] && j.choices[0].message) || null;
-              if (msg && pending && toolNames && !(Array.isArray(msg.tool_calls) && msg.tool_calls.length)) {
-                const pick = dsmlPickCall(pending, toolNames);
-                if (pick) {
-                  msg.tool_calls = [{ id: randId('call_dsml_'), type: 'function', function: { name: pick.name, arguments: pick.arguments } }];
-                  if (!j.choices[0].finish_reason || j.choices[0].finish_reason === 'stop') j.choices[0].finish_reason = 'tool_calls';
-                  stat.finishIn = stat.finishIn || 'stop';
-                  stat.finishOut = j.choices[0].finish_reason;
-                  stat.backfill = 'no-structured-call→tool_calls';
-                  dirty = true;
-                }
+        if (!isStream) { handleNonStreamEnd(); }
+        else if (!isSSE) { handleGenericStreamEnd(); if (appendDone && !sawDone) write('data: [DONE]\n\n'); }
+        else {
+          parser.end();
+          if (cleanDSML) {
+            const wasActive = anyActive();
+            if (wasActive) flushStates(null);
+            if (pending && toolNames && !stat.structured && openaiShaped()) {
+              const pick = dsmlPickCall(pending, toolNames);
+              if (pick) {
+                emitCalls([pick], 0, null);
+                writeEventDelta({}, 0, null, 'tool_calls');
+                stat.backfill = stat.backfill || 'end-of-stream→tool_calls';
+                stat.finishOut = stat.finishOut || 'tool_calls';
               }
-              pending = null;
-              if (dirty) tail = JSON.stringify(j);
+            }
+            pending = null;
+            if (wasActive) {
+              const fin = lastObj && lastObj.choices && lastObj.choices[0] ? lastObj.choices[0].finish_reason : null;
+              dsmlMissDump('pipe-final-active', 'finish_reason=' + String(fin) + ' lastObj=' + String(lastObj && JSON.stringify(lastObj)).slice(0, 300) + '\n---lastN---\n' + ring.join('\n'), 'seenDone=' + sawDone);
             }
           }
-        }
-        if (tail) { try { res.write(tail); } catch (_) {} }
-        if (dsmlOn && isStream) {
-if (pending && toolNames && !stat.structured) {              /* no finish chunk by stream end -> emit the call */
-            const pick = dsmlPickCall(pending, toolNames);
-            if (pick) {
-              try {
-                emitCalls([pick], 0);
-                const fin = Object.assign({}, lastObj || {});
-                delete fin.usage;
-                fin.choices = [{ index: 0, delta: {}, finish_reason: 'tool_calls' }];
-                res.write('data: ' + JSON.stringify(fin) + '\n\n');
-              } catch (_) {}
-              stat.backfill = stat.backfill || 'end-of-stream→tool_calls';
-              stat.finishOut = stat.finishOut || 'tool_calls';
-            }
-          }
-          pending = null;
-const wasActive = anyActive();                                  /* *state machine still attached at stream end (truncation/orphan markup) -> keep the last few upstream payloads and finish_reason as evidence */
-const extra = [];                                            /* deferred unclosed tags get a delta appended, no loss */
-          for (const st of states.values()) { const t = dsmlFeed(st, '', true); if (t) extra.push(t); }
-          if (wasActive) {
-            const fin = (lastObj && lastObj.choices && lastObj.choices[0]) ? lastObj.choices[0].finish_reason : null;
-            dsmlMissDump('pipe-final-active', 'finish_reason=' + String(fin) + ' lastObj=' + String(lastObj && JSON.stringify(lastObj)).slice(0, 300) + '\n---lastN---\n' + ring.join('\n'), 'seenDone=' + sawDone);
-          }
-          if (extra.length && lastObj && Array.isArray(lastObj.choices) && lastObj.choices[0]) {
-            for (const t of extra) {
-              const tmpl = JSON.parse(JSON.stringify(lastObj));
-              tmpl.choices = [{ index: 0, delta: { content: t }, finish_reason: null }];
-              try { res.write('data: ' + JSON.stringify(tmpl) + '\n'); } catch (_) {}
-            }
-          }
+          if (appendDone || sawDone) write('data: [DONE]\n\n');
         }
         if (onDiag) onDiag(stat);
       } catch (e) { logErr('[dsml] 收尾失败:', e.message); }
-      if (isStream && !sawDone) { try { res.write('data: [DONE]\n\n'); } catch (_) {} }   // ★上游断流/被掐时也补 [DONE], 客户端才不把它当"未完成"
+      finished = true;
       try { res.end(); } catch (_) {}
     },
   };
@@ -600,8 +742,8 @@ function dsmlExtractCall(t) {  // non-streaming/cross-format: extract textual ca
   return st.call || null;
 }
 function dsmlCleanText(t) {   // non-streaming/cross-format: scrub a whole text at once (full input = final)
-  return dsmlFeed(dsmlNewState(), t, true);
+  return dsmlFeed(dsmlNewState(true), t, true);
 }
 
 /* ---- Config encryption (optional, provided by crypt.js) ---- */
-module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, DSML_TAG_MAX, DSML_WS_MAX, DSML_BLOCK_MAX, DSML_OPEN_CALLS, DSML_OPEN_CALLS_WEAK, DSML_OPEN_INVOKE, DSML_CLOSE_CALLS, DSML_CLOSE_INVOKE, DSML_ANY_TAG, DSML_BAR_KEY, DSML_BLOCK_TAG, DSML_INVOKE_ANY, DSML_PARAM_ANY, DSML_ATTR_NAME, DSML_CALLS_TAG, dsmlParseCall, dsmlParseCallLoose, dsmlLooseParams, _dsmlMissOff, dsmlMissPath, dsmlMissDump, dsmlNormName, dsmlPickCall, DSML_TEXT_FIELD_RE, DSML_THINK_FIELD_RE, dsmlNewState, dsmlActive, dsmlFeed, dsmlChunkPayloadEmpty, dsmlCleanRespObj, wrapDsmlClean, dsmlDiagCache, dsmlDiagOn, dsmlDiag, makeDirectPipe, dsmlExtractCall, dsmlCleanText };
+module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, DSML_TAG_MAX, DSML_WS_MAX, DSML_BLOCK_MAX, DSML_OPEN_CALLS, DSML_OPEN_CALLS_WEAK, DSML_OPEN_INVOKE, DSML_CLOSE_CALLS, DSML_CLOSE_INVOKE, DSML_ANY_TAG, DSML_BAR_KEY, DSML_BLOCK_TAG, DSML_INVOKE_ANY, DSML_PARAM_ANY, DSML_ATTR_NAME, DSML_CALLS_TAG, dsmlParseCall, dsmlParseCallLoose, dsmlLooseParams, _dsmlMissOff, dsmlMissPath, dsmlMissDump, dsmlNormName, dsmlPickCall, DSML_TEXT_FIELD_RE, DSML_THINK_FIELD_RE, dsmlNewState, dsmlActive, dsmlFeed, dsmlChunkPayloadEmpty, dsmlCleanRespObj, dsmlDiagCache, dsmlDiagOn, dsmlDiag, makeDirectPipe, dsmlExtractCall, dsmlCleanText };

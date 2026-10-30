@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const os = require('os');
 const zlib = require('zlib');
 const { toText, normStop, randId, safeParse, nowSec } = require('./util');
+const { SSEDecoder } = require('./sse');
 
 // ================= Format conversion: entry parsing / exit building / responses / SSE =================
 /* ================= Entry parsing: client format -> canonical =================
@@ -751,32 +752,6 @@ function canonicalToResponsesResp(cresp, model) {
 }
 
 /* ================= SSE decode + upstream stream -> canonical events ================= */
-class SSEDecoder {
-  constructor(onData) { this.onData = onData; this.buf = ''; this.lines = []; }
-  push(s) {
-    this.buf += s;
-    let i;
-    while ((i = this.buf.indexOf('\n')) >= 0) {
-      const line = this.buf.slice(0, i);
-      this.buf = this.buf.slice(i + 1);
-      this.handleLine(line.replace(/\r$/, ''));
-    }
-  }
-  handleLine(l) {
-    if (l === '') { this.flushEvent(); return; }
-    if (l.startsWith(':')) return;
-    if (l.startsWith('data:')) this.lines.push(l.slice(5).replace(/^ /, ''));
-  }
-  flushEvent() {
-    if (this.lines.length) {
-      const d = this.lines.join('\n');
-      this.lines = [];
-      this.onData(d);
-    }
-  }
-  end() { this.flushEvent(); }
-}
-
 class UpstreamStreamParser {
   constructor(format, emit) {
     this.format = format;
@@ -883,8 +858,10 @@ function makeWriter(format, res, model, opts = {}) {
     const chunk = (delta, finish_reason) => {
       sseData(res, { id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta, finish_reason: finish_reason || null }] });
     };
+    let ended = false;
     return {
       onEvent(ev) {
+        if (!ev || ended) return;
         if (ev.type === 'text') {
           if (firstChunk) { chunk({ role: 'assistant', content: '' }); firstChunk = false; }
           chunk({ content: ev.t });
@@ -896,6 +873,7 @@ function makeWriter(format, res, model, opts = {}) {
         } else if (ev.type === 'tool_delta') {
           chunk({ tool_calls: [{ index: ev.i, function: { arguments: ev.s } }] });
         } else if (ev.type === 'end') {
+          ended = true;
           chunk({}, ev.finish_reason);
           const u = ev.usage || { input: 0, output: 0 };
           sseData(res, { id, object: 'chat.completion.chunk', created, model, choices: [], usage: { prompt_tokens: u.input, completion_tokens: u.output, total_tokens: u.input + u.output } });
@@ -927,8 +905,10 @@ function makeWriter(format, res, model, opts = {}) {
       open = { kind, idx, i: tool ? tool.i : undefined };
       return open;
     };
+    let ended = false;
     return {
       onEvent(ev) {
+        if (!ev || ended) return;
         if (ev.type === 'start') {
           if (ev.usage && ev.usage.input) usage.input = ev.usage.input;
           ensureStart();
@@ -948,6 +928,7 @@ function makeWriter(format, res, model, opts = {}) {
           const b = ensure('tool', { id: '', name: '', i: ev.i });
           sseEvent(res, 'content_block_delta', { type: 'content_block_delta', index: b.idx, delta: { type: 'input_json_delta', partial_json: ev.s } });
         } else if (ev.type === 'end') {
+          ended = true;
           ensureStart();
           closeOpen();
           if (!sawAny) {
@@ -983,8 +964,10 @@ function makeWriter(format, res, model, opts = {}) {
     writeChunk({ candidates: [{ content: { role: 'model', parts: [{ functionCall: { name: toolBuf.name, args: (typeof args === 'object' && !Array.isArray(args)) ? args : { value: args } } }] }, index: 0 }] });
     toolBuf = null;
   };
+  let ended = false;
   return {
     onEvent(ev) {
+      if (!ev || ended) return;
       if (ev.type === 'text') {
         flushTool();
         writeChunk({ candidates: [{ content: { role: 'model', parts: [{ text: ev.t }] }, index: 0 }] });
@@ -997,6 +980,7 @@ function makeWriter(format, res, model, opts = {}) {
       } else if (ev.type === 'tool_delta') {
         if (toolBuf && toolBuf.i === ev.i) toolBuf.s += ev.s;
       } else if (ev.type === 'end') {
+        ended = true;
         flushTool();
         const u = ev.usage || { input: 0, output: 0 };
         writeChunk({ candidates: [{ content: { role: 'model', parts: [] }, finishReason: geminiFinish(ev.finish_reason), index: 0 }], usageMetadata: { promptTokenCount: u.input, candidatesTokenCount: u.output, totalTokenCount: u.input + u.output } });
@@ -1051,8 +1035,10 @@ function makeResponsesWriter(res, model) {
       curTool = null;
     }
   };
+  let ended = false;
   return {
     onEvent(ev) {
+      if (!ev || ended) return;
       if (ev.type === 'text') {
         ensureStart(); ensureMsg(); msgText += ev.t;
         sseData(res, { type: 'response.output_text.delta', item_id: msgId, output_index: msgOutIdx, content_index: 0, delta: ev.t });
@@ -1074,6 +1060,7 @@ function makeResponsesWriter(res, model) {
           sseData(res, { type: 'response.function_call_arguments.delta', item_id: curTool.id, output_index: curTool.outIdx, delta: ev.s });
         }
       } else if (ev.type === 'end') {
+        ended = true;
         ensureStart();
         finishItems();
         const u = ev.usage || { input: 0, output: 0 };

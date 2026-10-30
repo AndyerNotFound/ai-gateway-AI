@@ -28,7 +28,7 @@ function encryptText(plain, pass) {
 }
 function decryptText(enc, pass) {
   const b = Buffer.from(String(enc).slice(MAGIC.length), 'base64');
-  if (b.length < 45) throw new Error('密文格式无效');
+  if (b.length < 45) throw new Error('Invalid ciphertext format');
   const salt = b.subarray(0, 16), iv = b.subarray(16, 28), tag = b.subarray(28, 44), ct = b.subarray(44);
   const d = crypto.createDecipheriv('aes-256-gcm', deriveKey(pass, salt), iv);
   d.setAuthTag(tag);
@@ -47,7 +47,7 @@ function configFileList() {
 function writeIfChanged(file, newText, pass) {
   const old = fs.readFileSync(file, 'utf8');
   if (old === newText) return 'unchanged';
-  if (isEncText(newText) && decryptText(newText, pass) !== old) throw new Error(file + ' 回读验证失败, 已中止写入');
+  if (isEncText(newText) && decryptText(newText, pass) !== old) throw new Error(file + ' read-back verification failed; write aborted');
   fs.writeFileSync(file, newText);
   return isEncText(newText) ? 'encrypted' : 'decrypted';
 }
@@ -70,7 +70,7 @@ terminal: !!process.stdin.isTTY   // terminal mode: backspace works; pipe mode: 
 _rl._writeToOutput = s => { if (!muted) process.stdout.write(s); };  // muted, no passphrase echo
   _rl.on('line', l => { _lines.push(String(l).trim()); _mmFlush(); });
   _rl.on('close', () => { while (_pending.length) { const cb = _pending.shift(); muted = false; cb(''); } });
-  _rl.on('SIGINT', () => { process.stdout.write('\n(已取消)\n'); process.exit(130); });
+  _rl.on('SIGINT', () => { process.stdout.write('\n(cancelled)\n'); process.exit(130); });
   return _rl;
 }
 function askHidden(question) {
@@ -84,17 +84,17 @@ function askHidden(question) {
 function cmdStatus() {
   const files = configFileList();
   const pass = loadPass();
-  console.log('密钥文件: ' + KEY_FILE() + (fs.existsSync(KEY_FILE()) ? '  [存在]' : '  [不存在]'));
-  console.log('AGW_CRYPT_PASS: ' + (process.env.AGW_CRYPT_PASS ? '[已设置]' : '[未设置]'));
-  console.log('可用口令: ' + (pass ? '[有] 加密配置可读' : '[无] 加密配置不可读'));
+  console.log('Key file: ' + KEY_FILE() + (fs.existsSync(KEY_FILE()) ? '  [present]' : '  [absent]'));
+  console.log('AGW_CRYPT_PASS: ' + (process.env.AGW_CRYPT_PASS ? '[set]' : '[unset]'));
+  console.log('Passphrase: ' + (pass ? '[yes] encrypted configs readable' : '[no] encrypted configs unreadable'));
   for (const f of files) {
     const raw = fs.readFileSync(path.join(DIR, f), 'utf8');
     if (isEncText(raw)) {
       let ok = '?';
-      try { decryptText(raw, pass); ok = '可用当前口令解开'; } catch (e) { ok = '! 当前口令解不开: ' + e.message; }
-      console.log('  ' + f.padEnd(28) + '[已加密] ' + ok);
+      try { decryptText(raw, pass); ok = 'opens with current passphrase'; } catch (e) { ok = '! current passphrase fails: ' + e.message; }
+      console.log('  ' + f.padEnd(28) + '[encrypted] ' + ok);
     } else {
-      console.log('  ' + f.padEnd(28) + '[明文]');
+      console.log('  ' + f.padEnd(28) + '[plaintext]');
     }
   }
 }
@@ -104,23 +104,23 @@ async function cmdEnable(argv) {
   if (pi >= 0 && argv[pi + 1]) pass = argv[pi + 1];
   else if (argv.includes('--genkey')) {
     pass = crypto.randomBytes(24).toString('base64url');
-    console.log('已生成随机口令(请立即抄写保存, 只显示这一次):\n  ' + pass + '\n');
+    console.log('Random passphrase generated (copy it now; shown only once):\n  ' + pass + '\n');
   } else {
-    const a = await askHidden('设置配置加密口令(输入不回显): ');
-    const b = await askHidden('再输一遍确认: ');
-    if (!a) { console.log('口令不能为空'); process.exit(1); }
-    if (a !== b) { console.log('两次输入不一致'); process.exit(1); }
+    const a = await askHidden('Set a config encryption passphrase (input hidden): ');
+    const b = await askHidden('Type it again to confirm: ');
+    if (!a) { console.log('Passphrase cannot be empty'); process.exit(1); }
+    if (a !== b) { console.log('Inputs do not match'); process.exit(1); }
     pass = a;
   }
-  if (!pass) { console.log('口令不能为空'); process.exit(1); }
+  if (!pass) { console.log('Passphrase cannot be empty'); process.exit(1); }
   const files = configFileList();
-  if (!files.length) { console.log('未找到任何 config*.json'); process.exit(1); }
+  if (!files.length) { console.log('No config*.json found'); process.exit(1); }
   const jobs = [];
   for (const f of files) {
     const raw = fs.readFileSync(path.join(DIR, f), 'utf8');
     if (isEncText(raw)) {
       let plain;
-      try { plain = decryptText(raw, loadPass()); } catch (e) { console.log('x ' + f + ' 已加密但当前口令解不开, 中止: ' + e.message); process.exit(1); }
+      try { plain = decryptText(raw, loadPass()); } catch (e) { console.log('x ' + f + ' is encrypted but the current passphrase fails; aborting: ' + e.message); process.exit(1); }
       jobs.push([f, plain]);
     } else {
       JSON.parse(raw);
@@ -129,12 +129,12 @@ async function cmdEnable(argv) {
   }
   for (const [f, plain] of jobs) {
     writeIfChanged(path.join(DIR, f), encryptText(plain, pass), pass);
-    console.log('OK ' + f + ' -> 已加密');
+    console.log('OK ' + f + ' -> encrypted');
   }
   fs.writeFileSync(KEY_FILE(), pass + '\n', { mode: 0o600 });
   try { fs.chmodSync(KEY_FILE(), 0o600); } catch (e) {}
-  console.log('OK 密钥已写入 ' + KEY_FILE() + ' (权限600)');
-  console.log('完成。请重启各实例: agw.sh restart <名字>');
+  console.log('OK key written to ' + KEY_FILE() + ' (mode 600)');
+  console.log('Done. Restart instances: agw.sh restart <name>');
   console.log('注意: 口令务必自行备份; 忘记口令 = 配置无法恢复。');
 }
 function cmdDisable(argv) {
@@ -167,7 +167,7 @@ async function cmdChangepass(argv) {
   if (ni >= 0 && argv[ni + 1]) newPass = argv[ni + 1];
   else {
     const a = await askHidden('输入新口令(不回显): ');
-    const b = await askHidden('再输一遍确认: ');
+    const b = await askHidden('Type it again to confirm: ');
     if (!a || a !== b) { console.log('新口令为空或两次不一致'); process.exit(1); }
     newPass = a;
   }

@@ -6,7 +6,7 @@ CA_KEY="$DIR/ca.key"
 CA_PEM="$DIR/ca.pem"
 
 if [ -f "$CA_PEM" ] && [ -f "$CA_KEY" ] && [ "${1:-}" != "--force" ]; then
-  echo "• CA 已存在，跳过（--force 可重建，会导致已安装设备全部失效）"
+  echo "• CA already exists, skipped (--force rebuilds it and invalidates all installed devices)"
   openssl x509 -in "$CA_PEM" -noout -subject -enddate
   exit 0
 fi
@@ -20,9 +20,9 @@ openssl req -x509 -newkey rsa:3072 -nodes -days 3650 \
 chmod 600 "$CA_KEY"
 chmod 644 "$CA_PEM"
 
-echo "✓ 私有 CA 已生成"
+echo "✓ Private CA generated"
 openssl x509 -in "$CA_PEM" -noout -subject -enddate
 echo ""
-echo "  分发用（可公开，私钥 ca.key 不要外传）："
+echo "  For distribution (public; never share the ca.key private key):"
 echo "    $CA_PEM"
-echo "  局域网其他设备安装：把 ca.pem 改名为 ai-gateway-ca.crt 后装为「CA 证书」"
+echo "  Install on other LAN devices: rename ca.pem to ai-gateway-ca.crt and install it as a CA certificate"

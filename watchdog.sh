@@ -8,9 +8,9 @@ PIDFILE="$DIR/.run/main.pid"
 WDPIDFILE="$DIR/.run/watchdog.pid"
 LOG="$DIR/log/watchdog.log"
 INTERVAL="${1:-30}"
-GUARD_EVERY="${GUARD_EVERY:-10}"   # 10 × 30s = 5 分钟跑一次 ops/guard.sh（证书续签/密钥轮换）
+GUARD_EVERY="${GUARD_EVERY:-10}"   # 10 × 30s = run ops/guard.sh every 5 min (cert renew / key rotation)
 tick=0
-UNHEALTHY_LIMIT=3   # 进程在但 /health 连续失败 N 次才重启
+UNHEALTHY_LIMIT=3   # restart only after N consecutive /health failures while the process is alive
 bad=0
 
 log(){ echo "[$(date '+%F %T')] $*" >> "$LOG"; }
@@ -41,31 +41,31 @@ health() {
 if [ -f "$WDPIDFILE" ]; then
   oldpid="$(cat "$WDPIDFILE" 2>/dev/null)"
   if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null; then
-    echo "watchdog 已在运行 (pid $oldpid)"; exit 0
+    echo "watchdog already running (pid $oldpid)"; exit 0
   fi
 fi
 echo $$ > "$WDPIDFILE"
 
-log "── watchdog 启动 (每 ${INTERVAL}s 检查, pid $$) ──"
+log "── watchdog started (check every ${INTERVAL}s, pid $$) ──"
 while true; do
   if alive; then
     if health; then
       bad=0
     else
       bad=$((bad+1))
-      log "△ 进程在但 /health 失败 (连续 $bad/$UNHEALTHY_LIMIT)"
+      log "△ process alive but /health failing ($bad/$UNHEALTHY_LIMIT consecutive)"
       if [ "$bad" -ge "$UNHEALTHY_LIMIT" ]; then
-        log "✗ 连续 $bad 次失联, 执行 restart"
+        log "✗ $bad consecutive failures; running restart"
         out="$(bash "$DIR/agw.sh" restart 2>&1 | tail -n 1)"
-        log "   restart 结果: $out"
+        log "   restart result: $out"
         bad=0
       fi
     fi
   else
-    log "✗ 网关未运行(进程死亡/陈旧PID), 自动拉起..."
+    log "✗ Gateway not running (dead/stale pid); auto-starting..."
     rm -f "$PIDFILE"
     out="$(bash "$DIR/agw.sh" start 2>&1 | tail -n 1)"
-    log "   拉起结果: $out"
+    log "   start result: $out"
     bad=0
   fi
   tick=$((tick+1))

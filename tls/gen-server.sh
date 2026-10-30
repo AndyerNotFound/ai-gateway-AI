@@ -15,7 +15,7 @@ EXTRA_SAN="${EXTRA_SAN:-}"
 MODE="${1:-}"
 export PATH="$PATH:/data/data/com.termux/files/usr/bin"
 
-[ -f "$CA_PEM" ] || { echo "✗ 缺少 $CA_PEM，先运行: bash $DIR/gen-ca.sh"; exit 1; }
+[ -f "$CA_PEM" ] || { echo "✗ Missing $CA_PEM; run: bash $DIR/gen-ca.sh first"; exit 1; }
 
 # Prints "interface IP", preferring wlan/eth (primary LAN addresses)
 detect_if_ip() {
@@ -49,7 +49,7 @@ if [ "$MODE" != "--force" ] && [ -f "$OUT_CERT" ] && [ -f "$OUT_KEY" ]; then
 fi
 
 if [ "$NEED" = "0" ]; then
-  echo "✓ 证书有效且覆盖当前全部 IP，无需重签"
+  echo "✓ Cert is valid and covers all current IPs; no re-sign needed"
   openssl x509 -in "$OUT_CERT" -noout -subject -enddate -ext subjectAltName
   exit 0
 fi
@@ -77,13 +77,13 @@ if [ -f "$OUT_CERT" ]; then
   TS="$(date +%Y%m%d-%H%M%S)"
   cp -p "$OUT_CERT" "$DIR/legacy/cert.pem.$TS" 2>/dev/null || true
   cp -p "$OUT_KEY"  "$DIR/legacy/key.pem.$TS"  2>/dev/null || true
-  echo "• 旧证书已归档到 $DIR/legacy/ ($TS)"
+  echo "• Old cert archived to $DIR/legacy/ ($TS)"
 fi
 
 install -m 644 "$TMP/cert.pem" "$OUT_CERT"
 install -m 600 "$TMP/key.pem"  "$OUT_KEY"
 
-echo "✓ 新证书已安装"
-echo "  证书: $OUT_CERT"
-echo "  私钥: $OUT_KEY (600)"
+echo "✓ New certificate installed"
+echo "  Cert: $OUT_CERT"
+echo "  Key: $OUT_KEY (600)"
 openssl x509 -in "$OUT_CERT" -noout -subject -enddate -ext subjectAltName

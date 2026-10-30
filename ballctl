@@ -864,15 +864,16 @@ if (cmd === '-h' || cmd === '--help') {
     die('这一组不支持 rm（用 edit / reset）');
   } else {
     delete o[key];
-    console.log('  已删除 ' + key);
+    console.log('  deleted ' + key);
   }
   writeJson(fileFor(inst), o);
 } else if (cmd === 'url') {
   let k = '';
   try { k = fs.readFileSync(path.join(os.homedir(), '.ballkey'), 'utf8').trim(); } catch (_) {}
-  if (!k) die('读不到 ~/.ballkey');
-  console.log('\n  浏览器打开这个（已带密码，打开即用）:\n');
-  console.log('  https://127.0.0.1:16384/admin/ball?adminKey=' + encodeURIComponent(k) + '&inst=' + encodeURIComponent(inst));
+  if (!k) die('Cannot read ~/.ballkey');
+  console.log('\n  The visual editor was removed; configure the floating ball via:');
+  console.log('    ballctl <inst> set <key=value>');
+  console.log('    ballctl <inst> look | stats | noti ...');
   console.log('');
 } else if (cmd === 'noti') {
   const o = readJson(fileFor(inst));

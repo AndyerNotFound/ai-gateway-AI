@@ -9,7 +9,6 @@ const crypto = require('crypto');
 const os = require('os');
 const zlib = require('zlib');
 const { logErr, log, toText, utf8 } = require('./util');
-const ctxp = require('./ctxp');
 const state = require('./state');
 const admin = require('./admin');
 
@@ -97,19 +96,6 @@ function globMatch(pat, str) {
   try { return new RegExp('^' + esc + '$', 'i').test(String(str)); } catch (_) { return false; }
 }
 
-//// resolve a model's window size from the contextWindows table (ordered, wildcards, * fallback); 0 when unknown = hide usage
-function matchContextWindow(cfg, model) {
-  const list = Array.isArray(cfg.contextWindows) ? cfg.contextWindows : [];
-  const m = String(model || '');
-  for (const it of list) {
-    if (!it || it.window == null) continue;
-    const pat = String(it.match || '').trim();
-    if (!pat) continue;
-    if (pat === m || globMatch(pat, m)) return Math.max(0, Number(it.window) || 0);
-  }
-  return 0;
-}
-
 //// rough prompt token estimate: only for the hard limit's upfront block, not real tokenization
 // CJK counts ~1 token per character; everything else ~1 token per charsPerToken characters (default 4)
 const CJK_RE = /[\u3000-\u9fff\uff00-\uffef\u3040-\u30ff\uac00-\ud7af]/g;
@@ -167,38 +153,12 @@ function calibUpdate(cfg, model, actual, rawEst) {
   const r = Math.min(EST_RATIO_MAX, Math.max(EST_RATIO_MIN, actual / rawEst));
   bm.estRatio = bm.estRatio ? bm.estRatio * (1 - EST_EMA_A) + r * EST_EMA_A : r;
 }
-// Estimate after applying the calibration ratio (used by hard limits/ctxp interception; fewer false blocks)
-function estPromptAdj(cfg, model, canonical) {
-  const raw = analyzePrompt(canonical, ((cfg.contextLimit || {}).charsPerToken) || 4);
-  const ratio = calibRatio(cfg, model);
-  if (ratio === 1) return raw;
-  const dist = {}; for (const k in raw.dist) dist[k] = Math.round(raw.dist[k] * ratio);
-  return { total: Math.round(raw.total * ratio), dist };
-}
 //// with real usage, normalize the distribution to the real input so the three parts sum to it (consistent convention)
 function scaleDist(dist, rawTotal, actualInput) {
   if (!(actualInput > 0) || !(rawTotal > 0)) return dist;
   const f = actualInput / rawTotal, out = {};
   for (const k in dist) out[k] = Math.round(dist[k] * f);
   return out;
-}
-
-// Record the latest request's context usage (memory only, read by the ball/panel) + a recent usage series (trend/approach prediction)
-function recordContext(cfg, model, prompt, completion, channel, estimated, extra) {
-  const p = Number(prompt) || 0;
-  if (p <= 0) return;
-  const win = matchContextWindow(cfg, model);
-  const percent = win > 0 ? Math.round(p / win * 1000) / 10 : null;
-  cfg._lastCtx = {
-    model: String(model || ''), channel: String(channel || ''), est: !!estimated,
-    prompt: p, completion: Number(completion) || 0, window: win, percent, at: Date.now(),
-    cached: (extra && extra.cached) || 0, dist: (extra && extra.dist) || null,
-  };
-  if (percent != null) {
-    const h = cfg._ctxHist = cfg._ctxHist || [];
-    h.push({ at: cfg._lastCtx.at, percent, model: cfg._lastCtx.model });
-    if (h.length > 50) h.splice(0, h.length - 50);
-  }
 }
 
 // Backward compatibility: return the first candidate
@@ -380,4 +340,4 @@ function modelsResponse(cfg, format) {
   return { object: 'list', data: ms.map(m => ({ id: m, object: 'model', type: 'model', created: 1700000000, owned_by: 'ai-gateway', display_name: m })) };
 }
 
-module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, ctxp, state, admin, pickChannels, channelLocked, forcedChannelName, globMatch, matchContextWindow, CJK_RE, countCjk, tokOf, analyzePrompt, estimatePromptTokens, estimatePromptDist, EST_RATIO_MIN, calibRatio, calibUpdate, estPromptAdj, scaleDist, recordContext, pickChannel, collectJson, availableBranches, genApiKey, persistRuntimeCfg, hashPassword, verifyPassword, keyCreditsJSON, checkAuth, cfgDirOf, keyUsageFile, loadKeyUsage, saveKeyUsage, makeGatewayApi, corsHeaders, jsonErr, sendJson, sendError, collectModels, modelsResponse };
+module.exports = { http, https, net, tls, fs, path, crypto, os, zlib, state, admin, pickChannels, channelLocked, forcedChannelName, globMatch, CJK_RE, countCjk, tokOf, analyzePrompt, estimatePromptTokens, estimatePromptDist, EST_RATIO_MIN, calibRatio, calibUpdate, scaleDist, pickChannel, collectJson, availableBranches, genApiKey, persistRuntimeCfg, hashPassword, verifyPassword, keyCreditsJSON, checkAuth, cfgDirOf, keyUsageFile, loadKeyUsage, saveKeyUsage, makeGatewayApi, corsHeaders, jsonErr, sendJson, sendError, collectModels, modelsResponse };

@@ -395,6 +395,10 @@ function streamFlushLen(buf) {
     if (idx >= 0 && idx < k && n - idx <= MAX_STREAM_HOLD) k = idx;
   }
   if (n - k > MAX_STREAM_HOLD) k = n - MAX_STREAM_HOLD;
+  if (k > 0 && k < n) {
+    const a = buf.charCodeAt(k - 1), b = buf.charCodeAt(k);
+if (a >= 0xd800 && a <= 0xdbff && b >= 0xdc00 && b <= 0xdfff) k = Math.min(n, k + 1); // never split a surrogate pair
+  }
   return Math.max(0, Math.min(k, n));
 }
 

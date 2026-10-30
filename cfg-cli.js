@@ -8,28 +8,16 @@
  *   agw.sh config [instance] add            add a channel interactively
  *   agw.sh config [instance] list           list channels
  *   agw.sh config [instance] remove [channel]  remove a channel
- *   agw.sh config [instance] add --name X --type openai --baseUrl URL --apiKey K --models a,b,c
+ *   agw.sh config [instance] add --name X --type openai --baseUrl URL --path /v1/chat/completions --apiKey K --models a,b,c
  *   agw.sh config [instance] set-port 16390
  *   agw.sh config [instance] set-key "passphrase"
  *   agw.sh config [instance] add-proxy myproxy --type socks5 --host 127.0.0.1 --port 7890
- *   agw.sh config ctx [instance]                         show window rules and soft/hard limits
- *   agw.sh config ctx [instance] soft 80                  soft limit (%)
- *   agw.sh config ctx [instance] hard 95                  hard limit (%); 0 = off; exceeding it returns 400
- *   agw.sh config ctx [instance] cpt 4                    estimate: characters per token
- *   agw.sh config ctx [instance] win "deepseek-*" 128k    add/edit a window rule
- *   agw.sh config ctx [instance] unwin "deepseek-*"       delete one rule
- *   agw.sh config ctx [instance] clear                    clear all rules
- *   agw.sh ctxp                                         show global context-limit rules (model-name globs; all instances)
- *   agw.sh ctxp <model-glob>                             show one rule
- *   agw.sh ctxp <model-glob> max 200k warn 160k            set (max = 400 when exceeded, warn = bridge notification; warn<=max)
- *   agw.sh ctxp <model-glob> warn 160k                     set warn only
- *   agw.sh ctxp <model-glob> max 0                       clear one side (both zero = delete)
- *   agw.sh ctxp clear                                    clear everything
  */
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const readline = require('readline');
+const { utf8 } = require('./util');
 
 const DIR = path.join(os.homedir(), 'ai-gateway', 'data');
 const TYPES = ['openai', 'gemini', 'claude'];
@@ -44,7 +32,7 @@ function listInstances() {
   try {
     for (const f of fs.readdirSync(DIR)) {
       const m = /^config\.(.+)\.json$/.exec(f);
-      if (m) out.push(m[1]);
+      if (m && m[1] !== 'example') out.push(m[1]);
     }
   } catch (_) {}
   return out;
@@ -58,7 +46,7 @@ function loadCfg(name) {
 
 function saveCfg(name, cfg) {
   fs.writeFileSync(cfgFile(name), JSON.stringify(cfg, null, 2) + '\n');
-  console.log(`✓ 已保存到 ${cfgFile(name)}`);
+  console.log(`✓ Saved to ${cfgFile(name)}`);
 }
 
 // ---- readline helpers ----
@@ -100,6 +88,7 @@ function showChannels(cfg) {
     const df = ch.default ? ' [default]' : '';
     console.log(`  ${i + 1}. [${ch.type}] ${ch.name}${df}  ${px}`);
     console.log(`     baseUrl: ${ch.baseUrl}`);
+    if (ch.path) console.log(`     path:    ${ch.path}`);
     console.log(`     models:  ${models}`);
     if (ch.modelMap) console.log(`     modelMap: ${JSON.stringify(ch.modelMap)}`);
   }
@@ -120,6 +109,10 @@ async function interactiveAdd(rl, cfg) {
   let baseUrl = await ask(rl, 'baseUrl (如 https://api.deepseek.com)');
 // Autocomplete common baseUrls
   if (baseUrl && !baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
+  let chPath = await ask(rl, 'path (可选: 精确锁定上游路径, 如 /v1/chat/completions; 留空=自动)');
+  chPath = String(chPath || '').trim();
+  if (/^https?:\/\//i.test(chPath)) { console.log('✗ path 不能是完整 URL, 已忽略'); chPath = ''; }
+  if (chPath && chPath.charAt(0) !== '/') chPath = '/' + chPath;
   const apiKey = await ask(rl, 'apiKey (粘贴密钥, 直接回车=稍后填)');
 
 // Proxy selection
@@ -151,6 +144,7 @@ async function interactiveAdd(rl, cfg) {
   const modeChoice = await askChoice(rl, '选择配置方式', ['A) models 列表', 'B) modelMap 改名']);
 
   let channel = { name, type, baseUrl, apiKey, proxy };
+  if (chPath) channel.path = chPath;
   if (modeChoice.startsWith('A')) {
     const modelsStr = await ask(rl, '模型列表 (逗号分隔, 如 deepseek-chat,deepseek-reasoner)');
     const models = modelsStr.split(',').map(s => s.trim()).filter(Boolean);
@@ -161,7 +155,7 @@ async function interactiveAdd(rl, cfg) {
     while (true) {
       const alias = await ask(rl, '对外统一名 (空=结束)');
       if (!alias) break;
-      const real = await ask(rl, `  "${alias}" 的上游真实名`);
+      const real = await ask(rl, `  real upstream name for "${alias}"`);
       if (real) channel.modelMap[alias] = real;
     }
     if (!Object.keys(channel.modelMap).length) { console.log('⚠ modelMap 为空, 自动加 models 兜底'); }
@@ -181,7 +175,7 @@ async function interactiveAdd(rl, cfg) {
 // ---- Interactive main menu ----
 async function mainMenu(rl, name, cfg) {
   while (true) {
-    console.log(`\n━━━ 实例 [${name}] 端口=${(cfg.listen||{}).port} 密码=${cfg.gatewayKey ? '已设' : '无'} 渠道=${(cfg.channels||[]).length} ━━━`);
+    console.log(`\n━━━ 实例 [${name}] 端口=${(cfg.listen||{}).port} 密码=${cfg.gatewayKey ? '已设' : '无'} channels=${(cfg.channels||[]).length} ━━━`);
     const action = await askChoice(rl, '操作', [
       '查看渠道',
       '添加渠道',
@@ -207,7 +201,7 @@ async function mainMenu(rl, name, cfg) {
         if (toDel !== '取消') {
           const dn = toDel.split(' [')[0];
           cfg.channels = cfg.channels.filter(c => c.name !== dn);
-          console.log(`✓ 已删除渠道 "${dn}" (记得保存)`);
+          console.log(`✓ Deleted 渠道 "${dn}" (记得保存)`);
         }
         break;
       }
@@ -216,13 +210,13 @@ async function mainMenu(rl, name, cfg) {
         cfg.listen = cfg.listen || {};
         cfg.listen.port = Number(p) || 16384;
         cfg.listen.host = cfg.listen.host || '0.0.0.0';
-        console.log(`✓ 端口改为 ${cfg.listen.port} (记得保存)`);
+        console.log(`✓ Port changed to ${cfg.listen.port} (remember to save)`);
         break;
       }
       case '设置网关密码': {
         const k = await ask(rl, '网关密码 (空=取消密码保护)');
         cfg.gatewayKey = k;
-        console.log(k ? '✓ 网关密码已设 (记得保存)' : '✓ 已取消密码保护 (记得保存)');
+        console.log(k ? '✓ Gateway password set (remember to save)' : '✓ Password protection removed (remember to save)');
         break;
       }
       case '添加代理': {
@@ -248,7 +242,7 @@ async function mainMenu(rl, name, cfg) {
           delete cfg.proxies[toDel];
           // remove channels referencing this proxy
           for (const c of cfg.channels) if (c.proxy === toDel) { c.proxy = null; console.log(`  ⚠ 渠道 "${c.name}" 的代理被清空`); }
-          console.log(`✓ 已删除代理 "${toDel}" (记得保存)`);
+          console.log(`✓ Deleted 代理 "${toDel}" (记得保存)`);
         }
         break;
       }
@@ -261,194 +255,6 @@ async function mainMenu(rl, name, cfg) {
         return;
     }
   }
-}
-
-// ---- Context window / soft+hard limits (via the admin API: applies immediately and writes back the config) ----
-
-function readMainCfg() {
-  const f = path.join(DIR, 'config.json');
-  if (!fs.existsSync(f)) return null;
-  try {
-    let raw = fs.readFileSync(f, 'utf8');
-    try {
-      const c = require('./crypt.js');
-      if (c.isEncText && c.isEncText(raw)) raw = c.decryptText(raw, c.loadPass());
-    } catch (_) {}
-    return JSON.parse(raw);
-  } catch (e) { return null; }
-}
-
-function apiBase() {
-  const c = readMainCfg() || {};
-  const port = (c.listen && c.listen.port) || 16384;
-  const tls = !!(c.tls && c.tls.enable);
-  return { url: (tls ? 'https://' : 'http://') + '127.0.0.1:' + port, key: c.webToken || '' };
-}
-
-function apiReq(method, pathname, body) {
-  const { url, key } = apiBase();
-  const u = new URL(url + pathname);
-  const mod = u.protocol === 'https:' ? require('https') : require('http');
-  return new Promise((resolve, reject) => {
-    const data = body ? Buffer.from(JSON.stringify(body)) : null;
-    const headers = {};
-    if (key) headers['x-agw-token'] = key;
-    if (data) { headers['content-type'] = 'application/json'; headers['content-length'] = data.length; }
-    const req = mod.request({
-      host: u.hostname,
-      port: u.port || (u.protocol === 'https:' ? 443 : 80),
-      path: u.pathname + u.search,
-      method, headers, rejectUnauthorized: false,
-    }, res => {
-      let buf = '';
-      res.on('data', d => { buf += d; });
-      res.on('end', () => {
-        try { resolve({ status: res.statusCode, json: JSON.parse(buf) }); }
-        catch (e) { resolve({ status: res.statusCode, raw: buf }); }
-      });
-    });
-    req.on('error', reject);
-    if (data) req.write(data);
-    req.end();
-  });
-}
-
-function parseTok(v) {
-  const t = String(v == null ? '' : v).trim().toLowerCase();
-  const m = /^([0-9.]+)([km])?$/.exec(t);
-  if (!m) return 0;
-  const mul = m[2] === 'k' ? 1000 : m[2] === 'm' ? 1000000 : 1;
-  return Math.round(Number(m[1]) * mul);
-}
-
-const CTX_SUBS = ['list', 'show', 'soft', 'hard', 'cpt', 'win', 'unwin', 'clear'];
-
-async function ctxCmd(argv) {
-  const rest = argv.slice();
-  let inst = 'default';
-  if (rest.length && !CTX_SUBS.includes(String(rest[0]).toLowerCase())) inst = rest.shift();
-  const sub = String(rest.shift() || 'list').toLowerCase();
-  const p0 = '/admin/api/context-windows/' + encodeURIComponent(inst);
-
-  const get = async () => {
-    const r = await apiReq('GET', p0);
-    if (!r.json || r.json.ok === false) {
-      throw new Error('读取失败: ' + ((r.json && r.json.error) || r.status || r.raw || ''));
-    }
-    return {
-      windows: r.json.windows || [],
-      limit: Object.assign({ soft: 80, hard: 0, charsPerToken: 4 }, r.json.limit || {}),
-    };
-  };
-  const show = async () => {
-    const { windows, limit } = await get();
-    console.log('实例: ' + inst);
-    console.log('  软上限 ' + limit.soft + '%   硬上限 ' +
-      (Number(limit.hard) > 0 ? limit.hard + '% (超了直接 400)' : '关闭') +
-      '   估算 1 token = ' + limit.charsPerToken + ' 字符');
-    if (!windows.length) { console.log('  (没有窗口规则: 窗口未知 -> 硬上限不拦截)'); return; }
-    windows.forEach((x, i) => console.log('  ' + (i + 1) + '. ' + x.match + ' = ' + x.window));
-  };
-  const save = async (next) => {
-    const r = await apiReq('POST', p0, next);
-    if (!r.json || r.json.ok === false) {
-      throw new Error('保存失败: ' + ((r.json && r.json.error) || r.status || r.raw || ''));
-    }
-    console.log('✓ 已保存 (' + (r.json.applied || 'saved') + ')');
-    await show();
-  };
-
-  if (sub === 'list' || sub === 'show') return show();
-  const cur = await get();
-  if (sub === 'clear') return save({ windows: [], soft: cur.limit.soft, hard: cur.limit.hard, charsPerToken: cur.limit.charsPerToken });
-  if (sub === 'soft' || sub === 'hard' || sub === 'cpt') {
-    const v = Number(rest[0]);
-    if (!isFinite(v)) throw new Error('用法: ctx ' + inst + ' ' + sub + ' <数值>');
-    const body = { windows: cur.windows, soft: cur.limit.soft, hard: cur.limit.hard, charsPerToken: cur.limit.charsPerToken };
-    if (sub === 'soft') body.soft = Math.min(100, Math.max(1, v));
-    if (sub === 'hard') body.hard = Math.min(100, Math.max(0, v));
-    if (sub === 'cpt') body.charsPerToken = Math.min(16, Math.max(1, v));
-    return save(body);
-  }
-  if (sub === 'win') {
-    const match = String(rest[0] || '').trim();
-    const win = parseTok(rest[1]);
-    if (!match || win <= 0) throw new Error('用法: ctx ' + inst + ' win "<匹配>" <窗口, 如 128k>');
-    const windows = cur.windows.filter(x => x.match !== match);
-    windows.push({ match, window: win });
-    return save({ windows, soft: cur.limit.soft, hard: cur.limit.hard, charsPerToken: cur.limit.charsPerToken });
-  }
-  if (sub === 'unwin') {
-    const match = String(rest[0] || '').trim();
-    if (!match) throw new Error('用法: ctx ' + inst + ' unwin "<匹配>"');
-    const windows = cur.windows.filter(x => x.match !== match);
-    if (windows.length === cur.windows.length) { console.log('✗ 没有这条规则: ' + match); return; }
-    return save({ windows, soft: cur.limit.soft, hard: cur.limit.hard, charsPerToken: cur.limit.charsPerToken });
-  }
-  console.log('未知子命令: ' + sub);
-  console.log('用法: ctx [实例] list|soft N|hard N|cpt N|win "<匹配>" <窗口>|unwin "<匹配>"|clear');
-}
-
-// ---- Global context limit ctxp (model-name globs, applies to all instances; hot via the admin API) ----
-
-async function ctxpCmd(argv) {
-  const ctxp = require('./ctxp');
-  const rest = argv.slice();
-  const p0 = '/admin/api/ctxp';
-
-  const getRules = async () => {
-    const r = await apiReq('GET', p0);
-    if (!r.json || r.json.ok !== true) throw new Error('读取失败: ' + ((r.json && r.json.error) || ('HTTP ' + (r.status || '?') + ' (网关需重启以支持 ctxp)') || r.raw || ''));
-    return r.json.rules || {};
-  };
-  const showAll = (rules) => {
-    const keys = Object.keys(rules);
-    if (!keys.length) { console.log('(没有全局上下文上限规则)'); return; }
-    console.log('全局上下文上限 (按模型名通配, 所有实例生效):');
-    keys.forEach(k => {
-      const r = rules[k] || {};
-      console.log('  ' + k + '  warn=' + (r.warn ? ctxp.fmtNum(r.warn) : '关') + '  max=' + (r.max ? ctxp.fmtNum(r.max) : '关'));
-    });
-  };
-  const save = async (body, doneMsg) => {
-    const r = await apiReq('POST', p0, body);
-    if (!r.json || r.json.ok !== true) throw new Error('保存失败: ' + ((r.json && r.json.error) || ('HTTP ' + (r.status || '?') + ' (网关需重启以支持 ctxp)') || r.raw || ''));
-    console.log('✓ ' + (doneMsg || '已保存') + ' (热生效 ' + (r.json.applied || 0) + ' 个实例)');
-    showAll(r.json.rules || {});
-  };
-
-  if (!rest.length || (rest.length === 1 && rest[0].toLowerCase() === 'list')) return showAll(await getRules());
-  if (rest.length === 1 && rest[0].toLowerCase() === 'clear') return save({ rules: {} }, '已清空全部规则');
-if (rest.length === 1) {  // view a single entry
-    const rules = await getRules();
-    const hit = Object.keys(rules).find(k => k === rest[0] || ctxp.globMatch(rest[0], k));
-    if (!hit) { console.log('✗ 没有这条规则: ' + rest[0]); process.exitCode = 1; return; }
-    const r = rules[hit];
-    console.log('规则 ' + hit + '  warn=' + (r.warn ? ctxp.fmtNum(r.warn) + ' (' + r.warn + ')' : '关') + '  max=' + (r.max ? ctxp.fmtNum(r.max) + ' (' + r.max + ')' : '关'));
-    return;
-  }
-
-// ctxp <model-glob> [max <num>] [warn <num>]
-  const model = rest[0];
-  const body = { model };
-  let sawKw = false;
-  for (let i = 1; i < rest.length; i++) {
-    const kw = String(rest[i]).toLowerCase();
-    if (kw !== 'max' && kw !== 'warn') throw new Error('用法: ctxp <模型通配> [max <num>] [warn <num>], 出现未知参数: ' + rest[i]);
-    if (i + 1 >= rest.length) throw new Error(kw + ' 缺数值');
-    const n = ctxp.parseNum(rest[i + 1]);
-    if (!(n >= 0) || !isFinite(n)) throw new Error(kw + ' 数值无效: ' + rest[i + 1] + ' (支持 200k / 1m / 128ki / 4096)');
-    body[kw] = n;
-    i++;
-    sawKw = true;
-  }
-  if (!sawKw) throw new Error('用法: ctxp <模型通配> [max <num>] [warn <num>]');
-// Client-side warn<=max precheck (the API side re-validates with inherited old values)
-  const cur = (await getRules())[model] || {};
-  const mx = body.max !== undefined ? body.max : (cur.max || 0);
-  const wn = body.warn !== undefined ? body.warn : (cur.warn || 0);
-  if (mx > 0 && wn > mx) throw new Error('warn (' + wn + ') 不得高于 max (' + mx + ')');
-  return save(body, '已保存 ' + model);
 }
 
 // ---- Argument mode ----
@@ -473,11 +279,16 @@ function paramAdd(name, opts) {
   }
   if (!opts.name) { console.log('✗ 需要 --name 参数'); process.exit(1); }
   const type = opts.type || 'openai';
-  if (!TYPES.includes(type)) { console.log(`✗ --type 必须是 ${TYPES.join('/')}`); process.exit(1); }
+  if (!TYPES.includes(type)) { console.log(`✗ --type must be one of ${TYPES.join('/')}`); process.exit(1); }
   if (!opts.baseUrl) { console.log('✗ 需要 --baseUrl'); process.exit(1); }
   // remove the old same-named channel
   cfg.channels = (cfg.channels || []).filter(c => c.name !== opts.name);
   const ch = { name: opts.name, type, baseUrl: opts.baseUrl, apiKey: opts.apiKey || '', proxy: opts.proxy || null };
+  if (opts.path) {
+    const pv = String(opts.path).trim();
+    if (/^https?:\/\//i.test(pv)) { console.log('✗ --path 必须是路径, 不能是完整 URL'); process.exit(1); }
+    ch.path = pv.charAt(0) === '/' ? pv : '/' + pv;
+  }
   if (opts.models) ch.models = opts.models.split(',').map(s => s.trim()).filter(Boolean);
   if (opts.default) { for (const c of cfg.channels) c.default = false; ch.default = true; }
   cfg.channels.push(ch);
@@ -499,25 +310,6 @@ function main() {
       await mainMenu(rl, name, cfg);
       rl.close();
     })();
-    return;
-  }
-
-// ctx: context window / soft+hard limits (applies immediately and writes back the config)
-  if (args[0] === 'ctx' || args[0] === 'context') {
-    ctxCmd(args.slice(1)).catch(e => { console.log('✗ ' + e.message); process.exit(1); });
-    return;
-  }
-  if (args[1] === 'ctx' || args[1] === 'context') {
-    ctxCmd([args[0]].concat(args.slice(2))).catch(e => { console.log('✗ ' + e.message); process.exit(1); });
-    return;
-  }
-// ctxp: global context limits (global scope; instance prefix optional); also reachable directly as agw.sh ctxp
-  if (args[0] === 'ctxp') {
-    ctxpCmd(args.slice(1)).catch(e => { console.log('✗ ' + e.message); process.exit(1); });
-    return;
-  }
-  if (args[1] === 'ctxp') {
-    ctxpCmd(args.slice(2)).catch(e => { console.log('✗ ' + e.message); process.exit(1); });
     return;
   }
 
@@ -556,67 +348,67 @@ function main() {
 // Interactive
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
       let cfg = loadCfg(name);
-      if (!cfg) { console.log(`✗ 实例 [${name}] 配置不存在`); rl.close(); process.exit(1); }
+      if (!cfg) { console.log(`✗ Instance [${name}] config not found`); rl.close(); process.exit(1); }
       (async () => {
         cfg = await interactiveAdd(rl, cfg);
-        if (cfg) { saveCfg(name, cfg); console.log('💡 重启: agw.sh restart ' + name); }
+        if (cfg) { saveCfg(name, cfg); console.log('💡 Restart: agw.sh restart ' + name); }
         rl.close();
       })();
     }
   } else if (cmd === 'list') {
     const cfg = loadCfg(name);
-    if (!cfg) { console.log(`✗ 实例 [${name}] 配置不存在`); process.exit(1); }
+    if (!cfg) { console.log(`✗ Instance [${name}] config not found`); process.exit(1); }
     showChannels(cfg);
   } else if (cmd === 'remove') {
-    if (!rest[0]) { console.log('✗ 需要 渠道名: agw.sh config [实例] remove [渠道名]'); process.exit(1); }
+    if (!rest[0]) { console.log('✗ Need a channel name: agw.sh config [instance] remove [channel]'); process.exit(1); }
     let cfg = loadCfg(name);
-    if (!cfg) { console.log(`✗ 实例 [${name}] 配置不存在`); process.exit(1); }
+    if (!cfg) { console.log(`✗ Instance [${name}] config not found`); process.exit(1); }
     const before = cfg.channels.length;
     cfg.channels = (cfg.channels || []).filter(c => c.name !== rest[0]);
-    if (cfg.channels.length < before) { saveCfg(name, cfg); console.log(`✓ 已删除渠道 "${rest[0]}", 重启: agw.sh restart ${name}`); }
-    else console.log(`✗ 没找到渠道 "${rest[0]}"`);
+    if (cfg.channels.length < before) { saveCfg(name, cfg); console.log(`✓ Deleted 渠道 "${rest[0]}", 重启: agw.sh restart ${name}`); }
+    else console.log(`✗ Channel "${rest[0]}" not found`);
   } else if (cmd === 'set-port') {
-    if (!rest[0]) { console.log('✗ 需要 端口号'); process.exit(1); }
+    if (!rest[0]) { console.log('✗ Need a port number'); process.exit(1); }
     let cfg = loadCfg(name);
-    if (!cfg) { console.log(`✗ 实例 [${name}] 配置不存在`); process.exit(1); }
+    if (!cfg) { console.log(`✗ Instance [${name}] config not found`); process.exit(1); }
     cfg.listen = cfg.listen || {}; cfg.listen.port = Number(rest[0]); cfg.listen.host = cfg.listen.host || '0.0.0.0';
-    saveCfg(name, cfg); console.log(`✓ 端口改为 ${rest[0]}, 重启: agw.sh restart ${name}`);
+    saveCfg(name, cfg); console.log(`✓ Port changed to ${rest[0]}, restart: agw.sh restart ${name}`);
   } else if (cmd === 'set-key') {
     let cfg = loadCfg(name);
-    if (!cfg) { console.log(`✗ 实例 [${name}] 配置不存在`); process.exit(1); }
+    if (!cfg) { console.log(`✗ Instance [${name}] config not found`); process.exit(1); }
     cfg.gatewayKey = rest[0] || '';
-    saveCfg(name, cfg); console.log(rest[0] ? `✓ 网关密码已设, 重启: agw.sh restart ${name}` : `✓ 已取消密码, 重启: agw.sh restart ${name}`);
+    saveCfg(name, cfg); console.log(rest[0] ? `✓ Gateway password set, restart: agw.sh restart ${name}` : `✓ Password cleared, restart: agw.sh restart ${name}`);
   } else if (cmd === 'set-web-token') {
     let cfg = loadCfg(name);
-    if (!cfg) { console.log(`✗ 实例 [${name}] 配置不存在`); process.exit(1); }
+    if (!cfg) { console.log(`✗ Instance [${name}] config not found`); process.exit(1); }
     cfg.webToken = rest[0] || '';
     saveCfg(name, cfg);
-    if (rest[0]) { console.log(`✓ 访问令牌已设, 面板: http://127.0.0.1:${(cfg.listen||{}).port}/auth?key=${rest[0]}`); console.log(`  重启: agw.sh restart ${name}`); }
-    else { console.log(`✓ 已清除访问令牌, 重启: agw.sh restart ${name}`); }
+    if (rest[0]) { console.log(`✓ Web token set, panel: http://127.0.0.1:${(cfg.listen||{}).port}/auth?key=${rest[0]}`); console.log(`  Restart: agw.sh restart ${name}`); }
+    else { console.log(`✓ Web token cleared, restart: agw.sh restart ${name}`); }
   } else if (cmd === 'enable-tls') {
     let cfg = loadCfg(name);
-    if (!cfg) { console.log(`✗ 实例 [${name}] 配置不存在`); process.exit(1); }
+    if (!cfg) { console.log(`✗ Instance [${name}] config not found`); process.exit(1); }
     const dir = path.dirname(cfgFile(name));
     if (!fs.existsSync(path.join(dir, 'cert.pem')) || !fs.existsSync(path.join(dir, 'key.pem'))) {
       console.log('✗ 证书不存在, 请先运行: bash ~/ai-gateway/gen-cert.sh');
       process.exit(1);
     }
-    const tlsPort = rest[0] ? Number(rest[0]) : (cfg.listen.port + 9);
-    cfg.tls = { enable: true, cert: 'cert.pem', key: 'key.pem', port: tlsPort };
+    cfg.tls = { enable: true, cert: 'cert.pem', key: 'key.pem' };
     saveCfg(name, cfg);
-    console.log(`✓ TLS 已启用, HTTPS 端口: ${tlsPort} (HTTP ${cfg.listen.port} 保留)`);
-    console.log(`  重启: agw.sh restart ${name}`);
+    if (name === 'default') console.log(`✓ TLS enabled, port ${cfg.listen.port} serves HTTPS only (no plaintext entry)`);
+    else console.log(`✓ TLS enabled , 该实例不再监听自身端口 ${cfg.listen.port}, 只经主端口 /${name}/ 访问`);
+    console.log(`  Restart: agw.sh restart ${name}`);
     console.log(`  ⚠ 自签证书, 客户端需跳过验证 (curl 加 -k)`);
   } else if (cmd === 'disable-tls') {
     let cfg = loadCfg(name);
-    if (!cfg) { console.log(`✗ 实例 [${name}] 配置不存在`); process.exit(1); }
+    if (!cfg) { console.log(`✗ Instance [${name}] config not found`); process.exit(1); }
     cfg.tls = { enable: false };
     saveCfg(name, cfg);
     console.log(`✓ TLS 已关闭, 重启: agw.sh restart ${name}`);
   } else if (!cmd) {
 // instance name only -> enter the main menu
     let cfg = loadCfg(name);
-    if (!cfg) { console.log(`✗ 实例 [${name}] 配置不存在`); process.exit(1); }
+    if (!cfg) { console.log(`✗ Instance [${name}] config not found`); process.exit(1); }
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     mainMenu(rl, name, cfg).then(() => rl.close());
   } else {

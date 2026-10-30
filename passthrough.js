@@ -67,7 +67,8 @@ function handleExtraEndpoint(cfg, req, res, pathname, bodyBuf, contentType, meth
     let connRetries = 0;
     const maxConnRetry = Math.max(0, Number(cfg.connRetry) || 0);
     const sendBody = (method === 'GET' || method === 'HEAD') ? Buffer.alloc(0) : outBody;
-    const doSend = (fresh) => upstreamRequest(cfg, ch, joinUrl(ch.baseUrl, pathname), headers, sendBody, (err, upRes) => {
+    const targetPath = ch.path || pathname;   // channel path lock: exact override, client path/query ignored
+    const doSend = (fresh) => upstreamRequest(cfg, ch, joinUrl(ch.baseUrl, targetPath), headers, sendBody, (err, upRes) => {
       if (err) {
         lastErr = 'upstream request failed: ' + err.message;
         if (isConnErr(err) && connRetries < maxConnRetry) {
